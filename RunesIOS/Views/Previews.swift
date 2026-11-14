@@ -202,26 +202,17 @@ private struct WristPreview: View {
     @State private var setting = HandSetting(confirmed: .right)
 
     var body: some View {
-        Group {
-            if name == "wrist-onboarding" {
-                // The calmer wrist step as onboarding shows it, switching by itself.
-                OnboardingView(step: .wrist,
-                               context: .init(bluetooth: .allowed, phase: .connected, handSetting: setting, canChangeHand: true),
-                               actions: .init(setHand: { hand in Task { await change(hand) } }))
-            } else {
-                NavigationStack {
-                    WristView(setting: setting, connected: name != "wrist-disconnected", band: nil,
-                              choose: { hand in Task { await change(hand) } },
-                              feedback: { _, _, _ in }, cancelFeedback: { _ in })
-                }
-            }
+        NavigationStack {
+            WristView(setting: setting, connected: name != "wrist-disconnected", band: nil,
+                      choose: { hand in Task { await change(hand) } },
+                      feedback: { _, _, _ in }, cancelFeedback: { _ in })
         }
         .preferredColorScheme(.dark)
         .dynamicTypeSize(name == "wrist-large" ? .accessibility3 : .large)
         .task {
             if name == "wrist-unknown" { setting = HandSetting() }
             if name == "wrist-error" { setting.fail("The wrist setting was not confirmed. Try again.") }
-            if name == "wrist-demo" || name == "wrist-onboarding" {
+            if name == "wrist-demo" {
                 do { try await Task.sleep(for: .seconds(2)) } catch { return }
                 await change(.left)
                 do { try await Task.sleep(for: .seconds(2.1)) } catch { return }

@@ -1,55 +1,83 @@
 import SwiftUI
 
-/// One lesson of the band guide.
-private struct GuidePlate {
-    let title: String
-    let message: String
+/// The lessons of the band guide, in order. Timings and colours follow Meta's published
+/// instructions for the band.
+private enum Plate: Int, CaseIterable {
+    case meet, wear, gestures, light, button, charging
 
-    static let all: [GuidePlate] = [
-        GuidePlate(title: "Your band", message: "It reads your wrist when your fingers move."),
-        GuidePlate(title: "Where to wear it", message: "Writing hand, just past the wrist bone. Line facing you, snug."),
-        GuidePlate(title: "Gestures", message: "A finger against your thumb. Keep your arm relaxed."),
-        GuidePlate(title: "The light", message: "Press the button once to see the charge."),
-        GuidePlate(title: "The button", message: "How long you hold it decides what it does."),
-        GuidePlate(title: "Charging", message: "The charger clips under the band. Use a wall adapter."),
-    ]
+    var title: String {
+        switch self {
+        case .meet: "Meet your band"
+        case .wear: "Where it sits"
+        case .gestures: "Your fingers do the talking"
+        case .light: "It answers in light"
+        case .button: "One button, four holds"
+        case .charging: "Charging up"
+        }
+    }
+    var message: String {
+        switch self {
+        case .meet: "Eight sensors that pick up the tiny signals in your wrist when your fingers move."
+        case .wear: "On the hand you write with, just past the wrist bone. Line facing you, snug like a watch."
+        case .gestures: "Tap, hold or swipe a finger on your thumb. Your hand can stay relaxed at your side."
+        case .light: "Press the button once and the light shows how much charge is left."
+        case .button: "Hold it a little or a lot. How long you hold decides what it does."
+        case .charging: "The charger clips on underneath. Plug it into the wall, not a glasses case."
+        }
+    }
+    /// What the picture adds, for VoiceOver.
+    var spoken: String {
+        switch self {
+        case .meet, .wear, .charging: ""
+        case .gestures: Self.moves.map(\.name).joined(separator: ", ") + "."
+        case .light: "Green: over 80%. Orange: 20 to 80%. Blinking orange: under 20%. Flashing white: turning on, or ready to pair."
+        case .button: Self.holds.map { "\($0.name): \(Int($0.seconds)) seconds" }.joined(separator: ". ") + "."
+        }
+    }
+
+    static let holds: [(seconds: Double, name: String)] = [(1, "Wake"), (2, "On"), (3, "Pair"), (8, "Off")]
+    /// Each gesture and the bead that jumps for it.
+    static let moves: [(name: String, bead: Int, twice: Bool)] =
+        [("Tap index", 1, false), ("Tap middle", 2, false), ("Double tap", 1, true), ("Hold", 3, false)]
+    /// The band's light: its own colour, how fast it blinks if it does, and what it means.
+    static let lights: [(colour: Color, blink: Double?, name: String)] =
+        [(.green, nil, "Over 80%"), (.orange, nil, "20 to 80%"), (.orange, 1.6, "Under 20%"), (.white, 1.1, "On, or pairing")]
 }
 
 /// An optional guide to the band, told by its own eight beads. Each plate is one lesson;
-/// swiping moves the same beads into the next shape, so nothing is ever a new picture.
-/// Timings and colours follow Meta's published instructions for the band.
+/// swiping moves the same beads into the next shape.
 struct BandGuidePage: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dismiss) private var dismiss
+    /// The page as a fraction while it is being swiped.
     @State private var position = 0.0
     @State private var page: Int? = 0
 
-    private var current: Int { min(GuidePlate.all.count - 1, max(0, Int(position.rounded()))) }
-
-    private func advance() {
-        guard current < GuidePlate.all.count - 1 else { return }
-        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.55)) { page = current + 1 }
-    }
+    private var current: Int { page ?? 0 }
+    private var isLast: Bool { current == Plate.allCases.count - 1 }
 
     var body: some View {
         GeometryReader { geometry in
+            // The picture gives way on short screens so the words always have room.
+            let stage = min(BeadTheatre.designHeight, max(180, geometry.size.height - 260))
             VStack(spacing: 0) {
                 ZStack(alignment: .top) {
                     ScrollView(.horizontal) {
                         LazyHStack(spacing: 0) {
-                            ForEach(Array(GuidePlate.all.enumerated()), id: \.offset) { index, plate in
+                            ForEach(Plate.allCases, id: \.rawValue) { plate in
                                 VStack(alignment: .leading, spacing: 10) {
-                                    Color.clear.frame(height: BeadTheatre.height)
+                                    Color.clear.frame(height: stage)
                                     Text(plate.title).font(.display).tracking(-0.6).fixedSize(horizontal: false, vertical: true)
-                                        .accessibilityAddTraits(.isHeader)
                                     Text(plate.message).font(.bodyText).foregroundStyle(Color.muted).fixedSize(horizontal: false, vertical: true)
                                     Spacer(minLength: 0)
                                 }
                                 .padding(.horizontal, Metric.gutter)
                                 .frame(width: geometry.size.width, alignment: .leading)
                                 .contentShape(Rectangle())
-                                .onTapGesture { advance() }
-                                .id(index)
+                                .onTapGesture(perform: advance)
+                                .accessibilityElement(children: .ignore)
+                                .accessibilityLabel([plate.title, plate.message, plate.spoken].filter { !$0.isEmpty }.joined(separator: " "))
                             }
                         }
                         .scrollTargetLayout()
@@ -60,31 +88,34 @@ struct BandGuidePage: View {
                     .onScrollGeometryChange(for: Double.self) { $0.contentOffset.x / max(1, $0.containerSize.width) } action: { _, value in
                         position = value
                     }
-                    TimelineView(.animation(minimumInterval: 1 / 60, paused: reduceMotion)) { context in
+                    TimelineView(.animation(minimumInterval: 1 / 60, paused: reduceMotion || scenePhase != .active)) { context in
                         BeadTheatre(position: position, time: context.date.timeIntervalSinceReferenceDate, still: reduceMotion)
                     }
-                    .frame(height: BeadTheatre.height)
+                    .frame(height: stage)
                     .allowsHitTesting(false)
                 }
                 HStack(spacing: 6) {
-                    ForEach(GuidePlate.all.indices, id: \.self) { index in
-                        Capsule().fill(index == current ? Color.ink : Color.faint)
-                            .frame(width: index == current ? 16 : 6, height: 6)
+                    ForEach(Plate.allCases, id: \.rawValue) { plate in
+                        Capsule().fill(plate.rawValue == current ? Color.ink : Color.faint)
+                            .frame(width: plate.rawValue == current ? 16 : 6, height: 6)
                     }
                 }
                 .animation(.standard, value: current)
                 .padding(.bottom, 16)
-                .accessibilityElement().accessibilityLabel("Page \(current + 1) of \(GuidePlate.all.count)")
-                Button(current == GuidePlate.all.count - 1 ? "Done" : "Next") {
-                    if current == GuidePlate.all.count - 1 { dismiss() } else { advance() }
-                }
-                .buttonStyle(.primary)
-                .padding(.horizontal, Metric.gutter).padding(.bottom, 12)
+                .accessibilityElement().accessibilityLabel("Page \(current + 1) of \(Plate.allCases.count)")
+                Button(isLast ? "Done" : "Next") { if isLast { dismiss() } else { advance() } }
+                    .buttonStyle(.primary)
+                    .padding(.horizontal, Metric.gutter).padding(.bottom, 12)
             }
         }
-        .background(Color.paper)
+        .page()
         .navigationTitle("Your band")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func advance() {
+        guard !isLast else { return }
+        withAnimation(reduceMotion ? nil : .entrance) { page = current + 1 }
     }
 }
 
@@ -96,21 +127,21 @@ struct BandGuideSheet: View {
             BandGuidePage()
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() }.font(.label) } }
         }
-        .tint(Color.ink)
     }
 }
 
-/// Eight beads acting out the guide. `position` is the page, fractional while swiping; the
-/// beads glide between each plate's arrangement and every plate adds its own few strokes.
+/// Eight beads acting out the guide. `position` is the page, fractional while swiping: the
+/// beads hop from each plate's arrangement to the next, and every plate adds a few strokes
+/// of its own. Reduce Motion shows each plate still, with everything it teaches in view.
 private struct BeadTheatre: View {
-    static let height: CGFloat = 330
+    /// The drawing is laid out at this height and scaled to fit.
+    static let designHeight: CGFloat = 330
     let position: Double
     let time: Double
     let still: Bool
 
-    /// One bead on stage.
     private struct Bead {
-        var x = 0.0, y = 0.0, radius = 12.0
+        var x = 0.0, y = 0.0, radius = 0.0
         var opacity = 1.0
         /// 0 is the app's hairline bead; 1 is a dark bead, the body of a light.
         var dark = 0.0
@@ -118,106 +149,143 @@ private struct BeadTheatre: View {
         var charge = 0.0
         var light: Color?
         var depth = 0.0
-        /// Where its shadow falls, if it has one; fixed while the bead lifts.
-        var floor: Double?
+        /// Strength of its floor shadow, and how far above the floor it rides.
+        var shadow = 0.0, lift = 0.0
 
         func mixed(with other: Bead, by f: Double) -> Bead {
             func mix(_ a: Double, _ b: Double) -> Double { a + (b - a) * f }
             return Bead(x: mix(x, other.x), y: mix(y, other.y), radius: mix(radius, other.radius),
                         opacity: mix(opacity, other.opacity), dark: mix(dark, other.dark), charge: mix(charge, other.charge),
                         light: f < 0.5 ? light : other.light, depth: mix(depth, other.depth),
-                        floor: floor.map { mix($0, other.floor ?? other.y + other.radius) } ?? other.floor.map { mix(y + radius, $0) })
+                        shadow: mix(shadow, other.shadow), lift: mix(lift, other.lift))
         }
     }
 
     private static let hand = LucideData.hand.map(SVGPath.cached)
-    private static let wrist = ["M8.5 21.2V27.5", "M17.5 21.2V27.5"].map(SVGPath.cached)
+    private static let forearm = ["M8.5 21.2V33", "M17.5 21.2V33"].map(SVGPath.cached)
+    private static let ringScale = 1.55
+    private static let handScale = 6.4
+    private static let handTop = 38.0
+    private static let handsApart = 78.0
+    /// The wrist, a little below the palm in the hand's 24-unit drawing.
+    private static let wristY = handTop + 24.4 * handScale
+    private static let columnWidth = 78.0
+    private static let rowY = 150.0
+    /// Seconds each gesture, light and lap of the loops below is shown.
+    private static let gestureBeat = 1.5, lightBeat = 2.2, wearLoop = 5.0, chargeLoop = 6.0
 
     var body: some View {
         Canvas { canvas, size in
-            let last = GuidePlate.all.count - 1
+            let scale = size.height / Self.designHeight
+            canvas.scaleBy(x: scale, y: scale)
+            let width = size.width / scale, centre = width / 2
+            let last = Plate.allCases.count - 1
             let clamped = min(Double(last), max(0, position))
-            let from = min(last, Int(clamped)), to = min(last, from + 1)
-            let fraction = clamped - Double(from)
-            let eased = fraction * fraction * (3 - 2 * fraction)
-            func weight(_ plate: Int) -> Double { let w = max(0, 1 - abs(clamped - Double(plate))); return w * w }
+            let from = Int(clamped), fraction = clamped - Double(from)
+            func weight(_ plate: Plate) -> Double { let w = max(0, 1 - abs(clamped - Double(plate.rawValue))); return w * w }
 
-            let a = beads(for: from, in: size), b = beads(for: to, in: size)
-            let stage = zip(a, b).map { $0.mixed(with: $1, by: eased) }
-
-            drawBackdrop(in: &canvas, size: size, weight: weight)
+            let leaving = beads(for: Plate(rawValue: from)!, centre: centre)
+            let arriving = beads(for: Plate(rawValue: min(last, from + 1))!, centre: centre)
+            let stage = zip(leaving, arriving).enumerated().map { index, pair -> Bead in
+                // Each bead sets off a beat after the one before and hops rather than slides.
+                let own = min(1, max(0, fraction * 1.5 - Double(index) * 0.07))
+                let glide = own * own * (3 - 2 * own), hop = sin(.pi * glide)
+                var bead = pair.0.mixed(with: pair.1, by: glide)
+                bead.lift += hop * 26; bead.radius *= 1 + hop * 0.12
+                return bead
+            }
+            drawBackdrop(in: &canvas, centre: centre, weight: weight)
             for bead in stage { drawShadow(of: bead, in: &canvas) }
             for bead in stage.sorted(by: { $0.depth < $1.depth }) { draw(bead, in: &canvas) }
-            drawCaptions(in: &canvas, size: size, weight: weight)
+            drawCaptions(in: &canvas, centre: centre, weight: weight)
         }
         .accessibilityHidden(true)
     }
 
+    // MARK: Loops
+
     private var t: Double { still ? 0 : time }
+    private func column(_ index: Int, of count: Int, centre: Double) -> Double {
+        centre + (Double(index) - Double(count - 1) / 2) * Self.columnWidth
+    }
+    private func writingWrist(_ centre: Double) -> Double { centre + Self.handsApart + Self.handScale }
+    /// Which gesture is showing, and how far into it.
+    private var gesture: (index: Int, into: Double) {
+        let beat = (t / Self.gestureBeat).truncatingRemainder(dividingBy: Double(Plate.moves.count))
+        return (Int(beat), beat - beat.rounded(.down))
+    }
+    private var lightIndex: Int { Int(t / Self.lightBeat) % Plate.lights.count }
+    private func glow(of light: (colour: Color, blink: Double?, name: String)) -> Double {
+        guard let blink = light.blink, !still else { return 1 }
+        return light.colour == .white ? 0.5 + 0.5 * sin(t * 2 * .pi * blink) : (sin(t * 2 * .pi * blink) > 0 ? 1 : 0.1)
+    }
+    /// How far down the forearm the band is from its place: it slides on, then settles.
+    private var wearOffset: Double {
+        guard !still else { return 0 }
+        let into = time.truncatingRemainder(dividingBy: Self.wearLoop)
+        return 46 * pow(max(0, 1 - into / 0.9), 2) + 9 * exp(-into * 2.6) * cos(into * 7)
+    }
+    /// The charging row fills, then rests full for a moment.
+    private var chargeLevel: Double { still ? 1 : min(1, (t / Self.chargeLoop).truncatingRemainder(dividingBy: 1) * 1.2) }
 
     // MARK: Arrangements
 
-    private func ring(_ size: CGSize, scale: Double, rotation: Double, centreY: Double) -> [Bead] {
+    private func ring(centre: Double, rotation: Double, y: Double) -> [Bead] {
         (0..<8).map { index in
             let angle = Double(index) * .pi / 4 + rotation
-            let x = cos(angle) * RingGeometry.radius, y = sin(angle) * RingGeometry.radius
-            let flat = RingGeometry.project(x, y, 10)
-            let ground = RingGeometry.project(x, y, 0)
-            return Bead(x: size.width / 2 + flat.x * scale, y: centreY + flat.y * scale, radius: RingGeometry.ballRadius * scale,
-                        depth: x + y, floor: centreY + (ground.y + 14) * scale)
+            let x = cos(angle) * RingGeometry.radius, depth = sin(angle) * RingGeometry.radius
+            let flat = RingGeometry.project(x, depth, 10)
+            return Bead(x: centre + flat.x * Self.ringScale, y: y + flat.y * Self.ringScale,
+                        radius: RingGeometry.ballRadius * Self.ringScale, depth: x + depth, shadow: 1, lift: 10)
         }
     }
 
-    private func beads(for plate: Int, in size: CGSize) -> [Bead] {
-        let centre = size.width / 2
+    private func beads(for plate: Plate, centre: Double) -> [Bead] {
         switch plate {
-        case 0:
-            // The band: its ring, breathing and slowly turning.
-            return ring(size, scale: 1.55, rotation: t * 0.35, centreY: 175).enumerated().map { index, bead in
+        case .meet:
+            return ring(centre: centre, rotation: t * 0.35, y: 175).enumerated().map { index, bead in
                 var bead = bead
-                bead.y -= still ? 0 : 5 * sin(t * 1.5 + Double(index) * .pi / 4)
+                bead.lift += still ? 0 : 5 + 5 * sin(t * 1.5 + Double(index) * .pi / 4)
                 return bead
             }
-        case 1:
-            // Around the wrist, just below the hand.
+        case .wear:
             return (0..<8).map { index in
-                let angle = Double(index) * .pi / 4 + t * 0.5
-                let front = sin(angle)
-                return Bead(x: centre + 8 + cos(angle) * 46, y: 262 + front * 9, radius: 8.5 + front * 1.2,
-                            opacity: front < 0 ? 0.35 : 1, charge: 0.25, depth: front)
+                let angle = Double(index) * .pi / 4 + .pi / 8, front = sin(angle)
+                return Bead(x: writingWrist(centre) + cos(angle) * 36, y: Self.wristY + front * 7 + wearOffset,
+                            radius: 7 + front * 1.1, opacity: front < 0 ? 0.3 : 1, charge: 0.2, depth: front)
             }
-        case 2:
-            // Listening: the bead under the finger that moved jumps.
-            let beat = still ? 0.0 : (t / 1.5).truncatingRemainder(dividingBy: 4)
-            let gesture = Int(beat), into = beat - Double(gesture)
-            let finger = [1, 2, 1, 3][gesture]
-            return ring(size, scale: 1.55, rotation: .pi / 4, centreY: 170).enumerated().map { index, bead in
+        case .gestures:
+            let now = gesture, played = Plate.moves[now.index]
+            return ring(centre: centre, rotation: .pi / 4, y: 170).enumerated().map { index, bead in
                 var bead = bead
-                guard index == finger, !still else { return bead }
-                let kick = exp(-into * 5) * abs(cos(into * (gesture == 2 ? 18 : 9)))
-                bead.y -= 22 * kick; bead.charge = kick
+                guard index == played.bead, !still else { return bead }
+                let kick = exp(-now.into * 7.5) * abs(cos(now.into * (played.twice ? 27 : 13.5)))
+                bead.lift += 22 * kick; bead.charge = kick
                 return bead
             }
-        case 3:
-            // One bead becomes the light; the rest orbit quietly.
-            let phase = lightPhase
+        case .light:
+            // Moving: one bead is the light and the rest orbit. Still: all four lights in a row.
+            if still {
+                return (0..<8).map { index in
+                    guard index < Plate.lights.count else { return Bead(x: centre, y: Self.rowY, opacity: 0) }
+                    return Bead(x: column(index, of: Plate.lights.count, centre: centre), y: Self.rowY, radius: 20,
+                                dark: 1, charge: 1, light: Plate.lights[index].colour, depth: Double(index))
+                }
+            }
+            let light = Plate.lights[lightIndex], brightness = glow(of: light)
             return (0..<8).map { index in
                 if index == 0 {
-                    return Bead(x: centre, y: 165 - (still ? 0 : 6 * phase.glow), radius: 44, dark: 1, charge: phase.glow, light: phase.colour, depth: 10)
+                    return Bead(x: centre, y: 165, radius: 44, dark: 1, charge: brightness, light: light.colour, depth: 10, lift: 6 * brightness)
                 }
                 let angle = Double(index) * 2 * .pi / 7 + t * 0.4
                 return Bead(x: centre + cos(angle) * 118, y: 165 + sin(angle) * 34, radius: 5, opacity: 0.5, depth: sin(angle))
             }
-        case 4:
-            // Four holds, one bead each.
+        case .button:
             return (0..<8).map { index in
-                guard index < 4 else {
-                    return Bead(x: centre + (Double(index) - 5.5) * 30, y: 286, radius: 3, opacity: 0)
-                }
-                return Bead(x: centre + (Double(index) - 1.5) * 78, y: 150, radius: 20, charge: 0.2, depth: Double(index))
+                guard index < Plate.holds.count else { return Bead(x: centre, y: 286, opacity: 0) }
+                return Bead(x: column(index, of: Plate.holds.count, centre: centre), y: Self.rowY, radius: 20, charge: 0.2, depth: Double(index))
             }
-        default:
-            // Charging: the row fills, orange until it is nearly full.
+        case .charging:
             let level = chargeLevel
             return (0..<8).map { index in
                 let filled = level * 8 > Double(index)
@@ -227,44 +295,28 @@ private struct BeadTheatre: View {
         }
     }
 
-    /// The charging plate fills over five seconds, then rests full for one.
-    private var chargeLevel: Double { still ? 1 : min(1, (t / 5).truncatingRemainder(dividingBy: 1.2)) }
-
-    /// The light plate's cycle: green, orange, blinking orange, flashing white.
-    private var lightPhase: (colour: Color, glow: Double, name: String) {
-        let step = still ? 0 : Int(t / 2.2) % 4
-        switch step {
-        case 0: return (.green, 1, "Over 80%")
-        case 1: return (.orange, 1, "20 to 80%")
-        case 2: return (.orange, sin(t * 2 * .pi * 1.6) > 0 ? 1 : 0.1, "Under 20%")
-        default: return (.white, 0.5 + 0.5 * sin(t * 2 * .pi * 1.1), "On, or ready to pair")
-        }
-    }
-
     // MARK: Drawing
 
     /// A soft contact shadow that spreads and fades as the bead rises off it.
     private func drawShadow(of bead: Bead, in canvas: inout GraphicsContext) {
-        guard let floor = bead.floor, bead.opacity > 0.01 else { return }
-        let height = max(0, floor - bead.y - bead.radius)
-        let spread = bead.radius * (0.8 + height / 90)
+        guard bead.shadow > 0.01, bead.opacity > 0.01 else { return }
+        let spread = bead.radius * (0.8 + bead.lift / 90), floor = bead.y + bead.radius * 1.15
         canvas.fill(Path(ellipseIn: CGRect(x: bead.x - spread, y: floor - spread * 0.3, width: spread * 2, height: spread * 0.6)),
-                    with: .color(.ink.opacity(0.1 * bead.opacity * max(0.3, 1 - height / 70))))
+                    with: .color(.ink.opacity(0.1 * bead.shadow * bead.opacity * max(0.3, 1 - bead.lift / 70))))
     }
 
     private func draw(_ bead: Bead, in canvas: inout GraphicsContext) {
         guard bead.opacity > 0.01, bead.radius > 0.5 else { return }
         var layer = canvas
         layer.opacity = bead.opacity
-        let body = CGRect(x: bead.x - bead.radius, y: bead.y - bead.radius, width: bead.radius * 2, height: bead.radius * 2)
-        if let light = bead.light, bead.dark > 0.5, bead.radius > 20 {
+        let body = CGRect(x: bead.x - bead.radius, y: bead.y - bead.lift - bead.radius, width: bead.radius * 2, height: bead.radius * 2)
+        if let light = bead.light, bead.dark > 0.5, bead.radius > 30 {
             for halo in 1...4 {
-                let reach = bead.radius + Double(halo) * 10
-                layer.fill(Path(ellipseIn: CGRect(x: bead.x - reach, y: bead.y - reach, width: reach * 2, height: reach * 2)),
-                           with: .color(light.opacity(0.06 * bead.charge)))
+                layer.fill(Path(ellipseIn: body.insetBy(dx: -Double(halo) * 10, dy: -Double(halo) * 10)), with: .color(light.opacity(0.06 * bead.charge)))
             }
         }
         layer.fill(Path(ellipseIn: body), with: .color(.paper))
+        // A light's body is black in both appearances, so white reads as white.
         if bead.dark > 0.01 { layer.fill(Path(ellipseIn: body), with: .color(.black.opacity(bead.dark))) }
         layer.stroke(Path(ellipseIn: body), with: .color(.ink.opacity(0.75)), lineWidth: bead.radius > 30 ? 1.5 : 1)
         guard bead.charge > 0.01 else { return }
@@ -272,78 +324,76 @@ private struct BeadTheatre: View {
         layer.fill(Path(ellipseIn: dot), with: .color((bead.light ?? .ink).opacity(bead.charge)))
     }
 
-    private func drawBackdrop(in canvas: inout GraphicsContext, size: CGSize, weight: (Int) -> Double) {
-        let centre = size.width / 2
-        // Plate 1: the hand, drawn large, with the wrist running down under the beads.
-        let hand = weight(1)
-        if hand > 0.01 {
-            let scale = 9.2
-            let place = CGAffineTransform(translationX: centre - 13 * scale + 8, y: 52).scaledBy(x: scale, y: scale)
-            for path in Self.hand + Self.wrist {
-                canvas.stroke(path.applying(place), with: .color(.ink.opacity(hand)),
-                              style: StrokeStyle(lineWidth: 1.4, lineCap: .round, lineJoin: .round))
+    private func drawBackdrop(in canvas: inout GraphicsContext, centre: Double, weight: (Plate) -> Double) {
+        let wear = weight(.wear)
+        if wear > 0.01 {
+            // Both hands, the other one faint, each with a forearm that fades out.
+            for writing in [false, true] {
+                // The left hand is the right one mirrored about its 24-unit box.
+                let x = centre + (writing ? 1 : -1) * (Self.handsApart - 12 * Self.handScale)
+                let place = CGAffineTransform(translationX: x, y: Self.handTop).scaledBy(x: (writing ? 1 : -1) * Self.handScale, y: Self.handScale)
+                let ink = (writing ? Color.ink : Color.faint).opacity(wear)
+                let stroke = StrokeStyle(lineWidth: 1.3, lineCap: .round, lineJoin: .round)
+                for path in Self.hand { canvas.stroke(path.applying(place), with: .color(ink), style: stroke) }
+                let fade = GraphicsContext.Shading.linearGradient(Gradient(colors: [ink, ink.opacity(0)]),
+                                                                  startPoint: CGPoint(x: 0, y: 21.2).applying(place), endPoint: CGPoint(x: 0, y: 33).applying(place))
+                for path in Self.forearm { canvas.stroke(path.applying(place), with: fade, style: stroke) }
             }
-            // The wrist bone, and where "just past it" is.
-            canvas.stroke(Path(ellipseIn: CGRect(x: centre - 44, y: 238, width: 9, height: 9)), with: .color(.muted.opacity(hand)), lineWidth: 1)
+            let x = writingWrist(centre), ink = Color.ink.opacity(wear)
+            // The wrist bone, and the band's reference line at the front where you can see it.
+            var marks = Path()
+            marks.addArc(center: CGPoint(x: x + 31, y: Self.wristY - 15), radius: 4.5, startAngle: .degrees(-70), endAngle: .degrees(70), clockwise: false)
+            marks.move(to: CGPoint(x: x, y: Self.wristY + 17 + wearOffset))
+            marks.addLine(to: CGPoint(x: x, y: Self.wristY + 27 + wearOffset))
+            canvas.stroke(marks, with: .color(ink), style: StrokeStyle(lineWidth: 1.4, lineCap: .round))
         }
-        // Plate 2: a ripple under the bead that jumped.
-        let listen = weight(2)
+        let listen = weight(.gestures)
         if listen > 0.01, !still {
-            let into = (t / 1.5).truncatingRemainder(dividingBy: 1)
-            let reach = 30 + into * 120
+            // A ripple under the bead that jumped.
+            let reach = 30 + gesture.into * 120
             canvas.stroke(Path(ellipseIn: CGRect(x: centre - reach, y: 196 - reach * 0.32, width: reach * 2, height: reach * 0.64)),
-                          with: .color(.ink.opacity(listen * (1 - into) * 0.4)), lineWidth: 1)
+                          with: .color(.ink.opacity(listen * (1 - gesture.into) * 0.4)), lineWidth: 1)
         }
-        // Plate 4: each hold as an arc, an eighth of a turn per second.
-        let holds = weight(4)
+        let holds = weight(.button)
         if holds > 0.01 {
-            for (index, seconds) in [1.0, 2, 3, 8].enumerated() {
-                let x = centre + (Double(index) - 1.5) * 78
-                let sweep = still ? 1 : min(1, (t.truncatingRemainder(dividingBy: 6)) / (0.5 + seconds * 0.45))
+            // Each hold as an arc, an eighth of a turn per second, drawn at the pace it takes.
+            for (index, hold) in Plate.holds.enumerated() {
+                let middle = CGPoint(x: column(index, of: Plate.holds.count, centre: centre), y: Self.rowY)
+                let sweep = still ? 1 : min(1, t.truncatingRemainder(dividingBy: 6) / (0.5 + hold.seconds * 0.45))
                 var arc = Path()
-                arc.addArc(center: CGPoint(x: x, y: 150), radius: 29, startAngle: .degrees(-90),
-                           endAngle: .degrees(-90 + 360 * seconds / 8 * sweep), clockwise: false)
-                canvas.stroke(Path(ellipseIn: CGRect(x: x - 29, y: 121, width: 58, height: 58)), with: .color(.rule.opacity(holds)), lineWidth: 1)
+                arc.addArc(center: middle, radius: 29, startAngle: .degrees(-90), endAngle: .degrees(-90 + 45 * hold.seconds * sweep), clockwise: false)
+                canvas.stroke(Path(ellipseIn: CGRect(x: middle.x - 29, y: middle.y - 29, width: 58, height: 58)), with: .color(.rule.opacity(holds)), lineWidth: 1)
                 canvas.stroke(arc, with: .color(.ink.opacity(holds)), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
             }
         }
     }
 
-    private func drawCaptions(in canvas: inout GraphicsContext, size: CGSize, weight: (Int) -> Double) {
-        let centre = size.width / 2
-        var layer = canvas
-        let wear = weight(1)
-        if wear > 0.01 {
-            layer.opacity = wear
-            layer.draw(Text("wrist bone").font(.caption).foregroundStyle(Color.muted), at: CGPoint(x: centre - 52, y: 242), anchor: .trailing)
-            layer.draw(Text("band").font(.caption).foregroundStyle(Color.muted), at: CGPoint(x: centre + 66, y: 262), anchor: .leading)
+    private func drawCaptions(in canvas: inout GraphicsContext, centre: Double, weight: (Plate) -> Double) {
+        func write(_ text: String, at point: CGPoint, anchor: UnitPoint = .center, strong: Bool = false, opacity: Double) {
+            guard opacity > 0.01 else { return }
+            var layer = canvas
+            layer.opacity = opacity
+            layer.draw(Text(text).font(strong ? .label : .caption).foregroundStyle(strong ? Color.ink : Color.muted), at: point, anchor: anchor)
         }
-        let listen = weight(2)
-        if listen > 0.01 {
-            let names = ["Tap index", "Tap middle", "Double tap", "Hold"]
-            let gesture = still ? 0 : Int((t / 1.5).truncatingRemainder(dividingBy: 4))
-            layer.opacity = listen
-            layer.draw(Text(names[gesture]).font(.label), at: CGPoint(x: centre, y: 296), anchor: .center)
-        }
-        let lightWeight = weight(3)
-        if lightWeight > 0.01 {
-            layer.opacity = lightWeight
-            layer.draw(Text(lightPhase.name).font(.label), at: CGPoint(x: centre, y: 262), anchor: .center)
-        }
-        let holds = weight(4)
-        if holds > 0.01 {
-            layer.opacity = holds
-            for (index, hold) in [("1 s", "Wake"), ("2 s", "On"), ("3 s", "Pair"), ("8 s", "Off")].enumerated() {
-                let x = centre + (Double(index) - 1.5) * 78
-                layer.draw(Text(hold.1).font(.label), at: CGPoint(x: x, y: 204), anchor: .center)
-                layer.draw(Text(hold.0).font(.caption).foregroundStyle(Color.muted), at: CGPoint(x: x, y: 224), anchor: .center)
+        /// A name under each bead of a row, with a quieter line below it.
+        func row(_ names: [(String, String?)], opacity: Double) {
+            for (index, name) in names.enumerated() {
+                let x = column(index, of: names.count, centre: centre)
+                write(name.0, at: CGPoint(x: x, y: Self.rowY + 54), strong: true, opacity: opacity)
+                if let detail = name.1 { write(detail, at: CGPoint(x: x, y: Self.rowY + 74), opacity: opacity) }
             }
         }
-        let charging = weight(5)
-        if charging > 0.01 {
-            layer.opacity = charging
-            let percent = Int(chargeLevel * 100)
-            layer.draw(Text("\(percent)%").font(.label).monospacedDigit(), at: CGPoint(x: centre, y: 214), anchor: .center)
+        let x = writingWrist(centre)
+        write("wrist bone", at: CGPoint(x: x + 42, y: Self.wristY - 15), anchor: .leading, opacity: weight(.wear))
+        write("line faces you", at: CGPoint(x: x - 46, y: Self.wristY + 22), anchor: .trailing, opacity: weight(.wear))
+        if still {
+            write(Plate.moves.map(\.name).joined(separator: " · "), at: CGPoint(x: centre, y: 296), strong: true, opacity: weight(.gestures))
+            row(Plate.lights.map { ($0.name, $0.blink == nil ? nil : "blinking") }, opacity: weight(.light))
+        } else {
+            write(Plate.moves[gesture.index].name, at: CGPoint(x: centre, y: 296), strong: true, opacity: weight(.gestures))
+            write(Plate.lights[lightIndex].name, at: CGPoint(x: centre, y: 262), strong: true, opacity: weight(.light))
         }
+        row(Plate.holds.map { ($0.name, "\(Int($0.seconds)) s") }, opacity: weight(.button))
+        write("\(Int(chargeLevel * 100))%", at: CGPoint(x: centre, y: 214), strong: true, opacity: weight(.charging))
     }
 }

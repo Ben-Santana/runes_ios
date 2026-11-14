@@ -22,6 +22,8 @@ struct HairlineRing: View {
     var gesture: BandGesture? = nil
     /// Draw one pod raised and in ink, to point at it (onboarding).
     var emphasis: Int? = nil
+    /// Show the raised pod as the band's light, flashing white the way it does when pairing.
+    var emphasisLight = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var effects: [Effect] = []
@@ -320,6 +322,13 @@ struct HairlineRing: View {
             let body = ball(pod.x, pod.y, pod.z + lift, transform)
             RingGeometry.drawBall(in: &canvas, body: body, stroke: stroke, lineWidth: line,
                                   charge: max(glow, f.flash * 0.7))
+            if emphasisLight, pod.index == emphasis {
+                // A dark bead so the white light reads on paper; it pulses unless motion is reduced.
+                let pulse = reduceMotion ? 1 : 0.5 + 0.5 * sin(now.timeIntervalSinceReferenceDate * 2 * .pi * 1.4)
+                canvas.fill(Path(ellipseIn: body), with: .color(.black))
+                canvas.fill(Path(ellipseIn: body.insetBy(dx: body.width * 0.3, dy: body.height * 0.3)),
+                            with: .color(.white.opacity(0.25 + 0.75 * pulse)))
+            }
         }
     }
 

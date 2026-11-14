@@ -12,7 +12,7 @@ struct WristView: View {
     /// `.page` is the Settings screen. `.embedded` is the same scene placed inside another
     /// screen, such as onboarding, without the page's own scrolling and title.
     enum Layout { case page, embedded }
-    var layout = Layout.page
+    let layout: Layout
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
     @State private var acceptedHand: Handedness?
@@ -104,8 +104,8 @@ struct WristView: View {
                                 .modifier(WristReveal(progress: reveal))
                         }
                 }
-                .padding(.horizontal, minHeight == nil ? 0 : Metric.gutter)
-                .padding(.vertical, minHeight == nil ? 0 : 32)
+                .padding(.horizontal, layout == .page ? Metric.gutter : 0)
+                .padding(.vertical, layout == .page ? 32 : 0)
                 .frame(maxWidth: .infinity, minHeight: minHeight)
             }
     }
