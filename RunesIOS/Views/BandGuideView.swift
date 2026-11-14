@@ -160,9 +160,9 @@ private enum GuideHand {
     /// folds, where its tip ends up in front of the palm, and how the thumb turns and reaches
     /// to meet it.
     static let pinch: [(knuckle: Double, finger: CGPoint, thumb: (turn: Double, reach: Double))] =
-        [(7.4, CGPoint(x: 8.5, y: 10.9), (289, 4.9)), (6.4, CGPoint(x: 11.7, y: 10.6), (304, 5.85))]
+        [(7.4, CGPoint(x: 8, y: 10.9), (289, 4.9)), (6.4, CGPoint(x: 12, y: 10.6), (304, 5.85))]
 
-    /// A rounded limb from one point to another, which may widen as it comes toward you.
+    /// A rounded limb from one point to another, with a radius at each end.
     static func limb(from start: CGPoint, to end: CGPoint, radii: (Double, Double)) -> Path {
         let length = max(0.001, hypot(end.x - start.x, end.y - start.y))
         let across = CGPoint(x: -(end.y - start.y) / length, y: (end.x - start.x) / length)
@@ -197,7 +197,7 @@ private enum GuideHand {
         // lines the thumb passes over always meet a line.
         var inner = Path(), outer = Path(), cover = Path()
         inner.move(to: edge(reach, 1)); inner.addLine(to: edge(mix(3, 1.6), 1))
-        outer.move(to: edge(reach, 1)); tipArc(&outer); outer.addLine(to: edge(0.9, -1)); outer.addQuadCurve(to: thumbBase, control: edge(mix(0.42, -0.5), -1))
+        outer.move(to: edge(reach, 1)); tipArc(&outer); outer.addLine(to: edge(mix(0.9, 0.1), -1)); outer.addQuadCurve(to: thumbBase, control: edge(mix(0.42, -1), -1))
         cover.move(to: edge(-2.5, 1)); cover.addLine(to: edge(reach, 1)); tipArc(&cover); cover.addLine(to: edge(-2.5, -1)); cover.closeSubpath()
         return (outer, inner, cover, edge(reach, 0))
     }
@@ -506,7 +506,7 @@ private struct BeadTheatre: View {
         let hairline = StrokeStyle(lineWidth: 1.2, lineCap: .round, lineJoin: .round)
         func between(_ from: CGPoint, _ to: CGPoint, _ along: Double) -> CGPoint { CGPoint(x: from.x + (to.x - from.x) * along, y: from.y + (to.y - from.y) * along) }
         // At rest the hand is flat. As a finger presses it folds forward at its knuckle, and the
-        // thumb swings across the palm to meet it; both come toward you, so they grow a little.
+        // thumb swings across the palm to meet it, growing a little as it comes toward you.
         let finger = move.finger, down = press, pinch = GuideHand.pinch[finger]
         var tips = GuideHand.rest
         let straight = CGPoint(x: 8 + 4 * Double(finger), y: tips[finger])
@@ -532,7 +532,7 @@ private struct BeadTheatre: View {
             canvas.stroke(route.trimmedPath(from: max(0, signal - 0.25), to: signal), with: .color(ink), style: StrokeStyle(lineWidth: 1.6, lineCap: .round))
         }
         if down > 0.01 {
-            let folded = GuideHand.limb(from: knuckle, to: pad, radii: (2, 2 + 0.3 * down)).applying(place)
+            let folded = GuideHand.limb(from: knuckle, to: pad, radii: (2, 2)).applying(place)
             var layer = canvas
             layer.opacity = min(1, down * 4)
             layer.fill(folded, with: .color(paper)); layer.stroke(folded, with: .color(ink), style: hairline)
