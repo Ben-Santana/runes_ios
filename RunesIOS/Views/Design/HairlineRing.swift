@@ -34,7 +34,7 @@ struct HairlineRing: View {
     @State private var hold: Hold?
     @State private var previous: BandPhase?
     @State private var phaseChangedAt = Date.distantPast
-    @State private var play = Play()
+    @State private var play = BeadPlay()
 
     private struct Effect: Equatable {
         enum Kind: Equatable { case tap, doubleTap, release, swipe(SwipeDirection) }
@@ -47,35 +47,6 @@ struct HairlineRing: View {
     }
     private struct Hold: Equatable { let start: Date; var end: Date?; let origin: Int }
 
-    /// The pods' play: each sits on a soft spring about its place and is pushed away from a
-    /// finger while one is down, so however it is touched the motion stays continuous.
-    private final class Play {
-        private(set) var offset = [SIMD2<Double>](repeating: .zero, count: 8)
-        private var speed = [SIMD2<Double>](repeating: .zero, count: 8)
-        /// Where a finger is, how fast it is moving, and whether it has only just landed.
-        var finger: SIMD2<Double>?, fingerSpeed = 0.0, landed = false
-        private var last: Date?
-
-        static func length(_ vector: SIMD2<Double>) -> Double { (vector * vector).sum().squareRoot() }
-
-        func step(to now: Date, rest: [SIMD2<Double>], width: Double) {
-            defer { last = now; landed = false }
-            guard let last else { return }
-            let dt = min(1.0 / 30, max(0, now.timeIntervalSince(last)))
-            for index in offset.indices {
-                var pull = -90 * offset[index] - 14 * speed[index]
-                if let finger {
-                    let away = rest[index] + offset[index] - finger, distance = Self.length(away)
-                    let push = away / (distance + 6) * exp(-pow(distance / (width * 0.24), 2))
-                    // A faster finger pushes harder, and one that has just landed gives a kick.
-                    pull += push * 2300 * (0.5 + min(1, fingerSpeed / 800))
-                    if landed { speed[index] += push * 230 }
-                }
-                speed[index] += pull * dt
-                offset[index] += speed[index] * dt
-            }
-        }
-    }
 
     private static let blend = 0.45
     private static let longestHold: TimeInterval = 12
@@ -88,11 +59,7 @@ struct HairlineRing: View {
         }
         .aspectRatio(1.25, contentMode: .fit)
         .contentShape(Rectangle())
-        .gesture(DragGesture(minimumDistance: 0).onChanged { touch in
-            play.finger = SIMD2(touch.location.x, touch.location.y)
-            play.fingerSpeed = hypot(touch.velocity.width, touch.velocity.height)
-            if touch.translation == .zero { play.landed = true }
-        }.onEnded { _ in play.finger = nil }, isEnabled: playful && !reduceMotion)
+        .gesture(DragGesture(minimumDistance: 0).onChanged(play.touch).onEnded { _ in play.finger = nil }, isEnabled: playful && !reduceMotion)
         .onChange(of: gesture?.id) { _, _ in if let gesture { react(to: gesture) } }
         .onChange(of: phase) { old, _ in
             previous = old; phaseChangedAt = Date()
@@ -370,7 +337,7 @@ struct HairlineRing: View {
             play.step(to: now, rest: rest, width: size.width)
             nudge = play.offset
         }
-        func hop(_ index: Int) -> Double { min(4, Play.length(nudge[index]) * 0.25) }
+        func hop(_ index: Int) -> Double { min(4, BeadPlay.length(nudge[index]) * 0.25) }
         // Shadows first, so no ball is drawn under another ball's shadow.
         for pod in placed {
             let lift = max(0, f.lift[pod.index] + hop(pod.index))
@@ -381,7 +348,7 @@ struct HairlineRing: View {
             let lift = f.lift[pod.index] + hop(pod.index), glow = f.glow[pod.index]
             let emphasised = pod.index == emphasis || (phase == .attention && pod.index == Self.front)
             // In play a pod darkens only when a fast finger has knocked it well aside, never for its own hops.
-            let risen = playful ? Play.length(nudge[pod.index]) > 14 : lift > 4
+            let risen = playful ? BeadPlay.length(nudge[pod.index]) > 14 : lift > 4
             let energised = f.flash > 0 || emphasised || risen || glow > 0.2
             let stroke: Color = energised ? .ink : strokeColor
             let body = ball(pod.x, pod.y, pod.z + lift, transform).offsetBy(dx: nudge[pod.index].x, dy: nudge[pod.index].y)

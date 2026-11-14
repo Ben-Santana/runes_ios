@@ -1,5 +1,45 @@
 import SwiftUI
 
+/// Beads at play: each sits on a soft spring about its place and is pushed away from a finger
+/// while one is down, so however they are touched the motion stays continuous.
+final class BeadPlay {
+    private(set) var offset: [SIMD2<Double>]
+    private var speed: [SIMD2<Double>]
+    /// Where a finger is, how fast it is moving, and whether it has only just landed.
+    var finger: SIMD2<Double>?, fingerSpeed = 0.0, landed = false
+    private var last: Date?
+
+    init(beads: Int = 8) { offset = Array(repeating: .zero, count: beads); speed = offset }
+
+    static func length(_ vector: SIMD2<Double>) -> Double { (vector * vector).sum().squareRoot() }
+
+    /// Follows a touch as it lands and moves.
+    func touch(_ value: DragGesture.Value) {
+        finger = SIMD2(value.location.x, value.location.y)
+        fingerSpeed = hypot(value.velocity.width, value.velocity.height)
+        if value.translation == .zero { landed = true }
+    }
+
+    /// Moves the beads on to `now`, given where each rests, in a view `width` points wide.
+    func step(to now: Date, rest: [SIMD2<Double>], width: Double) {
+        defer { last = now; landed = false }
+        guard let last else { return }
+        let dt = min(1.0 / 30, max(0, now.timeIntervalSince(last)))
+        for index in offset.indices {
+            var pull = -90 * offset[index] - 14 * speed[index]
+            if let finger {
+                let away = rest[index] + offset[index] - finger, distance = Self.length(away)
+                let push = away / (distance + 6) * exp(-pow(distance / (width * 0.24), 2))
+                // A faster finger pushes harder, and one that has just landed gives a kick.
+                pull += push * 2300 * (0.5 + min(1, fingerSpeed / 800))
+                if landed { speed[index] += push * 230 }
+            }
+            speed[index] += pull * dt
+            offset[index] += speed[index] * dt
+        }
+    }
+}
+
 enum RingGeometry {
     static let radius = 49.0
     static let ballRadius = 12.0

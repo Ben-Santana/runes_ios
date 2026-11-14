@@ -55,6 +55,8 @@ struct BandGuidePage: View {
     @State private var page: Int? = 0
     /// When each plate last came into view, so its lesson starts from the beginning.
     @State private var entered = Array(repeating: Date().timeIntervalSinceReferenceDate, count: Plate.allCases.count)
+    /// The beads of the first plate can be played with, like the ring on the welcome screen.
+    @State private var play = BeadPlay()
 
     private var current: Int { page ?? 0 }
     private var isLast: Bool { current == Plate.allCases.count - 1 }
@@ -69,15 +71,22 @@ struct BandGuidePage: View {
                         LazyHStack(spacing: 0) {
                             ForEach(Plate.allCases, id: \.rawValue) { plate in
                                 VStack(alignment: .leading, spacing: 10) {
-                                    Color.clear.frame(height: stage)
-                                    Text(plate.title).font(.display).tracking(-0.6).fixedSize(horizontal: false, vertical: true)
-                                    Text(plate.message).font(.bodyText).foregroundStyle(Color.muted).fixedSize(horizontal: false, vertical: true)
-                                    Spacer(minLength: 0)
+                                    // The picture: touching it plays with the beads rather than turning the page.
+                                    Color.clear.frame(height: stage).frame(maxWidth: .infinity).contentShape(Rectangle())
+                                        .padding(.horizontal, -Metric.gutter)
+                                        .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged(play.touch).onEnded { _ in play.finger = nil },
+                                                             isEnabled: plate == .meet && !reduceMotion)
+                                    VStack(alignment: .leading, spacing: 10) {
+                                        Text(plate.title).font(.display).tracking(-0.6).fixedSize(horizontal: false, vertical: true)
+                                        Text(plate.message).font(.bodyText).foregroundStyle(Color.muted).fixedSize(horizontal: false, vertical: true)
+                                        Spacer(minLength: 0)
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .contentShape(Rectangle())
+                                    .onTapGesture(perform: advance)
                                 }
                                 .padding(.horizontal, Metric.gutter)
                                 .frame(width: geometry.size.width, alignment: .leading)
-                                .contentShape(Rectangle())
-                                .onTapGesture(perform: advance)
                                 .accessibilityElement(children: .ignore)
                                 .accessibilityLabel([plate.title, plate.message, plate.spoken].filter { !$0.isEmpty }.joined(separator: " "))
                             }
@@ -94,7 +103,7 @@ struct BandGuidePage: View {
                         }
                     }
                     TimelineView(.animation(minimumInterval: 1 / 60, paused: reduceMotion || scenePhase != .active)) { context in
-                        BeadTheatre(position: position, time: context.date.timeIntervalSinceReferenceDate, entered: entered, still: reduceMotion)
+                        BeadTheatre(position: position, time: context.date.timeIntervalSinceReferenceDate, entered: entered, play: play, still: reduceMotion)
                     }
                     .frame(height: stage)
                     .allowsHitTesting(false)
@@ -170,10 +179,9 @@ private enum GuideHand {
 
     /// The thumb on its way to meet a finger, from 0 at rest to 1 touching. It turns about its
     /// root, and its outer edge always runs down into the wrist at the same point, so nothing
-    /// jumps as it moves. Gives that outer edge with the tip; the inner edge, which softens into
-    /// the palm from `soften.from` to `soften.to` as the thumb crosses it; the shape it covers,
-    /// which reaches back past its root to hide the palm's edge beneath; and its tip.
-    static func thumb(meeting finger: Int, by swing: Double) -> (outer: Path, inner: Path, cover: Path, tip: CGPoint, soften: (from: CGPoint, to: CGPoint)) {
+    /// jumps as it moves. Gives that outer edge with the tip; the inner edge; the shape it
+    /// covers, which reaches back past its root to hide the palm's edge beneath; and its tip.
+    static func thumb(meeting finger: Int, by swing: Double) -> (outer: Path, inner: Path, cover: Path, tip: CGPoint) {
         let target = pinch[finger].thumb, root = thumbRoot
         func mix(_ rest: Double, _ met: Double) -> Double { rest + (met - rest) * swing }
         let turn = Angle(degrees: mix(thumbRest.turn, target.turn)), reach = mix(thumbRest.reach, target.reach), radius = mix(2, 2.25)
@@ -185,12 +193,13 @@ private enum GuideHand {
         func tipArc(_ path: inout Path) {
             path.addArc(center: edge(reach, 0), radius: radius, startAngle: turn + .degrees(90), endAngle: turn - .degrees(90), clockwise: true)
         }
-        let start = mix(3, 1.4)
+        // The inner edge is a solid line that ends on the palm, as it does in the icon, so the
+        // lines the thumb passes over always meet a line.
         var inner = Path(), outer = Path(), cover = Path()
-        inner.move(to: edge(start, 1)); inner.addLine(to: edge(reach, 1))
+        inner.move(to: edge(reach, 1)); inner.addLine(to: edge(mix(3, 1.6), 1))
         outer.move(to: edge(reach, 1)); tipArc(&outer); outer.addLine(to: edge(0.9, -1)); outer.addQuadCurve(to: thumbBase, control: edge(mix(0.42, -0.5), -1))
         cover.move(to: edge(-2.5, 1)); cover.addLine(to: edge(reach, 1)); tipArc(&cover); cover.addLine(to: edge(-2.5, -1)); cover.closeSubpath()
-        return (outer, inner, cover, edge(reach, 0), (edge(start, 1), edge(start + 1.8, 1)))
+        return (outer, inner, cover, edge(reach, 0))
     }
 
     /// The lines of the palm.
@@ -229,6 +238,7 @@ private struct BeadTheatre: View {
     let position: Double
     let time: Double
     let entered: [Double]
+    let play: BeadPlay
     let still: Bool
 
     private struct Bead {
@@ -277,7 +287,7 @@ private struct BeadTheatre: View {
 
             let leaving = beads(for: Plate(rawValue: from)!, centre: centre)
             let arriving = beads(for: Plate(rawValue: min(last, from + 1))!, centre: centre)
-            let stage = zip(leaving, arriving).enumerated().map { index, pair -> Bead in
+            var stage = zip(leaving, arriving).enumerated().map { index, pair -> Bead in
                 // Each bead sets off a beat after the one before and hops rather than slides.
                 let own = min(1, max(0, fraction * 1.5 - Double(index) * 0.07))
                 let glide = own * own * (3 - 2 * own), hop = sin(.pi * glide)
@@ -286,6 +296,14 @@ private struct BeadTheatre: View {
                 let far = min(1, hypot(pair.1.x - pair.0.x, pair.1.y - pair.0.y) / 70)
                 bead.lift += hop * 28 * far; bead.radius *= 1 + hop * 0.12 * far
                 return bead
+            }
+            // On the first plate the beads give way to a finger and settle back.
+            let playing = settled(on: .meet)
+            if playing > 0, !still {
+                play.step(to: Date(timeIntervalSinceReferenceDate: time), rest: stage.map { SIMD2($0.x, $0.y - $0.lift) * scale }, width: size.width)
+                for index in stage.indices {
+                    stage[index].x += play.offset[index].x / scale * playing; stage[index].y += play.offset[index].y / scale * playing
+                }
             }
             drawBackdrop(in: &canvas, centre: centre, weight: weight)
             for bead in stage { drawShadow(of: bead, in: &canvas) }
@@ -450,9 +468,10 @@ private struct BeadTheatre: View {
     /// A soft contact shadow that spreads and fades as the bead rises off it.
     private func drawShadow(of bead: Bead, in canvas: inout GraphicsContext) {
         guard bead.shadow > 0.01, bead.opacity > 0.01 else { return }
+        // A faint outline on the floor, as under the ring elsewhere in the app, not a filled shadow.
         let spread = bead.radius * (0.8 + bead.lift / 90), floor = bead.y + bead.radius * 1.15
-        canvas.fill(Path(ellipseIn: CGRect(x: bead.x - spread, y: floor - spread * 0.3, width: spread * 2, height: spread * 0.6)),
-                    with: .color(.ink.opacity(0.1 * bead.shadow * bead.opacity * max(0.3, 1 - bead.lift / 70))))
+        canvas.stroke(Path(ellipseIn: CGRect(x: bead.x - spread, y: floor - spread * 0.3, width: spread * 2, height: spread * 0.6)),
+                      with: .color(.ink.opacity(0.25 * bead.shadow * bead.opacity * max(0.3, 1 - bead.lift / 70))), lineWidth: 0.7)
     }
 
     private func draw(_ bead: Bead, in canvas: inout GraphicsContext) {
@@ -521,8 +540,7 @@ private struct BeadTheatre: View {
         canvas.fill(thumb.cover.applying(place), with: .color(paper))
         stroke(GuideHand.wrist, fading)
         stroke(thumb.outer, .color(ink))
-        stroke(thumb.inner, .linearGradient(Gradient(colors: [ink.opacity(1 - down), ink]),
-                                            startPoint: thumb.soften.from.applying(place), endPoint: thumb.soften.to.applying(place)))
+        stroke(thumb.inner, .color(ink))
 
         if wear > 0.01 {
             // The wrist bone as a level across the wrist; the band sits just below it.
