@@ -50,6 +50,9 @@ final class CaptureStore: ObservableObject {
     }
 
     @Published private(set) var notes: [CaptureNote]
+    @Published private(set) var scrolls: [CaptureScroll]
+    /// Inscriptions the scribe is reading now.
+    @Published private(set) var naming: Set<String> = []
     @Published private(set) var controls: CaptureControls
     /// When the recording under way began; nil when none is.
     @Published private(set) var recordingSince: Date?
@@ -67,6 +70,10 @@ final class CaptureStore: ObservableObject {
     var onCue: ((CaptureCue) -> Void)?
     /// True while the Capture screen is in front; the trigger then records without pocket mode.
     var onScreen = false { didSet { if onScreen != oldValue, !previewOnly { onReserve?(reservedNow) } } }
+    /// The scroll whose page is in front: what is recorded there is kept in it.
+    var filing: String?
+    /// Capture's screens that can be seen; a scroll's page replaces the inbox without a gap.
+    private var visible: Set<String> = []
 
     var isRecording: Bool { recordingSince != nil }
     /// The trigger records when the screen is showing or pocket mode is on.
@@ -83,6 +90,9 @@ final class CaptureStore: ObservableObject {
     private var retried: Set<String> = []
     /// True when pocket mode lost the microphone in the background and must be reopened.
     private var broken = false
+    /// Inscriptions waiting for the scribe, read one at a time.
+    private var reading: [(id: String, titling: Bool)] = []
+    private var scribing = false
 
     private init() {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -90,6 +100,7 @@ final class CaptureStore: ObservableObject {
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         controls = UserDefaults.standard.data(forKey: Self.key).flatMap { try? JSONDecoder().decode(CaptureControls.self, from: $0) } ?? CaptureControls()
         notes = (try? Data(contentsOf: folder.appendingPathComponent("notes.json"))).flatMap { try? JSONDecoder().decode([CaptureNote].self, from: $0) } ?? []
+        scrolls = (try? Data(contentsOf: folder.appendingPathComponent("scrolls.json"))).flatMap { try? JSONDecoder().decode([CaptureScroll].self, from: $0) } ?? []
         // A note that was mid-transcription when Runes was closed is tried again, and so
         // is one that couldn't be put into words last time.
         let recent = Date().addingTimeInterval(-7 * 86_400)
@@ -127,9 +138,9 @@ final class CaptureStore: ObservableObject {
 
     #if DEBUG
     /// Fixed state for screenshots and previews; never saved, and the microphone is never opened.
-    init(preview notes: [CaptureNote], recording: Date? = nil, listening: Bool = false, problem: Problem? = nil, level: Double = 0) {
+    init(preview notes: [CaptureNote], scrolls: [CaptureScroll] = [], naming: Set<String> = [], recording: Date? = nil, listening: Bool = false, problem: Problem? = nil, level: Double = 0) {
         folder = FileManager.default.temporaryDirectory
-        self.notes = notes; controls = CaptureControls(); recordingSince = recording; self.listening = listening; self.problem = problem
+        self.notes = notes; self.scrolls = scrolls; self.naming = naming; controls = CaptureControls(); recordingSince = recording; self.listening = listening; self.problem = problem
         meter.level = level
         previewOnly = true
     }
@@ -190,8 +201,9 @@ final class CaptureStore: ObservableObject {
             cue(.discarded)
             return
         }
-        let note = CaptureNote(id: clip.url.deletingPathExtension().lastPathComponent, at: Date().addingTimeInterval(-clip.duration),
+        var note = CaptureNote(id: clip.url.deletingPathExtension().lastPathComponent, at: Date().addingTimeInterval(-clip.duration),
                                duration: clip.duration, file: clip.url.lastPathComponent, peaks: CaptureRules.waveform(clip.peaks, bars: CaptureRules.bars * 2))
+        if let filing, scrolls.contains(where: { $0.id == filing }) { note.scroll = filing; note.filed = .hand }
         notes.insert(note, at: 0)
         arrived = note.id
         persist()
@@ -427,6 +439,7 @@ final class CaptureStore: ObservableObject {
             if let index = notes.firstIndex(where: { $0.id == id }) {
                 notes[index].text = text; notes[index].state = state
                 persist()
+                if !text.isEmpty, notes[index].title == nil { scribe(id, titling: true) }
             }
             if background != .invalid { UIApplication.shared.endBackgroundTask(background) }
         }
@@ -441,7 +454,131 @@ final class CaptureStore: ObservableObject {
         }
     }
 
-    func transcribeAgain(_ id: String) { retried.insert(id); transcribe(id) }
+    func transcribeAgain(_ id: String) {
+        retried.insert(id)
+        if let index = notes.firstIndex(where: { $0.id == id }) { notes[index].title = nil }
+        transcribe(id)
+    }
+
+    // MARK: The scribe
+
+    var scribeStatus: CaptureScribe.Status { CaptureScribe.status }
+
+    /// Queues an inscription for the scribe: a title when `titling`, and a scroll when it is loose.
+    private func scribe(_ id: String, titling: Bool) {
+        guard !previewOnly else { return }
+        if let waiting = reading.firstIndex(where: { $0.id == id }) {
+            reading[waiting].titling = reading[waiting].titling || titling
+        } else {
+            reading.append((id, titling))
+        }
+        naming.insert(id)
+        guard !scribing else { return }
+        scribing = true
+        Task { await drainScribe() }
+    }
+
+    private func drainScribe() async {
+        let background = UIApplication.shared.beginBackgroundTask(withName: "Capture scribe")
+        while !reading.isEmpty {
+            let job = reading.removeFirst()
+            guard let note = note(job.id), note.hasWords else { naming.remove(job.id); continue }
+            let filing = controls.scribe && note.isLoose ? scrolls : []
+            // Switched off: rows show the first words, and nothing is filed.
+            let result = controls.scribe ? await CaptureScribe.read(note.text, scrolls: filing, titling: job.titling) : CaptureScribe.Reading()
+            if let index = notes.firstIndex(where: { $0.id == job.id }) {
+                // A title typed while the model was thinking is kept.
+                if job.titling, let title = result.title, notes[index].title == note.title { notes[index].title = title }
+                // Placed by hand while the model was thinking: the hand wins.
+                if let scroll = result.scroll, notes[index].isLoose { notes[index].scroll = scroll; notes[index].filed = .scribe }
+                persist()
+            }
+            naming.remove(job.id)
+        }
+        scribing = false
+        if background != .invalid { UIApplication.shared.endBackgroundTask(background) }
+    }
+
+    /// Asks the scribe for a new title.
+    func nameAgain(_ id: String) { scribe(id, titling: true) }
+
+    /// Gives every loose inscription to the scribe to file, after a scroll is made or changed.
+    func gather() {
+        guard controls.scribe, scribeStatus == .ready, !scrolls.isEmpty else { return }
+        for note in notes where note.isLoose && note.hasWords { scribe(note.id, titling: note.title == nil) }
+    }
+
+    /// Inscriptions written before titles existed get one when Capture opens.
+    private func nameUntitled() {
+        guard controls.scribe, scribeStatus == .ready else { return }
+        for note in notes where note.title == nil && note.hasWords && !naming.contains(note.id) { scribe(note.id, titling: true) }
+    }
+
+    // MARK: Scrolls
+
+    func scroll(_ id: String) -> CaptureScroll? { scrolls.first { $0.id == id } }
+    func inscriptions(in scroll: String?) -> [CaptureNote] { scroll.map { id in notes.filter { $0.scroll == id } } ?? notes }
+
+    @discardableResult
+    func addScroll(name: String, rune: Rune, purpose: String) -> CaptureScroll {
+        let scroll = CaptureScroll(name: name.trimmingCharacters(in: .whitespacesAndNewlines), rune: rune, purpose: purpose.trimmingCharacters(in: .whitespacesAndNewlines))
+        scrolls.append(scroll)
+        persistScrolls()
+        gather()
+        return scroll
+    }
+
+    func updateScroll(_ scroll: CaptureScroll) {
+        guard let index = scrolls.firstIndex(where: { $0.id == scroll.id }), scrolls[index] != scroll else { return }
+        let refile = scrolls[index].name != scroll.name || scrolls[index].purpose != scroll.purpose
+        scrolls[index] = scroll
+        persistScrolls()
+        if refile { gather() }
+    }
+
+    /// Unrolls a scroll: its inscriptions are kept, loose, and the scribe leaves them be.
+    func deleteScroll(_ id: String) {
+        scrolls.removeAll { $0.id == id }
+        for index in notes.indices where notes[index].scroll == id { notes[index].scroll = nil; notes[index].filed = .hand }
+        if filing == id { filing = nil }
+        persistScrolls(); persist()
+    }
+
+    /// Puts an inscription in a scroll by hand, or takes it out with nil.
+    func move(_ id: String, to scroll: String?) {
+        guard let index = notes.firstIndex(where: { $0.id == id }) else { return }
+        notes[index].scroll = scroll
+        notes[index].filed = .hand
+        persist()
+    }
+
+    func setTitle(_ title: String, for id: String) {
+        guard let index = notes.firstIndex(where: { $0.id == id }) else { return }
+        let clean = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty, clean != notes[index].title else { return }
+        notes[index].title = clean
+        persist()
+    }
+
+    func setScribe(_ on: Bool) {
+        guard on != controls.scribe else { return }
+        controls.scribe = on
+        saveControls()
+        if on { nameUntitled(); gather() }
+    }
+
+    /// A Capture screen came into view or left it. While any is in view the band's trigger records.
+    func setVisible(_ screen: String, _ shown: Bool) {
+        if shown { visible.insert(screen) } else { visible.remove(screen) }
+        onScreen = !visible.isEmpty
+        if shown { nameUntitled() }
+    }
+    var anyVisible: Bool { !visible.isEmpty }
+
+    private func persistScrolls() {
+        guard !previewOnly, let data = try? JSONEncoder().encode(scrolls) else { return }
+        try? data.write(to: folder.appendingPathComponent("scrolls.json"), options: .atomic)
+    }
 
     // MARK: Notes
 

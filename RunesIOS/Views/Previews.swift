@@ -89,6 +89,8 @@ struct SnapshotGallery: View {
             WristPreview(name: name)
         } else if name == "settings" {
             SettingsView(values: SettingsValues(battery: 82, handSetting: HandSetting(confirmed: .left), version: "0.2.0 (2)")) { EmptyView() }
+        } else if name == "runes-lab" {
+            NavigationStack { RunesLabScreen(store: PreviewFixtures.mappings) }
         } else if name == "mappings" {
             MappingsScreen(store: PreviewFixtures.mappings)
         } else if name == "mapping-editor" {
@@ -132,6 +134,14 @@ struct SnapshotGallery: View {
             let store = PreviewFixtures.capture(recording: name == "capture-recording", listening: name == "capture-recording" || name == "capture-pocket",
                                                 empty: name == "capture-empty")
             NavigationStack { CaptureScreen(store: store, path: .constant([])) }
+        } else if name == "capture-scroll" {
+            NavigationStack { CaptureScreen(store: PreviewFixtures.capture(), path: .constant([]), scrollID: "scroll-home") }
+        } else if name == "capture-loose" {
+            NavigationStack { CaptureScreen(store: PreviewFixtures.capture(noScrolls: true), path: .constant([])) }
+        } else if name == "capture-new-scroll" {
+            ScrollEditor(mode: .new, scribe: true) { _, _, _ in }
+        } else if name == "capture-runes" {
+            ScrollEditor(mode: .edit(PreviewFixtures.scrolls[1]), scribe: true) { _, _, _ in }
         } else if name == "capture-note" {
             NavigationStack { NoteScreen(store: PreviewFixtures.capture(), noteID: "note-34") }
         } else if name == "capture-settings" {
@@ -204,7 +214,6 @@ private struct WristPreview: View {
                       choose: { hand in Task { await change(hand) } },
                       feedback: { _, _, _ in }, cancelFeedback: { _ in })
         }
-        .preferredColorScheme(.dark)
         .dynamicTypeSize(name == "wrist-large" ? .accessibility3 : .large)
         .task {
             if name == "wrist-unknown" { setting = HandSetting() }

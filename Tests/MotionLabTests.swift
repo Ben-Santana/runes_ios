@@ -39,11 +39,10 @@ struct MotionLabTests {
         try recorder.start(in: folder, exercise: .bicepCurl)
         precondition(recorder.isRecording)
         var t = 100.0, seq: UInt64 = 1
-        for _ in 0..<3 {
-            for angle in [0.0, 80, 10] {
-                recorder.ingest(RawSample(kind: .orientation, uptime: t, sequence: seq, timestamp: seq * 10_000, values: turn(angle)))
-                t += 1; seq += 1
-            }
+        for i in 0..<600 {  // three curls, 100 samples a second
+            let angle = 50 - 50 * cos(2 * .pi * Double(i) / 200)
+            recorder.ingest(RawSample(kind: .orientation, uptime: t, sequence: seq, timestamp: seq * 10_000, values: turn(angle)))
+            t += 0.01; seq += 1
         }
         recorder.ingest(RawSample(kind: .gyro, uptime: t, sequence: 1, timestamp: 1, values: [-5, 6, 7]))
         recorder.ingest(RawSample(kind: .gyro, uptime: t, sequence: 3, timestamp: 2, values: [1, 1, 1]))
@@ -52,7 +51,7 @@ struct MotionLabTests {
         recorder.event("mark", "bottom, of rep")
         let counts = recorder.stop()
         precondition(!recorder.isRecording)
-        precondition(counts.orientation == 9 && counts.gyro == 2 && counts.emgBatches == 1 && counts.gestures == 1 && counts.marks == 1)
+        precondition(counts.orientation == 600 && counts.gyro == 2 && counts.emgBatches == 1 && counts.gestures == 1 && counts.marks == 1)
         precondition(counts.detectorReps == 3, "Curl detector counted \(counts.detectorReps), expected 3")
         precondition(counts.gaps["gyro"] == 1 && counts.gaps["orientation"] == nil, "Gaps are per stream")
         precondition(counts.emgLevel.count == 8)
@@ -60,7 +59,7 @@ struct MotionLabTests {
         let gyro = try String(contentsOf: folder.appendingPathComponent("gyro.csv"), encoding: .utf8).split(separator: "\n")
         precondition(gyro.count == 3 && gyro[1].hasSuffix(",-5,6,7"), "gyro.csv: \(gyro)")
         let orientation = try String(contentsOf: folder.appendingPathComponent("orientation.csv"), encoding: .utf8).split(separator: "\n")
-        precondition(orientation.count == 10)
+        precondition(orientation.count == 601)
         let events = try String(contentsOf: folder.appendingPathComponent("events.csv"), encoding: .utf8)
         precondition(events.components(separatedBy: "detector_rep").count == 4 && events.contains(",mark,bottom; of rep") && events.contains(",stop,"))
 

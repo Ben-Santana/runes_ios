@@ -46,6 +46,8 @@ final class LinkSceneDelegate: NSObject, UIWindowSceneDelegate {
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
         for context in connectionOptions.urlContexts { AppLinkRouter.shared.open(url: context.url) }
     }
+    /// Before the first frame, so a chosen appearance never flashes the phone's.
+    func sceneWillEnterForeground(_ scene: UIScene) { Appearance.chosen.apply(to: scene) }
     func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
         for context in URLContexts { AppLinkRouter.shared.open(url: context.url) }
     }
@@ -115,11 +117,14 @@ struct RunesIOSApp: App {
 
     var body: some Scene {
         WindowGroup {
-            #if DEBUG
-            if let name = Self.snapshotName { SnapshotGallery(name: name) } else { live }
-            #else
-            live
-            #endif
+            Group {
+                #if DEBUG
+                if let name = Self.snapshotName { SnapshotGallery(name: name) } else { live }
+                #else
+                live
+                #endif
+            }
+            .followsChosenAppearance()
         }
     }
 

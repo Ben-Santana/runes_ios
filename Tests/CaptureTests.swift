@@ -30,11 +30,40 @@ struct CaptureTests {
 
         // What a row says for each state.
         precondition(note(hoursAgo: 1, "Buy milk").summary == "Buy milk" && note(hoursAgo: 1, "Buy milk").hasWords)
-        precondition(note(hoursAgo: 1, "", .transcribing).summary == "Writing it down…")
+        precondition(note(hoursAgo: 1, "", .transcribing).summary == "Inscribing…")
         precondition(note(hoursAgo: 1, "", .done).summary == "Nothing was said")
-        precondition(note(hoursAgo: 1, "", .unavailable).summary == "Voice note")
-        precondition(note(hoursAgo: 1, "", .pending).summary.hasPrefix("Voice note."))
+        precondition(note(hoursAgo: 1, "", .unavailable).summary == "Voice inscription")
+        precondition(note(hoursAgo: 1, "", .pending).summary.hasPrefix("Its words arrive"))
         precondition(note(hoursAgo: 1, "kept", .pending).summary == "kept", "Words win over the state")
+
+        // Titles: the model's tidied, or the first words when there is no model.
+        precondition(CaptureRules.fallbackTitle("call the landlord about the boiler before friday. And milk") == "Call the landlord about the boiler…")
+        precondition(CaptureRules.fallbackTitle("Oat milk, lemons") == "Oat milk, lemons")
+        precondition(CaptureRules.cleanTitle("\"move the relay test.\"\nmore") == "Move the relay test")
+        precondition(CaptureRules.cleanTitle("  ") == nil && CaptureRules.cleanTitle(String(repeating: "a", count: 80))!.count == 60)
+        precondition(note(hoursAgo: 1, "buy milk now").heading == "Buy milk now" && note(hoursAgo: 1).heading == "Untitled")
+        var titled = note(hoursAgo: 1, "x"); titled.title = "Groceries"
+        precondition(titled.heading == "Groceries" && titled.isLoose)
+        titled.filed = .hand
+        precondition(!titled.isLoose, "Left loose by hand stays loose")
+        titled.filed = .scribe; titled.scroll = "s"
+        precondition(!titled.isLoose)
+
+        // Notes saved before titles and scrolls still load, loose and untitled.
+        let old = #"[{"id":"a","at":0,"duration":3,"text":"hi","state":"done","file":"a.m4a","peaks":[]}]"#
+        let loaded = try! JSONDecoder().decode([CaptureNote].self, from: Data(old.utf8))
+        precondition(loaded[0].title == nil && loaded[0].scroll == nil && loaded[0].isLoose)
+        let scroll = CaptureScroll(name: "Home", rune: .othala)
+        precondition(try! JSONDecoder().decode(CaptureScroll.self, from: JSONEncoder().encode(scroll)) == scroll)
+
+        // Runes: twenty-four, each drawn inside its box, each stroke a real line.
+        precondition(Rune.allCases.count == 24)
+        for rune in Rune.allCases {
+            precondition(!rune.strokes.isEmpty && rune.strokes.allSatisfy { $0.count >= 2 }, rune.name)
+            precondition(rune.strokes.joined().allSatisfy { (0...24).contains($0.0) && (0...24).contains($0.1) }, rune.name)
+        }
+        precondition(Rune.fallback(for: "Work") == Rune.fallback(for: "work"), "The same name always gets the same rune")
+        precondition(Rune.fallback(for: "") == .fehu)
 
         // Waveforms: any number of peaks to a fixed number of bars, the loudest full height.
         let wave = CaptureRules.waveform([0, 0.1, 0.5, 0.25, 0, 0, 0.05, 0.2], bars: 4)
@@ -65,6 +94,8 @@ struct CaptureTests {
         precondition(controls.trigger == .standard && controls.trigger.gesture == .holdIndex && !controls.trigger.isCombo)
         precondition(controls.trigger.holds && controls.trigger.release == .releaseIndex)
         precondition(controls.reserved == [.holdIndex, .releaseIndex] && controls.feedback == .sounds && !controls.headset)
+        precondition(controls.scribe, "Apple Intelligence names and files by default")
+        precondition(try! JSONDecoder().decode(CaptureControls.self, from: Data(#"{"headset":true}"#.utf8)).scribe, "Old settings keep the scribe on")
         precondition(controls.trigger.start == "Hold your index finger" && controls.trigger.stop == "let go")
         precondition(CaptureTrigger.gesture(.holdMiddle).start == "Hold your middle finger" && CaptureTrigger.gesture(.holdMiddle).release == .releaseMiddle)
 

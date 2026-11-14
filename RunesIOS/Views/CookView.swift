@@ -150,27 +150,6 @@ struct StepTicks: View {
     }
 }
 
-/// Every step as a hairline segment: done in ink, the current one in ink too, the rest faint.
-struct StepProgress: View {
-    let count: Int
-    let step: Int
-    var finished = false
-    var height: CGFloat = 2
-
-    var body: some View {
-        HStack(spacing: 3) {
-            ForEach(0..<max(1, count), id: \.self) { index in
-                Capsule().fill(index <= step || finished ? Color.ink : Color.rule)
-                    .opacity(index == step && !finished ? 1 : index < step || finished ? 0.45 : 1)
-                    .frame(height: height)
-            }
-        }
-        .animation(.spring(duration: 0.45, bounce: 0.15), value: step)
-        .animation(.standard, value: finished)
-        .accessibilityHidden(true)
-    }
-}
-
 // MARK: A recipe
 
 struct RecipeScreen: View {

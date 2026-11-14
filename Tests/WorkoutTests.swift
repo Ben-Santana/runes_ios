@@ -15,6 +15,23 @@ struct WorkoutTests {
         return [cos(half), sin(half), 0, 0]
     }
 
+    /// Holds `pose` for a second, then swings `count` times by `degrees` end to end about `axis`
+    /// (in the band's frame) at 100 samples a second. Returns the reps counted.
+    static func swings(_ counter: inout RepCounter, count: Int, degrees: Double, period: Double, axis: [Double], after pose: [Double]) -> Int {
+        let n = sqrt(axis.reduce(0) { $0 + $1 * $1 }), u = axis.map { $0 / n }
+        var reps = 0, t = 0.0
+        for _ in 0..<100 { t += 0.01; if counter.orientation(pose, at: t) { reps += 1 } }
+        for i in 0...Int(Double(count) * period * 100) {
+            let half = (degrees / 2 - degrees / 2 * cos(2 * .pi * Double(i) / (period * 100))) * .pi / 360
+            let (w, x, y, z) = (cos(half), sin(half) * u[0], sin(half) * u[1], sin(half) * u[2])
+            let (pw, px, py, pz) = (pose[0], pose[1], pose[2], pose[3])
+            let q = [pw * w - px * x - py * y - pz * z, pw * x + px * w + py * z - pz * y,
+                     pw * y - px * z + py * w + pz * x, pw * z + px * y - py * x + pz * w]
+            t += 0.01; if counter.orientation(q, at: t) { reps += 1 }
+        }
+        return reps
+    }
+
     static func main() {
         // Set flow: wait → count → log → next set waits again.
         let plan = WorkoutPlan(name: "Arms", items: [WorkoutItem(exercise: .bicepCurl, sets: 2, reps: 10),
@@ -87,24 +104,22 @@ struct WorkoutTests {
         precondition(!CommandTrigger(steps: [.rotation(.x)]).isValid, "but motion can't stand alone")
         precondition(!CommandTrigger(steps: [ComboStep(.tapIndex), ComboStep(.air)]).isValid, "An air step needs its shape")
 
-        // Swing counting: a rep is a turn past the high threshold after settling under the low one.
-        var curl = RepCounter(exercise: .bicepCurl)
-        precondition(!curl.orientation(turn(0), at: 0), "First sample sets the start")
-        var reps = 0, t = 0.0
-        for cycle in 0..<5 {
-            for angle in Array(stride(from: 0.0, through: 100, by: 10)) + Array(stride(from: 100.0, through: 0, by: -10)) {
-                t += 0.05; if curl.orientation(turn(angle), at: t) { reps += 1 }
-            }
-            _ = cycle
+        // Swing counting: out-and-back swings about any axis, from any start pose, 100 samples a second.
+        for (axis, pose) in [([1.0, 0, 0], turn(0)), ([0, 1.0, 0], [0.5, 0.5, -0.5, 0.5]), ([0, 0.6, 0.8], [0.2, -0.9, 0.3, 0.24])] {
+            var curl = RepCounter(exercise: .bicepCurl)
+            let reps = swings(&curl, count: 8, degrees: 100, period: 2, axis: axis, after: pose)
+            precondition(reps == 8, "Eight curls about \(axis) from any start, got \(reps)")
         }
-        precondition(reps == 5, "Five curls, got \(reps)")
-        var partial = RepCounter(exercise: .bicepCurl); _ = partial.orientation(turn(0), at: 0)
-        precondition(![50.0, 60, 40, 60].enumerated().contains { partial.orientation(turn($1), at: Double($0)) }, "Half reps don't count")
-        var wobble = RepCounter(exercise: .bicepCurl); _ = wobble.orientation(turn(0), at: 0)
-        precondition(wobble.orientation(turn(80), at: 1))
-        precondition(!wobble.orientation(turn(20), at: 1.1) && !wobble.orientation(turn(80), at: 1.2), "Too soon after a rep")
-        var gentle = RepCounter(exercise: .bicepCurl, sensitivity: .high); _ = gentle.orientation(turn(0), at: 0)
-        precondition(gentle.orientation(turn(60), at: 1), "High sensitivity needs less movement")
+        var row = RepCounter(exercise: Exercise.byID["seatedCableRow"]!)
+        precondition(swings(&row, count: 10, degrees: 30, period: 2.5, axis: [0, 0, 1], after: turn(70)) == 10, "Ten rows, a short swing")
+        var shiver = RepCounter(exercise: Exercise.byID["seatedCableRow"]!)
+        precondition(swings(&shiver, count: 10, degrees: 8, period: 2, axis: [0, 0, 1], after: turn(0)) == 0, "Swings under the minimum don't count")
+        var hurried = RepCounter(exercise: .bicepCurl)
+        precondition(swings(&hurried, count: 20, degrees: 100, period: 0.5, axis: [1, 0, 0], after: turn(0)) <= 10, "Too soon after a rep")
+        var normal = RepCounter(exercise: Exercise.byID["seatedCableRow"]!), gentle = RepCounter(exercise: Exercise.byID["seatedCableRow"]!, sensitivity: .high)
+        precondition(swings(&normal, count: 10, degrees: 11.5, period: 2.5, axis: [0, 0, 1], after: turn(0)) == 0
+                     && swings(&gentle, count: 10, degrees: 11.5, period: 2.5, axis: [0, 0, 1], after: turn(0)) >= 9,
+                     "High sensitivity needs less movement")
 
         // Burst counting for punches, from the gyroscope.
         var punches = RepCounter(exercise: .punches)
@@ -117,8 +132,11 @@ struct WorkoutTests {
         let feed = RepFeed()
         precondition(!feed.ingest(orientation: true, turn(0), at: 0))
         feed.count(.bicepCurl, sensitivity: .normal)
-        _ = feed.ingest(orientation: true, turn(0), at: 0)
-        precondition(feed.ingest(orientation: true, turn(90), at: 1))
+        let fed = (0..<600).filter { i in
+            let angle = 50 - 50 * cos(2 * .pi * Double(i) / 200)
+            return feed.ingest(orientation: true, turn(angle), at: Double(i) / 100)
+        }.count
+        precondition(fed == 3, "The feed counts three curls, got \(fed)")
         feed.count(nil, sensitivity: .normal)
         precondition(!feed.isCounting)
 

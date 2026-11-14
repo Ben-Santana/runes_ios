@@ -482,23 +482,6 @@ private struct TimerNumber: View {
     }
 }
 
-/// A hairline circle that fills clockwise as the time runs out.
-struct TimerRing: View {
-    let progress: Double
-    var lineWidth: CGFloat = 1.5
-    var body: some View {
-        ZStack {
-            Circle().stroke(Color.rule, lineWidth: Metric.hairline)
-            Circle().trim(from: 0, to: min(1, max(0.01, progress)))
-                .stroke(Color.ink, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
-                .rotationEffect(.degrees(-90))
-                .animation(.linear(duration: 0.5), value: progress)
-        }
-        .padding(lineWidth / 2)
-        .accessibilityHidden(true)
-    }
-}
-
 /// Ink behind a number whose time is up, breathing until it is stopped.
 private struct Ringing: View {
     @State private var pulse = false

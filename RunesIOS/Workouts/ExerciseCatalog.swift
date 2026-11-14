@@ -15,9 +15,10 @@ enum Measure: String, Codable, Sendable, Hashable { case reps, seconds }
 struct Exercise: Hashable, Identifiable, Sendable {
     /// How the band detects reps.
     enum Signal: Sendable, Equatable, Hashable {
-        /// A rep is the forearm turning more than `high`° away from the set's starting
-        /// orientation, after first coming back within `low`°.
-        case swing(high: Double, low: Double)
+        /// A rep is the forearm swinging out and back by at least `degrees` end to end, about
+        /// whichever axis it keeps turning on. Measured from where the forearm has been lately,
+        /// not where the set started, so any start position works.
+        case swing(degrees: Double)
         /// A rep is the gyroscope's magnitude rising above `on`, after first falling below `off`.
         case burst(on: Double, off: Double)
     }
@@ -36,7 +37,7 @@ struct Exercise: Hashable, Identifiable, Sendable {
     /// Shortest time between two reps, so a wobble at the top isn't a second rep.
     var minimumRepInterval: TimeInterval {
         if case .burst = signal { return 0.3 }
-        return 0.6
+        return 1.0
     }
     var detail: String {
         let how = detectsReps ? "Counts reps" : measure == .seconds ? "Timed" : "Logs target reps"
@@ -64,8 +65,8 @@ extension Exercise {
                           _ equipment: Equipment, _ measure: Measure = .reps, _ signal: Signal? = nil) -> Exercise {
         Exercise(id: id, name: name, group: group, primary: primary, secondary: secondary, equipment: equipment, measure: measure, signal: signal)
     }
-    private static let curl = Signal.swing(high: 70, low: 30)
-    private static let row = Signal.swing(high: 35, low: 15)
+    private static let curl = Signal.swing(degrees: 30)
+    private static let row = Signal.swing(degrees: 12)
 
     /// Most popular first. The picker keeps this order inside every tab.
     static let all: [Exercise] = [
@@ -77,14 +78,14 @@ extension Exercise {
         e("bicepCurl", "Bicep curl", .arms, [.biceps], [.forearms], .dumbbell, .reps, curl),
         e("pushUp", "Push-up", .chest, [.chest], [.triceps, .shoulders, .abs], .bodyweight),
         e("bentOverRow", "Bent-over row", .back, [.lats], [.biceps, .traps, .lowerBack], .barbell, .reps, row),
-        e("latPulldown", "Lat pulldown", .back, [.lats], [.biceps], .cable),
+        e("latPulldown", "Lat pulldown", .back, [.lats], [.biceps], .cable, .reps, .swing(degrees: 12)),
         e("legPress", "Leg press", .legs, [.quads], [.glutes, .hamstrings], .machine),
-        e("lateralRaise", "Lateral raise", .shoulders, [.shoulders], [.traps], .dumbbell, .reps, .swing(high: 45, low: 20)),
+        e("lateralRaise", "Lateral raise", .shoulders, [.shoulders], [.traps], .dumbbell, .reps, .swing(degrees: 20)),
         e("plank", "Plank", .core, [.abs], [.obliques, .shoulders], .bodyweight, .seconds),
         e("inclineBenchPress", "Incline bench press", .chest, [.chest], [.shoulders, .triceps], .barbell),
         e("romanianDeadlift", "Romanian deadlift", .legs, [.hamstrings, .glutes], [.lowerBack], .barbell),
         e("dumbbellBenchPress", "Dumbbell bench press", .chest, [.chest], [.triceps, .shoulders], .dumbbell),
-        e("tricepPushdown", "Tricep pushdown", .arms, [.triceps], [], .cable, .reps, .swing(high: 45, low: 20)),
+        e("tricepPushdown", "Tricep pushdown", .arms, [.triceps], [], .cable, .reps, .swing(degrees: 20)),
         e("hammerCurl", "Hammer curl", .arms, [.biceps, .forearms], [], .dumbbell, .reps, curl),
         e("lunge", "Lunge", .legs, [.quads, .glutes], [.hamstrings, .calves], .dumbbell),
         e("legExtension", "Leg extension", .legs, [.quads], [], .machine),
@@ -97,11 +98,11 @@ extension Exercise {
         e("dumbbellShoulderPress", "Dumbbell shoulder press", .shoulders, [.shoulders], [.triceps], .dumbbell),
         e("chinUp", "Chin-up", .back, [.lats, .biceps], [.forearms], .bodyweight),
         e("dumbbellRow", "One-arm dumbbell row", .back, [.lats], [.biceps, .traps], .dumbbell, .reps, row),
-        e("overheadExtension", "Overhead extension", .arms, [.triceps], [], .dumbbell, .reps, .swing(high: 65, low: 30)),
-        e("skullCrusher", "Skull crusher", .arms, [.triceps], [], .barbell, .reps, .swing(high: 65, low: 30)),
+        e("overheadExtension", "Overhead extension", .arms, [.triceps], [], .dumbbell, .reps, .swing(degrees: 30)),
+        e("skullCrusher", "Skull crusher", .arms, [.triceps], [], .barbell, .reps, .swing(degrees: 30)),
         e("cableFly", "Cable fly", .chest, [.chest], [.shoulders], .cable),
-        e("facePull", "Face pull", .shoulders, [.shoulders, .traps], [.lats], .cable, .reps, .swing(high: 40, low: 18)),
-        e("frontRaise", "Front raise", .shoulders, [.shoulders], [], .dumbbell, .reps, .swing(high: 55, low: 25)),
+        e("facePull", "Face pull", .shoulders, [.shoulders, .traps], [.lats], .cable, .reps, .swing(degrees: 18)),
+        e("frontRaise", "Front raise", .shoulders, [.shoulders], [], .dumbbell, .reps, .swing(degrees: 25)),
         e("bulgarianSplitSquat", "Bulgarian split squat", .legs, [.quads, .glutes], [.hamstrings], .dumbbell),
         e("gobletSquat", "Goblet squat", .legs, [.quads, .glutes], [.abs], .kettlebell),
         e("inclineDumbbellPress", "Incline dumbbell press", .chest, [.chest], [.shoulders, .triceps], .dumbbell),
@@ -110,23 +111,23 @@ extension Exercise {
         e("hangingLegRaise", "Hanging leg raise", .core, [.abs], [.obliques, .forearms], .bodyweight),
         e("russianTwist", "Russian twist", .core, [.obliques], [.abs], .bodyweight),
         e("shrug", "Shrug", .back, [.traps], [.forearms], .dumbbell),
-        e("reverseFly", "Reverse fly", .shoulders, [.shoulders], [.traps, .lats], .dumbbell, .reps, .swing(high: 40, low: 18)),
+        e("reverseFly", "Reverse fly", .shoulders, [.shoulders], [.traps, .lats], .dumbbell, .reps, .swing(degrees: 18)),
         e("arnoldPress", "Arnold press", .shoulders, [.shoulders], [.triceps], .dumbbell),
         e("frontSquat", "Front squat", .legs, [.quads], [.glutes, .abs], .barbell),
         e("hackSquat", "Hack squat", .legs, [.quads], [.glutes], .machine),
         e("sumoDeadlift", "Sumo deadlift", .legs, [.glutes, .quads, .hamstrings], [.lowerBack, .traps], .barbell),
-        e("kettlebellSwing", "Kettlebell swing", .legs, [.glutes, .hamstrings], [.lowerBack, .shoulders], .kettlebell, .reps, .swing(high: 70, low: 30)),
+        e("kettlebellSwing", "Kettlebell swing", .legs, [.glutes, .hamstrings], [.lowerBack, .shoulders], .kettlebell, .reps, .swing(degrees: 30)),
         e("burpee", "Burpee", .cardio, [.quads, .chest], [.shoulders, .abs], .bodyweight),
         e("mountainClimber", "Mountain climber", .cardio, [.abs], [.shoulders, .quads], .bodyweight, .seconds),
-        e("jumpingJacks", "Jumping jacks", .cardio, [.shoulders, .calves], [.quads], .bodyweight, .reps, .swing(high: 90, low: 35)),
+        e("jumpingJacks", "Jumping jacks", .cardio, [.shoulders, .calves], [.quads], .bodyweight, .reps, .swing(degrees: 35)),
         e("concentrationCurl", "Concentration curl", .arms, [.biceps], [], .dumbbell, .reps, curl),
         e("cableCurl", "Cable curl", .arms, [.biceps], [.forearms], .cable, .reps, curl),
-        e("tricepKickback", "Tricep kickback", .arms, [.triceps], [], .dumbbell, .reps, .swing(high: 55, low: 25)),
+        e("tricepKickback", "Tricep kickback", .arms, [.triceps], [], .dumbbell, .reps, .swing(degrees: 25)),
         e("closeGripBench", "Close-grip bench press", .arms, [.triceps], [.chest, .shoulders], .barbell),
         e("pecDeck", "Pec deck", .chest, [.chest], [], .machine),
         e("machineChestPress", "Machine chest press", .chest, [.chest], [.triceps], .machine),
         e("tBarRow", "T-bar row", .back, [.lats], [.traps, .biceps], .barbell),
-        e("uprightRow", "Upright row", .shoulders, [.shoulders, .traps], [.biceps], .barbell, .reps, .swing(high: 45, low: 20)),
+        e("uprightRow", "Upright row", .shoulders, [.shoulders, .traps], [.biceps], .barbell, .reps, .swing(degrees: 20)),
         e("stepUp", "Step-up", .legs, [.quads, .glutes], [.calves], .dumbbell),
         e("walkingLunge", "Walking lunge", .legs, [.quads, .glutes], [.hamstrings], .dumbbell),
         e("gluteBridge", "Glute bridge", .legs, [.glutes], [.hamstrings], .bodyweight),
@@ -141,10 +142,10 @@ extension Exercise {
         e("seatedCalfRaise", "Seated calf raise", .legs, [.calves], [], .machine),
         e("hipAbduction", "Hip abduction", .legs, [.glutes], [], .machine),
         e("hipAdduction", "Hip adduction", .legs, [.quads], [], .machine),
-        e("cableLateralRaise", "Cable lateral raise", .shoulders, [.shoulders], [], .cable, .reps, .swing(high: 45, low: 20)),
+        e("cableLateralRaise", "Cable lateral raise", .shoulders, [.shoulders], [], .cable, .reps, .swing(degrees: 20)),
         e("reverseCurl", "Reverse curl", .arms, [.forearms, .biceps], [], .barbell, .reps, curl),
-        e("wristCurl", "Wrist curl", .arms, [.forearms], [], .dumbbell, .reps, .swing(high: 35, low: 15)),
-        e("reverseWristCurl", "Reverse wrist curl", .arms, [.forearms], [], .dumbbell, .reps, .swing(high: 35, low: 15)),
+        e("wristCurl", "Wrist curl", .arms, [.forearms], [], .dumbbell, .reps, .swing(degrees: 15)),
+        e("reverseWristCurl", "Reverse wrist curl", .arms, [.forearms], [], .dumbbell, .reps, .swing(degrees: 15)),
         e("farmerCarry", "Farmer’s carry", .back, [.forearms, .traps], [.abs, .glutes], .dumbbell, .seconds),
         e("deadHang", "Dead hang", .back, [.forearms, .lats], [.shoulders], .bodyweight, .seconds),
         e("wallSit", "Wall sit", .legs, [.quads], [.glutes], .bodyweight, .seconds),

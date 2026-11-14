@@ -276,12 +276,33 @@ struct WorkoutRun: Codable, Hashable, Sendable {
 }
 
 /// Counts reps from orientation (w, x, y, z) and gyroscope (x, y, z) samples.
+///
+/// Swings never refer to where the set started: the user may tap start from anywhere. The
+/// forearm's orientation is taken relative to a slowly moving centre, projected on the axis it
+/// keeps turning about, and a rep is that angle passing h on one side and then back past h on
+/// the other, where h follows the recent swing size. Tuned on recorded rows, pulldowns and curls
+/// (2026-11-13).
 struct RepCounter: Sendable {
     let exercise: Exercise
     let scale: Double
-    private var origin: [Double]?
     private var armed = true
     private var lastRep: TimeInterval = -.infinity
+
+    // Swing filters step once per sample: receipt times arrive in bursts, so they can't drive them.
+    private static let rate = 100.0          // orientation samples per second, roughly
+    private static let centreTime = 1.0      // s; how fast the start pose is forgotten
+    private static let axisTime = 2.0        // s; memory for the swing axis
+    private static let smoothing = 1 / (0.12 * rate)
+    private static let peakDecay = exp(-1 / (5.0 * rate))
+    private static let fraction = 0.6        // of the recent peak swing, each side of centre
+    private var samples = 0.0
+    private var centre: [Double]?
+    private var spread = [Double](repeating: 0, count: 9)
+    private var axis = [1.0, 1.0, 1.0].map { $0 / 3.0.squareRoot() }
+    private var along = 0.0
+    private var peak = 0.0
+    private var out = 0.0
+    private var away = false
 
     init(exercise: Exercise, sensitivity: RepSensitivity = .normal) {
         self.exercise = exercise; scale = sensitivity.scale
@@ -289,14 +310,57 @@ struct RepCounter: Sendable {
 
     /// Returns true when this sample completes a rep.
     mutating func orientation(_ q: [Double], at now: TimeInterval) -> Bool {
-        guard case .swing(let high, let low)? = exercise.signal, q.count == 4, q.allSatisfy(\.isFinite) else { return false }
+        guard case .swing(let degrees)? = exercise.signal, q.count == 4, q.allSatisfy(\.isFinite) else { return false }
         let norm = sqrt(q.reduce(0) { $0 + $1 * $1 })
         guard norm > 1e-8 else { return false }
-        let current = q.map { $0 / norm }
-        guard let o = origin else { origin = current; return false }
-        let dot = min(1, abs(zip(o, current).reduce(0) { $0 + $1.0 * $1.1 }))
-        let degrees = 2 * acos(dot) * 180 / .pi
-        return crossed(degrees, on: high * scale, off: low * scale, at: now)
+        var current = q.map { $0 / norm }
+        samples += 1
+        guard var c = centre else { centre = current; return false }
+        if zip(c, current).reduce(0, { $0 + $1.0 * $1.1 }) < 0 { current = current.map { -$0 } }
+        // Plain average until there's enough history, so the start pose fades quickly.
+        let kc = max(1 / samples, 1 / (Self.centreTime * Self.rate))
+        c = zip(c, current).map { $0 + kc * ($1 - $0) }
+        let cn = sqrt(c.reduce(0) { $0 + $1 * $1 })
+        c = c.map { $0 / cn }; centre = c
+        let r = Self.rotation(from: c, to: current)
+        let ka = max(1 / samples, 1 / (Self.axisTime * Self.rate))
+        for i in 0..<3 { for j in 0..<3 { spread[3 * i + j] += ka * (r[i] * r[j] - spread[3 * i + j]) } }
+        // One power-iteration step; the sign is kept so the projection doesn't flip.
+        var a = (0..<3).map { i in (0..<3).reduce(0) { $0 + spread[3 * i + $1] * axis[$1] } }
+        var an = sqrt(a.reduce(0) { $0 + $1 * $1 })
+        if an < 1e-9 * max(spread[0] + spread[4] + spread[8], 1e-12) {
+            let i = [0, 4, 8].map { spread[$0] }.enumerated().max { $0.element < $1.element }!.offset
+            a = (0..<3).map { spread[3 * i + $0] }; an = sqrt(a.reduce(0) { $0 + $1 * $1 })
+        }
+        if an > 1e-12 {
+            a = a.map { $0 / an }
+            axis = zip(a, axis).reduce(0, { $0 + $1.0 * $1.1 }) < 0 ? a.map { -$0 } : a
+        }
+        along += Self.smoothing * (zip(r, axis).reduce(0) { $0 + $1.0 * $1.1 } - along)
+        peak = max(abs(along), peak * Self.peakDecay)
+        let h = max(degrees * scale / 2, Self.fraction * scale * peak)
+        let side: Double = along > h ? 1 : along < -h ? -1 : 0
+        guard side != 0 else { return false }
+        // The first side the forearm swings to is "out"; a rep completes on the way back.
+        if out == 0 { out = side }
+        if side == out { away = true; return false }
+        guard away else { return false }
+        away = false
+        guard now - lastRep >= exercise.minimumRepInterval else { return false }
+        lastRep = now
+        return true
+    }
+
+    /// The rotation from `a` to `b` (unit quaternions) as a rotation vector in degrees, in `a`'s frame.
+    private static func rotation(from a: [Double], to b: [Double]) -> [Double] {
+        let (w1, x1, y1, z1) = (a[0], -a[1], -a[2], -a[3]), (w2, x2, y2, z2) = (b[0], b[1], b[2], b[3])
+        var w = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
+        var v = [w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2, w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2, w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2]
+        if w < 0 { w = -w; v = v.map { -$0 } }
+        let s = sqrt(v.reduce(0) { $0 + $1 * $1 })
+        guard s > 1e-12 else { return [0, 0, 0] }
+        let degrees = 2 * atan2(s, w) * 180 / .pi
+        return v.map { $0 / s * degrees }
     }
 
     mutating func gyroscope(_ values: [Double], at now: TimeInterval) -> Bool {

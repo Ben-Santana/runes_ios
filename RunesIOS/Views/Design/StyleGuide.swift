@@ -1,26 +1,37 @@
 #if DEBUG
 import SwiftUI
 
-/// The style guide as a screen: every token and part from Documentation/StyleGuide.md, drawn
-/// with the real code. Debug builds only; open the "Style guide" preview or launch with
+/// The component library as a screen: every token and part from Documentation/StyleGuide.md,
+/// drawn with the real code, in whichever appearance is chosen at its top. Debug builds only; open the "Style guide" preview or launch with
 /// RUNES_SNAPSHOT=style-guide. Nothing here touches the session.
 struct StyleGuideGallery: View {
     @State private var segment = "Normal"
     @State private var toggle = true
     @State private var steps = [GestureKind.holdIndex, .swipeUp, .releaseIndex].steps
     @State private var interval = ComboRules.defaultTime
+    @AppStorage(Preferences.appearance) private var appearance = Appearance.system
+    @State private var name = "Leg day"
+    @FocusState private var naming: Bool
+    @State private var pocket = false
+    @State private var sets = 3
+    @State private var reps = 12
+    @State private var rest = 90
+    @State private var wrist = "Left"
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 36) {
                     intro
+                    appearances
                     colours
                     type
                     metrics
                     buttons
                     rows
+                    inputs
                     ledger
+                    indicators
                     triggers
                     motion
                     icons
@@ -42,6 +53,16 @@ struct StyleGuideGallery: View {
         }
     }
 
+    private var appearances: some View {
+        Block {
+            HairlineSegments(selection: $appearance, options: Appearance.allCases, title: \.title)
+        } header: {
+            Heading("Appearance")
+        } footer: {
+            Note("The same choice as Settings. Every part below is drawn from the same tokens in light and dark.")
+        }
+    }
+
     private var colours: some View {
         Block {
             HStack(spacing: 8) {
@@ -56,7 +77,7 @@ struct StyleGuideGallery: View {
         } header: {
             Heading("Colour")
         } footer: {
-            Note("Dark mode inverts the same tokens. Red exists only on the swipe-to-delete square.")
+            Note("Light and dark are the same six tokens, inverted. Red exists only on the swipe-to-delete square.")
         }
     }
 
@@ -160,6 +181,65 @@ struct StyleGuideGallery: View {
                 .padding(.horizontal, Metric.inset).padding(.vertical, 10)
             }
             IssueCard(issue: .bandNotNearby) { _ in }
+            NoticeCard(sentence: "Runes needs the microphone to record.", actionTitle: "Open Settings") {}
+        }
+    }
+
+    private var inputs: some View {
+        Block {
+            VStack(alignment: .leading, spacing: 22) {
+                TitleField(prompt: "Name", text: $name, focus: $naming)
+                Toggle(isOn: $pocket) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Pocket mode").font(.bodyText)
+                        Text("Keeps listening for the gesture while the phone is put away.").font(.caption).foregroundStyle(Color.muted)
+                    }
+                }
+                .toggleStyle(HairlineSwitch())
+                HStack(alignment: .center, spacing: 12) {
+                    NumberChip(int: $sets, range: 1...10, unit: "sets", label: "Sets")
+                    NumberChip(int: $reps, range: 1...50, unit: "reps", label: "Reps")
+                    Spacer()
+                }
+                ChipRow(selection: $rest, options: [30, 60, 90, 120, 180, 240], title: { "\($0) s" })
+                    .padding(.horizontal, -Metric.inset)
+                ChoiceList(options: ["Left", "Right"], selected: wrist, label: { Text($0).font(.bodyText) }) { wrist = $0 }
+            }
+            .padding(.top, 16)
+        } header: {
+            Heading("Inputs")
+        } footer: {
+            Note("Values are set in the app’s own parts: a field over a rule, a switch, number chips, a scale of pills, a list with a check. Never a system alert or a menu.")
+        }
+    }
+
+    private var indicators: some View {
+        Block {
+            VStack(alignment: .leading, spacing: 20) {
+                HStack(spacing: 22) {
+                    PulseDot()
+                    ZStack {
+                        Circle().strokeBorder(Color.rule, lineWidth: Metric.hairline)
+                        OrbitDot(radius: 14)
+                    }
+                    .frame(width: 28, height: 28)
+                    TimerRing(progress: 0.62).frame(width: 36, height: 36)
+                    Sparkline(points: [40, 42.5, 42.5, 45, 47.5, 47.5, 50]).frame(width: 64, height: 22)
+                    Spacer()
+                }
+                StepProgress(count: 6, step: 2)
+                RepBar(reps: 7, target: 12)
+                Waveform(peaks: (0..<56).map { Float(abs(sin(Double($0) * 0.45)) * 0.8 + 0.1) }, progress: 0.4).frame(height: 36)
+                HStack(spacing: 8) {
+                    GestureChip(gesture: .doubleTapIndex)
+                    DurationChip(duration: StepDuration(seconds: 900, location: 0, length: 0, phrase: "15 minutes", label: "Simmer"))
+                }
+            }
+            .padding(.top, 16)
+        } header: {
+            Heading("Indicators")
+        } footer: {
+            Note("State and progress are ink against hairline: filled or open, never coloured.")
         }
     }
 

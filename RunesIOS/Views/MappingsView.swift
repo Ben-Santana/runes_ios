@@ -147,7 +147,7 @@ struct MappingsScreen: View {
 
 // MARK: Rows
 
-private struct MappingRow: View {
+struct MappingRow: View {
     let mapping: Mapping
     var title: String?
     let profiles: [MappingProfile]
@@ -213,7 +213,7 @@ struct StepIcon: View {
     }
 }
 
-private struct StepChips: View {
+struct StepChips: View {
     let steps: [ComboStep]
     var compact = false
     var body: some View {

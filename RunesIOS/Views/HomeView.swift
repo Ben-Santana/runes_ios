@@ -26,7 +26,7 @@ struct HomeView: View {
             header
             Spacer(minLength: 12)
             Button(action: ringTapped) {
-                HairlineRing(phase: status.phase, gesture: status.gesture)
+                HairlineRing(phase: status.phase, gesture: status.gesture, entrance: true)
                     .frame(maxWidth: 360)
                     .padding(.horizontal, 8)
                     .contentShape(Rectangle())

@@ -37,7 +37,7 @@ struct LabSet: Codable, Hashable {
 
     static func detector(_ e: Exercise) -> String? {
         switch e.signal {
-        case .swing(let high, let low)?: "swing high=\(high) low=\(low)"
+        case .swing(let degrees)?: "swing degrees=\(degrees)"
         case .burst(let on, let off)?: "burst on=\(on) off=\(off)"
         case nil: nil
         }

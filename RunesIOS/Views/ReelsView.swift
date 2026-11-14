@@ -1,7 +1,7 @@
 import SwiftUI
 import WebKit
 
-// Reels: instagram.com's Reels page, full screen, moved through from the band. The page
+// Reels: instagram.com's Reels page, edge to edge, moved through from the band. The page
 // keeps its sign-in in the app's own website data, so Instagram asks once. Touch works as
 // it does in Safari; the band's gestures run `ReelsScript` in the page.
 
@@ -9,77 +9,92 @@ struct ReelsScreen: View {
     @ObservedObject var store: ReelsStore
     @State private var showSettings = false
     @State private var appeared = false
-    @StateObject private var web = ReelsWeb()
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var web = ReelsWeb.shared
 
     var body: some View {
         ReelsWebView(web: web)
-            .ignoresSafeArea(edges: .bottom)
-            .overlay(alignment: .top) { flash }
-            .background(Color.paper)
-            .navigationTitle("Reels").navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button { web.goToReels() } label: { LucideIcon(.rotateCcw, size: 18).frame(width: 36, height: 36) }
-                        .accessibilityLabel("Back to Reels")
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    Button { showSettings = true } label: { LucideIcon(.settings, size: 19).frame(width: 36, height: 36) }
-                        .accessibilityLabel("Reels settings")
-                }
-            }
+            // Instagram's tab bar hangs off the bottom, so the reel has the whole screen.
+            .padding(.bottom, -web.tabBar)
+            .ignoresSafeArea()
+            .background(Color.black.ignoresSafeArea())
+            .overlay(alignment: .top) { controls }
+            .toolbar(.hidden, for: .navigationBar)
+            .statusBarHidden()
+            .persistentSystemOverlays(.hidden)
             .sheet(isPresented: $showSettings) { ReelsSettingsScreen(store: store, signOut: web.signOut) }
             // Watching, not touching: the screen must not dim between reels.
             .onAppear {
                 appeared = true
                 UIApplication.shared.isIdleTimerDisabled = true
-                store.onCommand = { [weak web] command in web?.run(command) { store.report(command, result: $0) } }
-                store.onScreen = scenePhase == .active
+                store.onCommand = { ReelsWeb.shared.run($0) }
+                update()
             }
             .onDisappear {
                 appeared = false
                 UIApplication.shared.isIdleTimerDisabled = false
-                store.onScreen = false; store.onCommand = nil
-                web.pauseAll()
+                store.onCommand = nil
+                update()
             }
-            .onChange(of: scenePhase) { _, phase in
-                store.onScreen = appeared && phase == .active
-                if phase != .active { web.pauseAll() }
-            }
+            .onChange(of: scenePhase) { update() }
+            .onChange(of: showSettings) { update() }
     }
 
-    /// The last command, for a moment, so a gesture that found nothing says so.
-    private var flash: some View {
-        Group {
-            if let flash = store.flash {
-                Text(flash.text).font(.label).foregroundStyle(Color.paper)
-                    .padding(.horizontal, 14).padding(.vertical, 8)
-                    .background(Capsule().fill(Color.ink.opacity(0.85)))
-                    .padding(.top, 12)
-                    .transition(.opacity)
-                    .id(flash.id)
-                    .task(id: flash.id) {
-                        try? await Task.sleep(for: .milliseconds(1200))
-                        withAnimation(.standard) { if store.flash?.id == flash.id { store.flash = nil } }
-                    }
-            }
+    /// The gestures are Reels' while its screen is in front; reels play while it is also
+    /// not under its settings.
+    private func update() {
+        let front = appeared && scenePhase == .active
+        store.onScreen = front
+        web.watching = front && !showSettings
+    }
+
+    /// The page fills the screen, so the bar's buttons sit over it.
+    private var controls: some View {
+        HStack(spacing: 0) {
+            IconButton(.chevronLeft, size: 22) { dismiss() }.accessibilityLabel("Back")
+            Spacer()
+            IconButton(.rotateCcw, size: 18) { web.goToReels() }.accessibilityLabel("Back to Reels")
+            IconButton(.settings, size: 19) { showSettings = true }.accessibilityLabel("Reels settings")
         }
-        .animation(.standard, value: store.flash)
-        .allowsHitTesting(false)
+        .foregroundStyle(.white)
+        .shadow(color: .black.opacity(0.5), radius: 3, y: 1)
+        .padding(.horizontal, 6)
     }
 }
 
-/// Owns the web view, so it outlives SwiftUI redrawing the screen.
+/// Owns the web view. One for the app's life, so the page is loaded before the screen
+/// opens and is where it was left on the way back.
 @MainActor
-final class ReelsWeb: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
-    let view: WKWebView
+final class ReelsWeb: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
+    static let shared = ReelsWeb()
+    private static let openedKey = "runes.reels.opened"
 
-    override init() {
+    let view: WKWebView
+    /// How tall the page says Instagram's tab bar under the reels is; none off the Reels page.
+    @Published private(set) var tabBar: CGFloat = 0
+    /// Whether the screen is in front. Reels play only then.
+    var watching = false {
+        didSet {
+            guard watching != oldValue else { return }
+            if watching { UserDefaults.standard.set(true, forKey: Self.openedKey) }
+            view.evaluateJavaScript(ReelsScript.watching(watching))
+        }
+    }
+
+    /// Loads the page ahead of the screen, for someone who has used Reels before.
+    static func warmUp() {
+        if UserDefaults.standard.bool(forKey: openedKey) { _ = shared }
+    }
+
+    private override init() {
         let configuration = WKWebViewConfiguration()
         // Reels play in the page, with sound, without a tap first.
         configuration.allowsInlineMediaPlayback = true
         configuration.mediaTypesRequiringUserActionForPlayback = []
         configuration.websiteDataStore = .default()
+        configuration.userContentController.addUserScript(
+            WKUserScript(source: ReelsScript.keeper, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         view = WKWebView(frame: .zero, configuration: configuration)
         view.customUserAgent = ReelsScript.userAgent
         #if DEBUG
@@ -87,19 +102,18 @@ final class ReelsWeb: NSObject, ObservableObject, WKNavigationDelegate, WKUIDele
         view.isInspectable = true
         #endif
         view.allowsBackForwardNavigationGestures = true
-        view.isOpaque = false
-        view.backgroundColor = .clear
+        view.backgroundColor = .black
+        view.scrollView.backgroundColor = .black
+        // The page lays itself out to the screen's edges and keeps clear of the island itself.
+        view.scrollView.contentInsetAdjustmentBehavior = .never
         super.init()
         view.navigationDelegate = self
         view.uiDelegate = self
-        view.load(URLRequest(url: ReelsScript.reelsURL))
+        configuration.userContentController.add(self, name: "runes")
+        goToReels()
     }
 
-    func run(_ command: ReelsCommand, done: @escaping (String?) -> Void) {
-        view.evaluateJavaScript(ReelsScript.source(for: command)) { result, _ in done(result as? String) }
-    }
-
-    func pauseAll() { view.evaluateJavaScript(ReelsScript.pauseAll) }
+    func run(_ command: ReelsCommand) { view.evaluateJavaScript(ReelsScript.source(for: command)) }
 
     func goToReels() { view.load(URLRequest(url: ReelsScript.reelsURL)) }
 
@@ -110,6 +124,26 @@ final class ReelsWeb: NSObject, ObservableObject, WKNavigationDelegate, WKUIDele
             let instagram = records.filter { $0.displayName.contains("instagram") || $0.displayName.contains("facebook") }
             store.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), for: instagram) { self?.goToReels() }
         }
+    }
+
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        if let height = message.body as? Double, (0...120).contains(height) { tabBar = height }
+    }
+
+    /// A new page starts as not watched; tell it if it is.
+
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        tabBar = 0
+        if watching { webView.evaluateJavaScript(ReelsScript.watching(true)) }
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        if watching { webView.evaluateJavaScript(ReelsScript.watching(true)) }
+    }
+
+    /// iOS ends a page's process when memory is short, which leaves it blank.
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        if webView.url == nil { goToReels() } else { webView.reload() }
     }
 
     /// Links that would open a new window open here instead.

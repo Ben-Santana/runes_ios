@@ -17,9 +17,12 @@ enum RingGeometry {
         return CGPoint(x: (x - y) * s, y: (x + y) * s * sin(elevation) - z * cos(elevation))
     }
 
-    static func pods(rotation: Double, radius: Double) -> [Pod] {
+    /// `open` below 1 folds every pod back toward the pod `from`, for the entrance.
+    static func pods(rotation: Double, radius: Double, open: Double = 1, from: Int = 0) -> [Pod] {
         (0..<8).map { i in
-            let a = Double(i) * .pi / 4 + rotation
+            var offset = Double(i - from) * .pi / 4
+            if offset > .pi { offset -= 2 * .pi }
+            let a = Double(from) * .pi / 4 + offset * open + rotation
             return Pod(index: i, x: cos(a) * radius, y: sin(a) * radius, z: 8 + cos(a) * 3)
         }
         .sorted { ($0.x + $0.y) < ($1.x + $1.y) }

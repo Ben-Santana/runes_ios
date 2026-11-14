@@ -30,6 +30,9 @@ struct SettingsView<Advanced: View>: View {
     @ViewBuilder var advanced: () -> Advanced
     @AppStorage(Preferences.haptics) private var haptics = true
     @AppStorage(Preferences.batteryAlerts) private var batteryAlerts = false
+    @AppStorage(Preferences.appearance) private var appearance = Appearance.system
+    @AppStorage(Preferences.developerMode) private var developerMode = false
+    @State private var versionTaps = 0
     @State private var confirmForget = false
     @State private var scanningMac = false
     @State private var macToRemove: MacLinks.Mac?
@@ -82,6 +85,11 @@ struct SettingsView<Advanced: View>: View {
                                 .padding(.horizontal, Metric.inset).padding(.vertical, 10).frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }
+                    PanelGroup("Appearance", caption: "Automatic follows your phone.") {
+                        HairlineSegments(selection: $appearance, options: Appearance.allCases, title: \.title)
+                            .padding(.horizontal, Metric.inset).padding(.top, 2)
+                            .accessibilityLabel("Appearance")
+                    }
                     PanelGroup("Preferences") {
                         Toggle(isOn: $haptics) { label("Haptics on gesture", "A light tap when a gesture arrives while Runes is open.") }
                             .padding(.horizontal, Metric.inset).padding(.vertical, 10)
@@ -91,16 +99,29 @@ struct SettingsView<Advanced: View>: View {
                             .onChange(of: batteryAlerts) { _, on in actions.batteryAlertsChanged(on) }
                     }
                     PanelGroup("About") {
+                        // Five taps turn developer mode on; it is turned off in its own section.
                         ValueRow("Version") { Text(values.version).monospacedDigit() }
+                            .onTapGesture {
+                                versionTaps += 1
+                                if versionTaps >= 5, !developerMode { versionTaps = 0; withAnimation(.entrance) { developerMode = true } }
+                            }
+                            .sensoryFeedback(.success, trigger: developerMode) { _, on in on }
                         Rule()
                         LinkRow("Privacy") { PrivacyView() }
                         Rule()
                         LinkRow("Licenses") { LicensesView() }
                     }
-                    PanelGroup(nil) {
-                        LinkRow("Workout data") { MotionLabScreen() }
-                        Rule()
-                        LinkRow("Advanced") { advanced() }
+                    if developerMode {
+                        PanelGroup("Developer") {
+                            LinkRow("Runes lab") { RunesLabScreen() }
+                            Rule()
+                            LinkRow("Workout data") { MotionLabScreen() }
+                            Rule()
+                            LinkRow("Advanced") { advanced() }
+                            Rule()
+                            Toggle(isOn: $developerMode.animation(.entrance)) { label("Developer mode", "Turn off to hide this section. Tap Version five times to bring it back.") }
+                                .padding(.horizontal, Metric.inset).padding(.vertical, 10)
+                        }
                     }
                 }
                 .padding(Metric.gutter)
@@ -189,7 +210,7 @@ struct PrivacyView: View {
                 paragraph("Your gestures stay on your phone.", "Runes receives gestures from your band over Bluetooth. Nothing is sent to the developer or to analytics services.")
                 paragraph("Meta sign-in happens once.", "Signing in links this phone to your band. It runs in a private browser window that keeps no cookies, and Runes stores only the band key it needs, in this phone’s Keychain.")
                 paragraph("Your Mac, if you pair one.", "A paired Mac receives your gestures directly from this phone over Bluetooth.")
-                paragraph("A local journal helps fix problems.", "Runes keeps up to 4 MB of connection events and gestures on this phone, excluded from backups. It leaves the phone only if you export it from Settings → Advanced.")
+                paragraph("A local journal helps fix problems.", "Runes keeps up to 4 MB of connection events and gestures on this phone, excluded from backups. It leaves the phone only if you export it from Advanced, in the developer section of Settings.")
             }
             .padding(Metric.gutter)
         }

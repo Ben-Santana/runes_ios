@@ -57,32 +57,3 @@ final class PinStore: ObservableObject {
 
     func cancelPending() { pending = nil }
 }
-
-/// Keeps a view swaying like an iOS home-screen icon in edit mode. Neighbours sway in
-/// opposite directions so the row does not move as one block.
-struct Jiggle: ViewModifier {
-    let active: Bool
-    var index: Int = 0
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var swing = false
-
-    private var direction: Double { index.isMultiple(of: 2) ? 1 : -1 }
-
-    func body(content: Content) -> some View {
-        content
-            .rotationEffect(.degrees(active && !reduceMotion ? (swing ? 1.6 : -1.6) * direction : 0))
-            .offset(y: active && !reduceMotion ? (swing ? -0.8 : 0.8) : 0)
-            .task(id: active) {
-                guard active, !reduceMotion else { withAnimation(.standard) { swing = false }; return }
-                // Let the view settle before a repeating animation starts; starting one while
-                // the view is still being inserted leaves a stale copy on screen.
-                try? await Task.sleep(for: .milliseconds(120 + 40 * index))
-                guard !Task.isCancelled else { return }
-                withAnimation(.easeInOut(duration: 0.13).repeatForever(autoreverses: true)) { swing = true }
-            }
-    }
-}
-
-extension View {
-    func jiggle(_ active: Bool, index: Int = 0) -> some View { modifier(Jiggle(active: active, index: index)) }
-}

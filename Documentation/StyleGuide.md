@@ -4,11 +4,28 @@ One ring, one sentence, one action. Runes is an instrument, not a dashboard: it 
 *what is my band doing right now* and gets out of the way. The look is the Mac app's
 (`runes_mac/docs/design.md`) carried to the phone: achromatic, Geist, hairlines,
 no shadows at rest, 200 ms motion. The home screen is the reference; every other screen is
-drawn with the same six tokens and the same handful of parts, defined once in
-`RunesIOS/Views/Design/Theme.swift`.
+drawn with the same six tokens and the same parts, defined once in the component library,
+`RunesIOS/Views/Design/`.
 
 A live version of this document is the `style-guide` snapshot
 (`RUNES_SNAPSHOT=style-guide`, or the "Style guide" preview in `Views/Design/StyleGuide.swift`).
+It draws every token and part with the real code and has the appearance switch at its top.
+
+### The library
+
+| File | Holds |
+| --- | --- |
+| `Theme.swift` | Tokens only: colour, type, motion, metrics, and the `Appearance` choice |
+| `Buttons.swift` | Button styles, `IconButton`, `RoundAction`, `CapsuleAction`, press styles |
+| `Surfaces.swift` | `page()`, `panel()`, `PanelGroup`, panel rows, `Rule`, `Chevron`, issue and notice cards |
+| `Ledger.swift` | `Block`, `Heading`, `Hairline`, `Note`, `AddRow`, `HairlineSegments` |
+| `Inputs.swift` | `FormSheet`, `ChoiceList`, `ChoiceSheet`, `ChipRow`, `TitleField`, `NumberChip`, `HairlineSwitch` |
+| `Indicators.swift` | `GestureChip`, `PulseDot`, `OrbitDot`, `RepBar`, `StepProgress`, `TimerRing`, `Sparkline` |
+| `Motion.swift` | `arrive(_:)`, `breathing(_:)`, `jiggle(_:index:)` |
+| `Icons.swift`, `HairlineRing.swift`, `TriggerComposer.swift`, `SwipeToDelete.swift` | The icon set, the ring, the gesture composer, swipe to delete |
+
+A part goes in the library when a second screen needs it. Parts that read one app's model
+(`Waveform`, `StepTicks`, `DurationChip`) stay with that app and are still shown in the gallery.
 
 ## 1. Principles
 
@@ -28,7 +45,7 @@ A live version of this document is the `style-guide` snapshot
 
 ## 2. Colour
 
-Six semantic tokens; dark mode inverts them. Never write a hex value in a view.
+Six semantic tokens; light and dark are the same tokens, inverted. Never write a hex value in a view.
 
 | Token | Light | Dark | Use |
 | --- | --- | --- | --- |
@@ -42,6 +59,12 @@ Six semantic tokens; dark mode inverts them. Never write a hex value in a view.
 
 Contrast: `muted` on `paper` is 5.6:1 light and 6.4:1 dark. `faint` is decorative only and
 never carries text.
+
+**Appearance.** Runes follows the phone by default. Settings → Appearance offers Automatic,
+Light and Dark (`Appearance` in `Theme.swift`, stored under `Preferences.appearance`). The
+choice is set on the app's windows, not on a view, so sheets, covers and alerts follow it.
+Never use `preferredColorScheme` in a screen; a screen that must stay dark for its content
+(Reels' video) paints its own background instead. Check every new screen in both.
 
 The Wrist scene uses a thin `wristGlow` blue outline during movement, with faint elliptical floor outlines.
 Its hand and ring strokes retain the shared monochrome treatment.
@@ -108,29 +131,31 @@ one sentence, one hairline button.
 
 | Part | Where defined | Rule |
 | --- | --- | --- |
-| `PrimaryButton` | Theme | Ink fill, paper label, 48 tall, full width, 6 pt radius; pressed = 82 % |
-| `SecondaryButton` | Theme | Paper fill, hairline border; pressed = `soft` |
-| `QuietButton` | Theme | Muted text only, 44 tall; for the option under a primary |
-| `IconButton` | Theme | A 20 pt Lucide icon in a 44 × 44 target; toolbar and header actions |
-| `Rule` | Theme | Hairline divider, optional leading inset |
-| `Chevron` | Theme | 16 pt Lucide chevron-right, muted; trailing edge of every link row |
-| `SectionLabel` | Theme | Caption, muted, header trait |
-| `IssueCard` | Theme | See Surfaces |
-| `FormSheet` | Theme | A small editing sheet: inline title, Cancel, one confirming action |
-| `ChoiceList` / `ChoiceSheet` | Theme | Options as panel rows with a check; the sheet closes on choice |
-| `ChipRow` | Theme | Discrete values as scrolling pills with faded edges; replaces menu pickers |
-| `TitleField` | Theme | A display-size text field over a rule that wakes with focus |
-| `NumberChip` | WorkoutTabs | A number with its unit; tap to type, + and − appear; replaces Stepper |
+| `PrimaryButton` | Buttons | Ink fill, paper label, 48 tall, full width, 6 pt radius; pressed = 82 % |
+| `SecondaryButton` | Buttons | Paper fill, hairline border; pressed = `soft` |
+| `QuietButton` | Buttons | Muted text only, 44 tall; for the option under a primary |
+| `IconButton` | Buttons | A 20 pt Lucide icon in a 44 × 44 target; toolbar and header actions |
+| `Rule` | Surfaces | Hairline divider, optional leading inset |
+| `Chevron` | Surfaces | 16 pt Lucide chevron-right, muted; trailing edge of every link row |
+| `SectionLabel` | Surfaces | Caption, muted, header trait |
+| `IssueCard` | Surfaces | See Surfaces |
+| `FormSheet` | Inputs | A small editing sheet: inline title, Cancel, one confirming action |
+| `ChoiceList` / `ChoiceSheet` | Inputs | Options as panel rows with a check; the sheet closes on choice |
+| `ChipRow` | Inputs | Discrete values as scrolling pills with faded edges; replaces menu pickers |
+| `TitleField` | Inputs | A display-size text field over a rule that wakes with focus |
+| `NumberChip` | Inputs | A number with its unit; tap to type, + and − appear; replaces Stepper |
 | `LucideIcon` | Icons | Sizes 20 (toolbar), 18 (row object), 16 (trailing/inline), 14 (within chip) |
 | `HairlineRing` | HairlineRing | The product's face; never scaled below 150 pt wide |
-| `Hairline`, `Heading`, `Note`, `AddRow`, `GestureChip`, `HairlineSegments`, `RoundAction`, `CapsuleAction` | WorkoutsView | Ledger parts |
-| `StepProgress`, `StepTicks`, `DurationChip` | CookView | A recipe's steps as hairline segments and ticks; a step's time as a quiet chip |
-| `TimerRing` | CookingView | A hairline circle that fills as a timer runs out |
-| `HairlineSwitch` | CaptureView | A switch in ink and hairline (outline and open knob off, filled on); reads in both appearances |
+| `Hairline`, `Heading`, `Note`, `AddRow`, `HairlineSegments` | Ledger | Ledger parts |
+| `RoundAction`, `CapsuleAction` | Buttons | The run screen's round and capsule actions |
+| `GestureChip`, `PulseDot`, `OrbitDot`, `RepBar`, `Sparkline` | Indicators | State and progress in ink against hairline |
+| `StepProgress`, `StepTicks`, `DurationChip` | Indicators, CookView | A recipe's steps as hairline segments and ticks; a step's time as a quiet chip |
+| `TimerRing` | Indicators | A hairline circle that fills as a timer runs out |
+| `HairlineSwitch` | Inputs | A switch in ink and hairline (outline and open knob off, filled on); reads in both appearances |
 | `TriggerComposer` | TriggerComposer | The one way to set a gesture or build a combo: a track of step tiles (the selected one in ink, a dashed slot for the next, an ink line under steps made with a finger held) over a four-column pad of gesture keys. Inline on a page it opens the pad when a step is touched |
 | `TriggerSheet` | TriggerComposer | The composer over a draft, with Cancel and Save; `TriggerRules` says whether it takes one gesture, a combo or either |
 | `TriggerRow`, `TriggerChip` | TriggerComposer | A ledger row for something the band does, with its gesture or its combo's steps as a capsule |
-| `NoticeCard` | CaptureView | The issue card's look for any sentence and one action |
+| `NoticeCard` | Surfaces | The issue card's look for any sentence and one action |
 | `Waveform` | CaptureView | A recording as hairline bars, inked up to the playback position |
 
 ### Row anatomy

@@ -18,6 +18,7 @@ enum AppRoute: Hashable {
     case cooking
     case capture
     case note(String)
+    case scroll(String)
     case reels
 }
 
@@ -57,6 +58,7 @@ struct ApplicationsScreen: View {
             .page()
             .navigationTitle("Applications").navigationBarTitleDisplayMode(.inline)
             .toolbar { BackToolbarItem(action: done) }
+            .onAppear { ReelsWeb.warmUp() }
             .navigationDestination(for: AppRoute.self) { route in
                 switch route {
                 case .workouts: WorkoutsScreen(store: workouts, path: $path)
@@ -68,6 +70,7 @@ struct ApplicationsScreen: View {
                 case .cooking: CookingScreen(store: cook)
                 case .capture: CaptureScreen(store: capture, path: $path)
                 case .note(let id): NoteScreen(store: capture, noteID: id)
+                case .scroll(let id): CaptureScreen(store: capture, path: $path, scrollID: id)
                 case .reels: ReelsScreen(store: .shared)
                 }
             }
@@ -836,265 +839,5 @@ private struct RunProgress: View {
         if index < run.index || run.phase == .finished { return 1 }
         if index == run.index, run.phase == .counting { return min(1, max(0.04, CGFloat(run.reps) / CGFloat(max(1, slot.target)))) }
         return 0
-    }
-}
-
-struct RepBar: View {
-    let reps: Int
-    let target: Int
-    var body: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                Rectangle().fill(Color.rule).frame(height: Metric.hairline)
-                Rectangle().fill(Color.ink).frame(width: geo.size.width * min(1, CGFloat(reps) / CGFloat(max(1, target))), height: 1.5)
-            }
-            .frame(maxHeight: .infinity)
-        }
-        .frame(height: 8)
-    }
-}
-
-// MARK: Pieces
-
-/// A full-width rule that draws in from the leading edge.
-struct Hairline: View {
-    var inset: CGFloat = 0
-    var delay: Double = 0
-    @State private var drawn = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    var body: some View {
-        Rectangle().fill(Color.rule).frame(height: Metric.hairline)
-            .scaleEffect(x: drawn || reduceMotion ? 1 : 0, anchor: .leading)
-            .padding(.leading, inset)
-            .onAppear { withAnimation(.easeOut(duration: 0.6).delay(delay)) { drawn = true } }
-            .accessibilityHidden(true)
-    }
-}
-
-/// An underline that darkens and thickens from the centre while its field is focused.
-struct FocusRule: View {
-    let active: Bool
-    var body: some View {
-        ZStack {
-            Rectangle().fill(Color.rule).frame(height: Metric.hairline)
-            Rectangle().fill(Color.ink).frame(height: 1.5).scaleEffect(x: active ? 1 : 0, anchor: .center)
-        }
-        .animation(.spring(duration: 0.4, bounce: 0.1), value: active)
-    }
-}
-
-struct Heading: View {
-    let title: String
-    var count: Int?
-    init(_ title: String, count: Int? = nil) { self.title = title; self.count = count }
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(title).font(.label)
-            if let count { Text("\(count)").font(.caption).foregroundStyle(Color.muted).monospacedDigit().contentTransition(.numericText()) }
-            Rectangle().fill(Color.rule).frame(height: Metric.hairline).padding(.leading, 4).alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] - 4 }
-        }
-        .padding(.bottom, 4)
-        .accessibilityAddTraits(.isHeader)
-    }
-}
-
-struct Note: View {
-    let text: String
-    init(_ text: String) { self.text = text }
-    var body: some View {
-        Text(text).font(.caption).foregroundStyle(Color.muted).fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
-    }
-}
-
-struct AddRow: View {
-    let title: String
-    let action: () -> Void
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 14) {
-                ZStack {
-                    Circle().strokeBorder(Color.muted, style: StrokeStyle(lineWidth: Metric.hairline, dash: [2, 3]))
-                    LucideIcon(.plus, size: 14)
-                }
-                .frame(width: 28, height: 28)
-                Text(title).font(.bodyText)
-                Spacer()
-            }
-            .padding(.vertical, 16).contentShape(Rectangle())
-        }
-        .buttonStyle(PressRow())
-    }
-}
-
-struct GestureChip: View {
-    let gesture: GestureKind?
-    var body: some View {
-        HStack(spacing: 6) {
-            if let gesture {
-                GestureIcon.image(gesture, size: 16)
-                Text(gesture.name).font(.label)
-            } else {
-                Text("None").font(.label).foregroundStyle(Color.muted)
-            }
-        }
-        .padding(.horizontal, 10).frame(minHeight: 30)
-        .overlay(Capsule().strokeBorder(Color.rule, lineWidth: Metric.hairline))
-        .id(gesture)
-        .transition(.scale(scale: 0.9).combined(with: .opacity))
-        .animation(.standard, value: gesture)
-    }
-}
-
-/// Text options over one hairline, with an ink underline that slides to the selection.
-struct HairlineSegments<Value: Hashable>: View {
-    @Binding var selection: Value
-    let options: [Value]
-    let title: KeyPath<Value, String>
-    @Namespace private var ns
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 0) {
-                ForEach(options, id: \.self) { option in
-                    let on = option == selection
-                    Button { withAnimation(.spring(duration: 0.4, bounce: 0.25)) { selection = option } } label: {
-                        VStack(spacing: 10) {
-                            Text(option[keyPath: title]).font(.label).foregroundStyle(on ? Color.ink : Color.muted)
-                            ZStack {
-                                Color.clear.frame(height: 1.5)
-                                if on { Capsule().fill(Color.ink).frame(height: 1.5).matchedGeometryEffect(id: "bar", in: ns) }
-                            }
-                        }
-                        .frame(maxWidth: .infinity).padding(.top, 10).contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityAddTraits(on ? .isSelected : [])
-                }
-            }
-            Rectangle().fill(Color.rule).frame(height: Metric.hairline)
-        }
-        .sensoryFeedback(.selection, trigger: selection)
-    }
-}
-
-struct PulseDot: View {
-    @State private var pulse = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    var body: some View {
-        ZStack {
-            Circle().stroke(Color.ink, lineWidth: Metric.hairline)
-                .scaleEffect(pulse ? 2.6 : 1).opacity(pulse ? 0 : 0.8)
-            Circle().fill(Color.ink)
-        }
-        .frame(width: 7, height: 7)
-        .onAppear { if !reduceMotion { withAnimation(.easeOut(duration: 1.6).repeatForever(autoreverses: false)) { pulse = true } } }
-        .accessibilityHidden(true)
-    }
-}
-
-/// A dot circling a hairline circle, for an app that's running.
-struct OrbitDot: View {
-    let radius: CGFloat
-    @State private var turn = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    var body: some View {
-        Circle().fill(Color.ink).frame(width: 4, height: 4)
-            .offset(y: -radius)
-            .rotationEffect(.degrees(turn ? 360 : 0))
-            .onAppear { if !reduceMotion { withAnimation(.linear(duration: 3).repeatForever(autoreverses: false)) { turn = true } } }
-    }
-}
-
-struct RoundAction: View {
-    let icon: Lucide
-    let label: String
-    let action: () -> Void
-    @Environment(\.isEnabled) private var enabled
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 6) {
-                ZStack {
-                    Circle().strokeBorder(Color.rule, lineWidth: Metric.hairline)
-                    LucideIcon(icon, size: 18)
-                }
-                .frame(width: 52, height: 52)
-                Text(label).font(.caption).foregroundStyle(Color.muted)
-            }
-        }
-        .buttonStyle(Ripple())
-        .opacity(enabled ? 1 : 0.3)
-    }
-}
-
-/// The main run action: a filled or hairline capsule.
-struct CapsuleAction: ButtonStyle {
-    let filled: Bool
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.label)
-            .foregroundStyle(filled ? Color.paper : Color.ink)
-            .frame(maxWidth: .infinity, minHeight: Metric.rowTall)
-            .background(Capsule().fill(filled ? Color.ink : Color.clear))
-            .overlay(Capsule().strokeBorder(Color.ink, lineWidth: Metric.hairline))
-            .scaleEffect(configuration.isPressed ? 0.97 : 1)
-            .padding(.bottom, 20)
-            .animation(.spring(duration: 0.25, bounce: 0.4), value: configuration.isPressed)
-    }
-}
-
-/// Rows dim slightly when pressed; no fill.
-struct PressRow: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .opacity(configuration.isPressed ? 0.55 : 1)
-            .animation(.standard, value: configuration.isPressed)
-    }
-}
-
-/// Round hairline buttons shrink and send a ring outward when pressed.
-struct Ripple: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .scaleEffect(configuration.isPressed ? 0.9 : 1)
-            .background(
-                Circle().stroke(Color.ink, lineWidth: Metric.hairline)
-                    .scaleEffect(configuration.isPressed ? 1.25 : 1)
-                    .opacity(configuration.isPressed ? 0.35 : 0)
-            )
-            .animation(.spring(duration: 0.3, bounce: 0.45), value: configuration.isPressed)
-    }
-}
-
-struct Arrive: ViewModifier {
-    let index: Int
-    @State private var shown = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    func body(content: Content) -> some View {
-        content
-            .opacity(shown || reduceMotion ? 1 : 0)
-            .offset(y: shown || reduceMotion ? 0 : 10)
-            .onAppear { withAnimation(.spring(duration: 0.5, bounce: 0.15).delay(0.05 * Double(index))) { shown = true } }
-    }
-}
-
-extension View {
-    /// Fades and rises in, staggered by `index`.
-    func arrive(_ index: Int) -> some View { modifier(Arrive(index: index)) }
-}
-
-/// Header, rows and footer stacked tight, so the page's spacing doesn't reach the rows.
-struct Block<Content: View, Header: View, Footer: View>: View {
-    @ViewBuilder var content: Content
-    @ViewBuilder var header: Header
-    @ViewBuilder var footer: Footer
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) { header; content; footer }
-    }
-}
-
-extension Block where Footer == EmptyView {
-    init(@ViewBuilder content: () -> Content, @ViewBuilder header: () -> Header) {
-        self.content = content(); self.header = header(); self.footer = EmptyView()
     }
 }

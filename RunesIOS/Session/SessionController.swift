@@ -414,6 +414,8 @@ enum Preferences {
     static let setupComplete = "setupComplete"
     static let haptics = "hapticsOnGesture"
     static let batteryAlerts = "bandBatteryAlerts"
+    static let appearance = "appearance"
+    static let developerMode = "developerMode"
 }
 
 /// A local notification when the band runs low. It is checked whenever the band reports

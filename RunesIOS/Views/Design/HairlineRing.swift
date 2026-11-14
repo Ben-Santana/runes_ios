@@ -22,18 +22,23 @@ struct HairlineRing: View {
     var gesture: BandGesture? = nil
     /// Draw one pod raised and in ink, to point at it (onboarding).
     var emphasis: Int? = nil
+    /// Play the entrance once: a dot opens into the front pod and the rest unfold from it.
+    var entrance = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var effects: [Effect] = []
     @State private var hold: Hold?
     @State private var previous: BandPhase?
     @State private var phaseChangedAt = Date.distantPast
+    /// When the pods start to unfold; the dot opens just before it.
+    @State private var unfoldsAt: Date?
 
     private struct Effect: Equatable {
         enum Kind: Equatable { case tap, doubleTap, release, swipe(SwipeDirection) }
         let kind: Kind
         let origin: Int
         let start: Date
+        var strength = 1.0
         var duration: Double {
             switch kind { case .tap: 1.2; case .doubleTap: 1.5; case .release: 1.2; case .swipe: 1.0 }
         }
@@ -42,20 +47,48 @@ struct HairlineRing: View {
 
     private static let blend = 0.45
     private static let longestHold: TimeInterval = 12
+    private static let dotOpens = 0.5
+    private static let unfold = 0.8
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1 / 120, paused: !isAnimating)) { context in
-            Canvas { canvas, size in
-                draw(in: &canvas, size: size, now: context.date)
+        // The canvas is wider than the ring's own frame, so ripples run to the page edges.
+        Color.clear
+            .aspectRatio(1.25, contentMode: .fit)
+            .overlay {
+                GeometryReader { proxy in
+                    let size = proxy.size, bleed = Self.bleed(proxy)
+                    TimelineView(.animation(minimumInterval: 1 / 120, paused: !isAnimating)) { context in
+                        Canvas { canvas, _ in
+                            canvas.translateBy(x: bleed.width, y: bleed.height)
+                            draw(in: &canvas, size: size, reach: size.width / 2 + bleed.width, now: context.date)
+                        }
+                    }
+                    .frame(width: size.width + 2 * bleed.width, height: size.height + 2 * bleed.height)
+                    .position(x: size.width / 2, y: size.height / 2)
+                    .allowsHitTesting(false)
+                }
             }
-        }
-        .aspectRatio(1.25, contentMode: .fit)
+        .onAppear(perform: enter)
         .onChange(of: gesture?.id) { _, _ in if let gesture { react(to: gesture) } }
         .onChange(of: phase) { old, _ in
             previous = old; phaseChangedAt = Date()
             Task { try? await Task.sleep(for: .seconds(Self.blend)); previous = nil }
         }
         .accessibilityHidden(true)
+    }
+
+    /// How far the canvas extends past the ring on each side: to the farther page edge.
+    private static func bleed(_ proxy: GeometryProxy) -> CGSize {
+        guard let page = proxy.bounds(of: .named(Page.space)) else { return .zero }
+        let side = max(0, -page.minX, page.maxX - proxy.size.width)
+        return CGSize(width: side, height: side * 0.6)
+    }
+
+    private func enter() {
+        guard entrance, !reduceMotion, unfoldsAt == nil else { return }
+        let start = Date().addingTimeInterval(Self.dotOpens)
+        unfoldsAt = start
+        add(Effect(kind: .tap, origin: Self.front, start: start, strength: 1.25))
     }
 
     private var isAnimating: Bool {
@@ -103,7 +136,7 @@ struct HairlineRing: View {
     private func add(_ effect: Effect) {
         effects.append(effect)
         Task {
-            try? await Task.sleep(for: .seconds(effect.duration))
+            try? await Task.sleep(for: .seconds(effect.start.timeIntervalSinceNow + effect.duration))
             effects.removeAll { $0 == effect }
         }
     }
@@ -177,11 +210,23 @@ struct HairlineRing: View {
         var flash = 0.0
         var ripples: [(radius: Double, alpha: Double, width: Double)] = []
         var arc: (sweep: Double, alpha: Double)?
+        /// The entrance: how far the pods have unfolded, and how visible the late ones are.
+        var open = 1.0
+        var arrive = 1.0
     }
 
-    private func frame(at now: Date) -> Frame {
+    /// `reach` is the distance from the ring's centre to the page edge, in ring units.
+    private func frame(at now: Date, reach: Double) -> Frame {
         var f = Frame()
         let t = now.timeIntervalSinceReferenceDate
+        var live = 1.0
+        if let unfoldsAt {
+            let tau = now.timeIntervalSince(unfoldsAt)
+            let k = min(1, max(0, tau / Self.unfold))
+            f.open = k >= 1 ? 1 : 1 - pow(2, -10 * k)
+            f.arrive = min(1, max(0, tau / 0.2))
+            live = min(1, max(0, tau / 0.45))
+        }
         for i in 0..<8 {
             let angle = Double(i) * .pi / 4
             var value = stateLift(phase, index: i, angle: angle, t: t)
@@ -190,7 +235,7 @@ struct HairlineRing: View {
                 let eased = 1 - pow(1 - k, 3)
                 value = stateLift(previous, index: i, angle: angle, t: t) * (1 - eased) + value * eased
             }
-            f.lift[i] = value
+            f.lift[i] = value * live
         }
 
         // Hold: levitate, orbit and charge.
@@ -216,8 +261,8 @@ struct HairlineRing: View {
             switch effect.kind {
             case .tap, .doubleTap:
                 let double = effect.kind == .doubleTap
-                for (k, delay, strength) in double ? [(0, 0.0, 0.8), (1, 0.13, 1.2)] : [(0, 0.0, 1.0)] {
-                    let local = tau - delay
+                for (k, delay, part) in double ? [(0, 0.0, 0.8), (1, 0.13, 1.2)] : [(0, 0.0, 1.0)] {
+                    let local = tau - delay, strength = part * effect.strength
                     guard local > 0 else { continue }
                     for i in 0..<8 {
                         let d = Self.steps(i, effect.origin)
@@ -228,7 +273,7 @@ struct HairlineRing: View {
                         let r = local - Double(echo) * 0.12
                         guard r > 0, r < 0.9 else { continue }
                         let p = 1 - pow(1 - r / 0.9, 2)
-                        f.ripples.append((radius: 58 + 42 * p, alpha: (1 - r / 0.9) * (echo == 0 ? 0.55 : 0.3) * strength, width: k == 1 ? 1.3 : 1))
+                        f.ripples.append((radius: 58 + (max(100, reach * 1.1) - 58) * p, alpha: (1 - r / 0.9) * (echo == 0 ? 0.55 : 0.3) * strength, width: k == 1 ? 1.3 : 1))
                     }
                 }
                 if double {
@@ -239,7 +284,7 @@ struct HairlineRing: View {
                 for i in 0..<8 { f.lift[i] += -4 * Self.bounce(tau - Self.steps(i, effect.origin) * 0.02, frequency: 2.2, decay: 4.5) }
                 if tau < 1.0 {
                     let p = 1 - pow(1 - tau, 3)
-                    f.ripples.append((radius: 56 + 60 * p, alpha: 0.5 * (1 - tau), width: 1.2))
+                    f.ripples.append((radius: 56 + (max(116, reach * 1.15) - 56) * p, alpha: 0.5 * (1 - tau), width: 1.2))
                 }
             case .swipe(let direction):
                 let p = min(1, tau / 0.55)
@@ -269,9 +314,8 @@ struct HairlineRing: View {
 
     // MARK: Drawing
 
-    private func draw(in canvas: inout GraphicsContext, size: CGSize, now: Date) {
-        let f = frame(at: now)
-
+    private func draw(in canvas: inout GraphicsContext, size: CGSize, reach: Double, now: Date) {
+        if entrance, !reduceMotion, unfoldsAt == nil { return }
         // Fit the resting ring, with headroom for lifts and ripples.
         let extent = Self.radius + 13
         let corners = [Self.project(-extent, extent, 0), Self.project(extent, -extent, 0),
@@ -284,6 +328,12 @@ struct HairlineRing: View {
             .scaledBy(x: scale, y: scale)
             .translatedBy(x: -(minX + maxX) / 2, y: -(minY + maxY) / 2)
         let line = max(0.75, min(1.25, scale * 0.45))
+
+        if let unfoldsAt, now < unfoldsAt {
+            drawDot(in: &canvas, progress: 1 + now.timeIntervalSince(unfoldsAt) / Self.dotOpens, transform, line)
+            return
+        }
+        let f = frame(at: now, reach: reach / scale)
 
         // The wrist plane, behind the pods.
         for ripple in f.ripples {
@@ -298,21 +348,25 @@ struct HairlineRing: View {
 
         // Motion trail for a spin: faint pods where the ring just was.
         if let trail = f.trail {
-            for pod in pods(rotation: trail, radius: Self.radius) {
+            for pod in pods(rotation: trail, radius: Self.radius, open: f.open) {
                 let ghost = ball(pod.x, pod.y, pod.z + f.lift[pod.index] * 0.6, transform)
                 canvas.stroke(Path(ellipseIn: ghost), with: .color(.ink.opacity(0.18)), lineWidth: line * 0.8)
             }
         }
 
         let radius = Self.radius + f.radiusKick
-        let placed = pods(rotation: f.rotation, radius: radius)
+        let placed = pods(rotation: f.rotation, radius: radius, open: f.open)
         // Shadows first, so no ball is drawn under another ball's shadow.
         for pod in placed {
             let lift = max(0, f.lift[pod.index])
             let shadow = Self.shadow(pod.x, pod.y, lift: lift, transform)
-            canvas.stroke(Path(ellipseIn: shadow), with: .color(strokeColor.opacity(0.35 * max(0.25, 1 - lift / 20))), lineWidth: line * 0.7)
+            canvas.stroke(Path(ellipseIn: shadow), with: .color(strokeColor.opacity(0.35 * f.arrive * max(0.25, 1 - lift / 20))), lineWidth: line * 0.7)
         }
         for pod in placed {
+            let shown = pod.index == Self.front ? 1 : f.arrive
+            guard shown > 0 else { continue }
+            var canvas = canvas
+            canvas.opacity = shown
             let lift = f.lift[pod.index], glow = f.glow[pod.index]
             let emphasised = pod.index == emphasis || (phase == .attention && pod.index == Self.front)
             let energised = f.flash > 0 || emphasised || lift > 4 || glow > 0.2
@@ -323,6 +377,17 @@ struct HairlineRing: View {
         }
     }
 
+    /// A small ink dot swells into the front pod, its fill thinning to a hairline.
+    private func drawDot(in canvas: inout GraphicsContext, progress: Double, _ transform: CGAffineTransform, _ line: Double) {
+        guard let pod = pods(rotation: 0, radius: Self.radius, open: 0).first(where: { $0.index == Self.front }) else { return }
+        let k = Self.easeInOut(progress), full = ball(pod.x, pod.y, pod.z, transform)
+        let inset = full.width / 2 * (1 - (0.16 + 0.84 * k))
+        let body = Path(ellipseIn: full.insetBy(dx: inset, dy: inset))
+        let shown = min(1, max(0, progress / 0.25))
+        canvas.fill(body, with: .color(.ink.opacity(shown * (1 - min(1, max(0, (k - 0.3) / 0.5))))))
+        canvas.stroke(body, with: .color(strokeColor.opacity(shown * min(1, k * 5))), lineWidth: line)
+    }
+
     private func ball(_ x: Double, _ y: Double, _ z: Double, _ transform: CGAffineTransform) -> CGRect {
         RingGeometry.ball(x, y, z, transform)
     }
@@ -331,8 +396,8 @@ struct HairlineRing: View {
         RingGeometry.shadow(x, y, lift: lift, transform)
     }
 
-    private func pods(rotation: Double, radius: Double) -> [RingGeometry.Pod] {
-        RingGeometry.pods(rotation: rotation, radius: radius)
+    private func pods(rotation: Double, radius: Double, open: Double = 1) -> [RingGeometry.Pod] {
+        RingGeometry.pods(rotation: rotation, radius: radius, open: open, from: Self.front)
     }
 
     private var strokeColor: Color {
