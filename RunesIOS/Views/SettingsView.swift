@@ -100,6 +100,8 @@ struct SettingsView<Advanced: View>: View {
                     PanelGroup(nil) {
                         LinkRow("Workout data") { MotionLabScreen() }
                         Rule()
+                        LinkRow("Vibration lab") { VibrationLabScreen() }
+                        Rule()
                         LinkRow("Advanced") { advanced() }
                     }
                 }
