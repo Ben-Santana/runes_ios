@@ -142,9 +142,11 @@ private enum GuideHand {
     static let rest = [5.0, 3, 5, 7.3]
     /// The heel of the hand and the forearm; then the edge of the palm that the thumb lies over, and the wrist.
     static let sides = ["M22 14C22 17.6 20.9 20 19.6 21.8C18.9 22.8 18.6 23.8 18.6 25C18.6 28 18.8 31.5 19.2 35.5",
-                        "M6 14C5.7 16 5.7 18.3 6.01 19.66C7.4 21 8.2 22.6 8.2 24.5C8.2 27.5 7.9 31 7.4 35.5"].map(SVGPath.cached)
+                        "M6 14C5.7 16 5.22 18.9 6.01 19.66C7.4 21 8.2 22.6 8.2 24.5C8.2 27.5 7.9 31 7.4 35.5"].map(SVGPath.cached)
     /// The thumb at rest: where it joins the hand, its direction in degrees and its length.
     static let thumbRoot = CGPoint(x: 7.72, y: 18.54), thumbRest = (turn: 225.0, reach: 5.5)
+    /// The edge of the palm the thumb lies over, from the first finger down to the wrist: the first curve of `sides[1]`.
+    static let palmEdge = [CGPoint(x: 6, y: 14), CGPoint(x: 5.7, y: 16), CGPoint(x: 5.22, y: 18.9), CGPoint(x: 6.01, y: 19.66)]
     /// For a press of the index or the middle finger: how far down its knuckle comes as it
     /// folds, where its tip ends up in front of the palm, and how the thumb turns and reaches
     /// to meet it.
@@ -182,11 +184,25 @@ private enum GuideHand {
         func tipArc(_ path: inout Path) {
             path.addArc(center: edge(reach, 0), radius: radius, startAngle: turn + .degrees(90), endAngle: turn - .degrees(90), clockwise: true)
         }
+        // The outer edge ends exactly where it meets the palm's edge, wherever the thumb has
+        // turned to, so the two always join. Found by walking the palm's edge up from the wrist.
+        func onPalm(_ t: Double) -> CGPoint {
+            let u = 1 - t, weights = [u * u * u, 3 * u * u * t, 3 * u * t * t, t * t * t]
+            return zip(palmEdge, weights).reduce(CGPoint.zero) { CGPoint(x: $0.x + $1.0.x * $1.1, y: $0.y + $1.0.y * $1.1) }
+        }
+        /// How far inside the thumb's outer edge a point is; negative beyond it.
+        func inside(_ point: CGPoint) -> Double { radius - (point.x - root.x) * along.y + (point.y - root.y) * along.x }
+        var join = palmEdge[3], before = inside(join)
+        for step in 1...40 where before > 0 {
+            let t = 1 - Double(step) / 40, here = inside(onPalm(t))
+            if here <= 0 { join = onPalm(t + (0 - here) / (before - here) / 40); break }
+            before = here
+        }
         let start = mix(3, 1.4)
         var inner = Path(), outer = Path(), cover = Path()
         inner.move(to: edge(start, 1)); inner.addLine(to: edge(reach, 1))
-        outer.move(to: edge(reach, 1)); tipArc(&outer); outer.addLine(to: edge(mix(0.42, 0), -1))
-        cover.move(to: edge(0, 1)); cover.addLine(to: edge(reach, 1)); tipArc(&cover); cover.addLine(to: edge(0, -1)); cover.closeSubpath()
+        outer.move(to: edge(reach, 1)); tipArc(&outer); outer.addLine(to: join)
+        cover.move(to: edge(0, 1)); cover.addLine(to: edge(reach, 1)); tipArc(&cover); cover.addLine(to: join); cover.closeSubpath()
         return (outer, inner, cover, edge(reach, 0), (edge(start, 1), edge(start + 1.8, 1)))
     }
 
