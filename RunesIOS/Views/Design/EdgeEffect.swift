@@ -9,7 +9,7 @@ final class BandBuzzFeed: ObservableObject {
     struct Event {
         let at: Date
         let pulse: BandPulse
-        var strength: Double { Double(min(pulse.amplitude, 255)) / 255 }
+        var strength: Double { pulse.strength }
         var seconds: Double { Double(pulse.duration) / 1000 }
     }
 
@@ -17,16 +17,21 @@ final class BandBuzzFeed: ObservableObject {
     static let tail = 1.0
     @Published private(set) var events: [Event] = []
     @Published private(set) var live = false
+    private var quietAt = Date.distantPast
+    private var watch: Task<Void, Never>?
 
     func sent(_ pulse: BandPulse, at date: Date = Date()) {
         let horizon = Date().addingTimeInterval(-3)
         events.removeAll { $0.at < horizon }
         events.append(Event(at: date, pulse: pulse))
+        quietAt = max(quietAt, date.addingTimeInterval(Double(pulse.duration) / 1000 + Self.tail))
         live = true
-        let last = date.addingTimeInterval(Double(pulse.duration) / 1000 + Self.tail)
-        Task {
-            try? await Task.sleep(for: .seconds(max(0, last.timeIntervalSinceNow)))
-            if let newest = events.last, newest.at.addingTimeInterval(newest.seconds + Self.tail) <= Date() { live = false }
+        watch?.cancel()
+        watch = Task {
+            while !Task.isCancelled, quietAt > Date() {
+                try? await Task.sleep(for: .seconds(max(0.05, quietAt.timeIntervalSinceNow)))
+            }
+            if !Task.isCancelled { live = false }
         }
     }
 
@@ -47,19 +52,20 @@ struct EdgeEffectHost: UIViewRepresentable {
     func updateUIView(_ view: UIView, context: Context) {}
 
     private final class Anchor: UIView {
-        private static var window: UIWindow?
+        private static var overlay: UIWindow?
         override func didMoveToWindow() {
             super.didMoveToWindow()
-            guard Self.window == nil, let scene = window?.windowScene else { return }
+            // Rebuilt if the app's scene is replaced, since a window belongs to one scene.
+            guard let scene = window?.windowScene, Self.overlay?.windowScene !== scene else { return }
             let host = UIHostingController(rootView: EdgeEffect())
             host.view.backgroundColor = .clear
-            let overlay = UIWindow(windowScene: scene)
-            overlay.windowLevel = .alert + 1
-            overlay.backgroundColor = .clear
-            overlay.isUserInteractionEnabled = false
-            overlay.rootViewController = host
-            overlay.isHidden = false
-            Self.window = overlay
+            let fresh = UIWindow(windowScene: scene)
+            fresh.windowLevel = .alert + 1
+            fresh.backgroundColor = .clear
+            fresh.isUserInteractionEnabled = false
+            fresh.rootViewController = host
+            fresh.isHidden = false
+            Self.overlay = fresh
         }
     }
 }

@@ -434,10 +434,11 @@ final class SessionCore: @unchecked Sendable {
     func buzzBand(_ buzz: BandBuzz) { play(buzz.pulses, name: buzz.rawValue) }
 
     /// Plays any list of pulses, replacing a pattern still playing. An empty list stops it.
-    func play(_ pulses: [BandPulse], name: String = "custom") {
+    func play(_ pulses: [BandPulse], name: String) {
         guard snapshot.state == .streaming, proto != nil else { return }
         buzzGeneration += 1
         buzzQueue = pulses; buzzResting = false
+        guard !pulses.isEmpty else { return }
         record("band_buzz", "\(name) requested.")
         sendNextPulse()
     }
@@ -453,7 +454,7 @@ final class SessionCore: @unchecked Sendable {
         guard !buzzQueue.isEmpty else { return }
         buzzResting = true
         let generation = buzzGeneration
-        transport.perform(after: Double(pulse.duration + pulse.gap) / 1000) { [weak self] in
+        transport.perform(after: Double(pulse.span) / 1000) { [weak self] in
             guard let self, self.buzzGeneration == generation else { return }
             self.buzzResting = false; self.sendNextPulse()
         }

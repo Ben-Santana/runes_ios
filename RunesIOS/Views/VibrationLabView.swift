@@ -21,7 +21,7 @@ final class VibrationLab: ObservableObject {
         let started: Date
         var loop: Loop?
         /// Planned length; the band can stretch it, since each pulse waits for the last answer.
-        var milliseconds: Double { Double(pulses.reduce(0) { $0 + $1.duration + $1.gap }) }
+        var milliseconds: Double { Double(pulses.milliseconds) }
     }
     struct Sent {
         let at: Date
@@ -46,15 +46,12 @@ final class VibrationLab: ObservableObject {
         var at = now.started
         for pulse in pulses {
             sent.append(Sent(at: at, pulse: pulse))
-            at.addTimeInterval(Double(pulse.duration + pulse.gap) / 1000)
+            at.addTimeInterval(Double(pulse.span) / 1000)
         }
         tapeRunning = true
         Task {
             try? await Task.sleep(for: .milliseconds(Int(now.milliseconds) + 400))
-            guard playback == now else { return }
-            playback = nil
-            try? await Task.sleep(for: .seconds(Self.tapeSeconds))
-            if playback == nil { tapeRunning = false }
+            if playback == now { playback = nil; restTape() }
         }
     }
     func stop() {
@@ -62,6 +59,14 @@ final class VibrationLab: ObservableObject {
         let now = Date()
         sent.removeAll { $0.at > now }
         playback = nil
+        restTape()
+    }
+    /// Lets the last bars scroll off, then stops redrawing the tape.
+    private func restTape() {
+        Task {
+            try? await Task.sleep(for: .seconds(Self.tapeSeconds))
+            if playback == nil { tapeRunning = false }
+        }
     }
     func answered(_ result: WristFeedbackResult, latency: TimeInterval) {
         answers.append(Answer(at: Date(), result: result, latency: latency))
@@ -70,13 +75,13 @@ final class VibrationLab: ObservableObject {
 }
 
 /// A named vibration to try, with what to notice when it is an experiment.
-struct LabPattern: Identifiable, Hashable {
+struct LabPattern: Identifiable {
     let id: String
     let name: String
     var note: String?
     let pulses: [BandPulse]
 
-    var milliseconds: UInt64 { pulses.reduce(0) { $0 + $1.duration + $1.gap } }
+    var milliseconds: UInt64 { pulses.milliseconds }
 
     private static func p(_ duration: UInt64, _ amplitude: UInt64, _ gap: UInt64 = 0) -> BandPulse {
         BandPulse(duration: duration, amplitude: amplitude, gap: gap)
@@ -115,15 +120,15 @@ private func level(of pulses: [BandPulse], at ms: Double) -> (amplitude: Double,
     var start = 0.0, amplitude = 0.0, index: Int?, starts: [(at: Double, strength: Double)] = []
     for (offset, pulse) in pulses.enumerated() {
         guard start <= ms else { break }
-        let strength = Double(min(pulse.amplitude, 255)) / 255
+        let strength = pulse.strength
         starts.append((start, strength))
-        if ms < start + Double(pulse.duration + pulse.gap) { index = offset }
+        if ms < start + Double(pulse.span) { index = offset }
         if ms < start + Double(pulse.duration) {
             // A quick attack and release, like a motor spinning up and down.
             let into = ms - start, left = start + Double(pulse.duration) - ms
             amplitude = strength * min(1, into / 18) * min(1, left / 25 + 0.35)
         }
-        start += Double(pulse.duration + pulse.gap)
+        start += Double(pulse.span)
     }
     return (amplitude, index, starts)
 }
@@ -259,7 +264,7 @@ struct VibrationLabScreen: View {
     private var tapeSummary: String {
         let recent = lab.answers.suffix(24)
         guard !recent.isEmpty else {
-            return "The tape runs right to left. Bars are pulses sent; a tick under the line is the band’s answer to one."
+            return "The tape runs right to left. Bars are the pattern’s pulses; a tick under the line is the band’s answer to one."
         }
         let accepted = recent.filter { $0.result == .accepted }.count
         let average = Int(recent.map(\.latency).reduce(0, +) / Double(recent.count) * 1000)
@@ -363,6 +368,7 @@ private struct StepRing: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var grab: (bead: Int, from: Double, moved: Bool)?
     @State private var remembered = Array(repeating: 230.0, count: 8)
+    @GestureState private var touching = false
 
     /// Bead 0 sits at the front; steps run clockwise from there.
     private static let rotation = Double.pi / 4
@@ -374,7 +380,9 @@ private struct StepRing: View {
                 Canvas { canvas, size in draw(in: &canvas, size: size, now: context.date) }
             }
             .contentShape(Rectangle())
+            .onChange(of: touching) { _, held in if !held { grab = nil } }
             .gesture(DragGesture(minimumDistance: 0)
+                .updating($touching) { _, state, _ in state = true }
                 .onChanged { value in
                     if grab == nil {
                         guard let bead = bead(at: value.startLocation, in: geometry.size) else { return }
@@ -509,6 +517,7 @@ private struct Ruler: View {
     let range: ClosedRange<Double>
     let step: Double
     @State private var from: Double?
+    @GestureState private var touching = false
     private static let pointsPerUnit = 0.9
 
     var body: some View {
@@ -527,7 +536,9 @@ private struct Ruler: View {
         }
         .frame(height: 30)
         .contentShape(Rectangle())
+        .onChange(of: touching) { _, held in if !held { from = nil } }
         .gesture(DragGesture()
+            .updating($touching) { _, state, _ in state = true }
             .onChanged { drag in
                 let start = from ?? value; from = start
                 let moved = start - drag.translation.width / Self.pointsPerUnit
@@ -564,7 +575,7 @@ private struct Tape: View {
                     let left = x(sent.at)
                     let end = min(now, sent.at.addingTimeInterval(Double(sent.pulse.duration) / 1000))
                     guard x(end) > 0 else { continue }
-                    let height = max(2, (floor - 4) * Double(min(sent.pulse.amplitude, 255)) / 255)
+                    let height = max(2, (floor - 4) * sent.pulse.strength)
                     canvas.fill(Path(CGRect(x: left, y: floor - height, width: max(1.5, x(end) - left), height: height)), with: .color(.ink))
                 }
                 for answer in lab.answers {
@@ -595,6 +606,7 @@ private struct PressPad: View {
     }
     @Binding var press: Press?
     let send: (BandPulse) -> Void
+    @GestureState private var touching = false
 
     var body: some View {
         GeometryReader { geometry in
@@ -620,7 +632,9 @@ private struct PressPad: View {
             }
             .clipShape(RoundedRectangle(cornerRadius: Metric.panel))
             .contentShape(Rectangle())
+            .onChange(of: touching) { _, held in if !held { press = nil } }
             .gesture(DragGesture(minimumDistance: 0)
+                .updating($touching) { _, state, _ in state = true }
                 .onChanged { drag in
                     let strength = Int(min(255, max(40, drag.location.x / geometry.size.width * 255)))
                     if press == nil { press = Press(since: Date(), strength: strength) } else { press?.strength = strength }
@@ -654,10 +668,10 @@ private struct PulseStrip: View {
                 let elapsed = playback.map { context.date.timeIntervalSince($0.started) * 1000 } ?? -1
                 var start = 0.0
                 for pulse in pulses {
-                    let height = max(2, size.height * Double(min(pulse.amplitude, 255)) / 255)
+                    let height = max(2, size.height * pulse.strength)
                     let bar = CGRect(x: start * scale, y: size.height - height, width: max(2, Double(pulse.duration) * scale), height: height)
                     canvas.fill(Path(roundedRect: bar, cornerRadius: 1.5), with: .color(playback == nil || elapsed >= start ? .ink : .faint))
-                    start += Double(pulse.duration + pulse.gap)
+                    start += Double(pulse.span)
                 }
             }
         }
@@ -671,6 +685,7 @@ private struct DrawPad: View {
     @Binding var points: [CGPoint]
     let finished: () -> Void
     @State private var drawing = false
+    @GestureState private var touching = false
 
     var body: some View {
         GeometryReader { geometry in
@@ -689,7 +704,9 @@ private struct DrawPad: View {
                 canvas.stroke(stroke, with: .color(.ink), style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
             }
             .contentShape(Rectangle())
+            .onChange(of: touching) { _, held in if !held { drawing = false } }
             .gesture(DragGesture(minimumDistance: 0)
+                .updating($touching) { _, state, _ in state = true }
                 .onChanged { value in
                     if !drawing { drawing = true; points = [] }
                     points.append(CGPoint(x: min(1, max(0, value.location.x / size.width)),

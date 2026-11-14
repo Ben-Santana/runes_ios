@@ -284,6 +284,18 @@ struct BandPulse: Hashable, Sendable {
 }
 
 extension BandPulse {
+    /// Milliseconds from this pulse starting to the next one starting.
+    var span: UInt64 { duration + gap }
+    /// Motor strength as 0…1.
+    var strength: Double { Double(min(amplitude, 255)) / 255 }
+}
+
+extension Array where Element == BandPulse {
+    /// Planned length of a pattern in milliseconds.
+    var milliseconds: UInt64 { reduce(0) { $0 + $1.span } }
+}
+
+extension BandPulse {
     /// The Vibration lab's drawing pad spans `sketchSlots` slots of `sketchSlot` ms.
     static let sketchSlot = 100.0
     static let sketchSlots = 20
