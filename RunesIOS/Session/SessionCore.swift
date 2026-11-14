@@ -52,6 +52,7 @@ final class SessionCore: @unchecked Sendable {
     private var sequences = SequenceTracker()
     private var appState = "launching"
     private var failures = 0
+    private var trustRetried = false
     private var reconnectAt: TimeInterval? { didSet { if (oldValue == nil) != (reconnectAt == nil) { onRetryWait?(reconnectAt != nil) } } }
     private var waitingSince: TimeInterval?
     private var scanUntil: TimeInterval?
@@ -227,7 +228,7 @@ final class SessionCore: @unchecked Sendable {
     }
     func connect(account: UUID? = nil, pending: Bool? = nil) {
         guard snapshot.selected != nil, stoppingUntil == nil, snapshot.state != .disconnecting else { return }
-        transport.stopScan(); scanUntil = nil; userRecoveryRequired = false; failures = 0; reconnectAt = nil
+        transport.stopScan(); scanUntil = nil; userRecoveryRequired = false; failures = 0; trustRetried = false; reconnectAt = nil
         snapshot.connectionAttempt.begin()
         do {
             try chooseCandidate(account: account ?? reusableAccount(), pending: pending)
@@ -251,7 +252,7 @@ final class SessionCore: @unchecked Sendable {
         guard snapshot.selected == id, appState == "foreground", stoppingUntil == nil, snapshot.state != .disconnecting else { return }
         snapshot.connectionAttempt.begin()
         do {
-            transport.disconnect(); proto = nil; reconnectAt = nil; userRecoveryRequired = false; failures = 0
+            transport.disconnect(); proto = nil; reconnectAt = nil; userRecoveryRequired = false; failures = 0; trustRetried = false
             let account = identities.account(for: id)
             candidateAccount = account; candidatePending = true
             let previous = try identities.load(account, pending: true)
@@ -498,7 +499,7 @@ final class SessionCore: @unchecked Sendable {
                     try rpc("stop_streams", 5, 4, BandProtocol.stopFlags)
                 } else {
                     if snapshot.state != .streaming {
-                        failures = 0
+                        failures = 0; trustRetried = false
                         snapshot.startedAt = Date()
                         transition(.streaming, candidate?.bandPoint == nil ? "Receiving band gestures. Compatibility mode: band identity is unverified." : "Receiving band gestures.")
                         requestHand()
@@ -686,7 +687,9 @@ final class SessionCore: @unchecked Sendable {
         }
         resetEMG()
         if stoppingUntil != nil || snapshot.state == .disconnecting { transport.disconnect(); record("shutdown", "Stream stop was not acknowledged."); finishDisconnect(); return }
-        if enrollment != nil || ConnectionRetryPolicy.stopsAutoConnect(error) {
+        let retryTrust = enrollment == nil && !trustRetried && ConnectionRetryPolicy.mayPass(error)
+        if retryTrust { trustRetried = true }
+        if enrollment != nil || (ConnectionRetryPolicy.stopsAutoConnect(error) && !retryTrust) {
             // Identity and ownership failures need the person; retrying cannot fix them.
             transport.disconnect()
             userRecoveryRequired = true; reconnectAt = nil; enrollment = nil; meta = nil; enrollmentAttempt = nil

@@ -416,6 +416,16 @@ extension ConnectionRetryPolicy {
     static func backoff(failures: Int) -> TimeInterval {
         delay(for: .transport("retry"), retries: max(0, failures - 1)).map { min($0, ceiling) } ?? ceiling
     }
+    /// After a handshake is abandoned (repair, forget, or the app quitting mid-trust) the
+    /// band refuses (0x03001043) or ignores the next trust attempt for the same saved
+    /// identity, then accepts the one after. Such a failure earns one retry before the
+    /// person is asked.
+    static func mayPass(_ error: BandError) -> Bool {
+        switch error {
+        case .trust(.rejected(0x03001043, _)), .timeout("trust"): return true
+        default: return false
+        }
+    }
 }
 
 

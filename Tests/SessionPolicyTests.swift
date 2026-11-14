@@ -31,6 +31,15 @@ struct SessionPolicyTests {
             precondition(ConnectionRetryPolicy.stopsAutoConnect(error), "\(error) needs the person")
         }
         precondition(!ConnectionRetryPolicy.stopsAutoConnect(.bluetooth(domain: "CBErrorDomain", code: 6, description: "Timeout", fallback: "Failed")))
+        // A refusal or silence at trust can pass on the next try; other identity failures cannot.
+        for error in [BandError.trust(.rejected(result: 0x03001043, channel: 2)), .timeout(stage: "trust")] {
+            precondition(ConnectionRetryPolicy.mayPass(error) && ConnectionRetryPolicy.stopsAutoConnect(error), "\(error) gets one retry, then stops")
+        }
+        for error in [BandError.trust(.rejected(result: 0x03001044, channel: 2)), .trust(.invalidBandProof),
+                      .timeout(stage: "ceremony"), .timeout(stage: "encryption"), .authentication("rejected"),
+                      .pairing("bond mismatch"), .transport("lost")] {
+            precondition(!ConnectionRetryPolicy.mayPass(error), "\(error) is not retried as a trust failure")
+        }
         precondition(ConnectionRetryPolicy.backoff(failures: 1) == 1)
         precondition(ConnectionRetryPolicy.backoff(failures: 5) == 16)
         for failures in 1...1_000 {
