@@ -9,9 +9,8 @@ struct WristView: View {
     let choose: (Handedness) -> Void
     let feedback: (WristFeedbackPhase, Handedness, UUID) -> Void
     let cancelFeedback: (UUID) -> Void
-    /// `.page` is the Settings screen. `.embedded` is the calmer one inside onboarding: the
-    /// same hands and beads with no sounds, a title supplied by the host, and plain
-    /// Left and Right buttons under the drawing as well as the hands themselves.
+    /// `.page` is the Settings screen. `.embedded` is the same scene placed inside another
+    /// screen, such as onboarding, without the page's own scrolling and title.
     enum Layout { case page, embedded }
     var layout = Layout.page
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -49,10 +48,7 @@ struct WristView: View {
     var body: some View {
         Group {
             if layout == .embedded {
-                VStack(spacing: 4) {
-                    scene(minHeight: nil)
-                    HStack(spacing: 10) { pick(.left); pick(.right) }
-                }
+                scene(minHeight: nil)
             } else {
                 GeometryReader { viewport in
                     ScrollView { scene(minHeight: viewport.size.height) }
@@ -68,7 +64,7 @@ struct WristView: View {
             chosenHand = setting.confirmed
             observedChange = setting.changeID
             showConfirmedHand()
-            cues(scenePhase == .active)
+            WristCues.shared.setActive(scenePhase == .active)
         }
         .task {
             do { try await Task.sleep(for: .seconds(Self.entranceDuration)) } catch { return }
@@ -79,23 +75,10 @@ struct WristView: View {
         .onChange(of: band) { _, _ in stop(); showConfirmedHand() }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { stop() }
-            cues(visible && phase == .active)
+            WristCues.shared.setActive(visible && phase == .active)
         }
         .onChange(of: reduceMotion) { _, _ in stop() }
-        .onDisappear { visible = false; stop(); cues(false) }
-    }
-
-    /// The sound engine only runs for the full page; the embedded one stays quiet.
-    private func cues(_ on: Bool) { WristCues.shared.setActive(on && layout == .page) }
-
-    /// A standard button for one wrist, outlined in ink when the band is set to it.
-    private func pick(_ hand: Handedness) -> some View {
-        Button(hand == .left ? "Left" : "Right") { select(hand) }
-            .buttonStyle(.secondary)
-            .overlay(RoundedRectangle(cornerRadius: Metric.control)
-                .strokeBorder(Color.ink, lineWidth: selected == hand ? 1.5 : 0))
-            .disabled(!canSelect)
-            .accessibilityAddTraits(selected == hand ? .isSelected : [])
+        .onDisappear { visible = false; stop(); WristCues.shared.setActive(false) }
     }
 
     private func scene(minHeight: CGFloat?) -> some View {

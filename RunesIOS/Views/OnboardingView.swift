@@ -135,14 +135,6 @@ struct OnboardingView: View {
 
     // MARK: Copy
 
-    /// The wrist to name: the one being switched to while the band confirms it, so the
-    /// title never flickers through a "checking" state.
-    private var wristInView: Handedness? {
-        switch context.handSetting.pending {
-        case .write(let hand), .verify(let hand): return hand
-        default: return context.handSetting.confirmed
-        }
-    }
 
     private var title: String {
         switch step {
@@ -154,8 +146,7 @@ struct OnboardingView: View {
         case .test:
             if context.testPassed { return "Got it" }
             return context.phase == .connected ? "Tap your index finger" : "Connecting to your band"
-        case .wrist:
-            return wristInView.map { $0 == .left ? "Left wrist" : "Right wrist" } ?? "Which wrist?"
+        case .wrist: return "Choose wrist"
         case .done: return "You’re all set"
         }
     }
@@ -180,11 +171,9 @@ struct OnboardingView: View {
             return context.heard.map { "Heard “\($0.lowercased())”. Try your index finger." }
                 ?? "Your band is connected. Tap your index finger to your thumb, once, to check it’s listening."
         case .wrist:
-            if !context.canChangeHand { return "Connect your band to set which wrist it’s on. You can also do this later in Settings." }
-            if let hand = wristInView {
-                return "Your band is set for your \(hand.rawValue) wrist. Tap the other hand if that’s not where you wear it."
-            }
-            return "Tap the hand you wear your band on."
+            return context.canChangeHand
+                ? "Tap the hand you wear your band on."
+                : "Connect your band to set its wrist. You can also do this later in Settings."
         case .done:
             return "Runes stays connected in the background. You can close the app; it reconnects by itself when the band is nearby."
         }
