@@ -190,19 +190,24 @@ private enum GuideHand {
             let u = 1 - t, weights = [u * u * u, 3 * u * u * t, 3 * u * t * t, t * t * t]
             return zip(palmEdge, weights).reduce(CGPoint.zero) { CGPoint(x: $0.x + $1.0.x * $1.1, y: $0.y + $1.0.y * $1.1) }
         }
-        /// How far inside the thumb's outer edge a point is; negative beyond it.
-        func inside(_ point: CGPoint) -> Double { radius - (point.x - root.x) * along.y + (point.y - root.y) * along.x }
-        var join = palmEdge[3], before = inside(join)
+        /// How far inside the thumb's outer edge a point is; negative once it is clear of it.
+        /// The margin keeps the two edges from running on top of each other before they part.
+        func inside(_ point: CGPoint) -> Double { radius + 0.3 - (point.x - root.x) * along.y + (point.y - root.y) * along.x }
+        var joined = 1.0, before = inside(palmEdge[3])
         for step in 1...40 where before > 0 {
             let t = 1 - Double(step) / 40, here = inside(onPalm(t))
-            if here <= 0 { join = onPalm(t + (0 - here) / (before - here) / 40); break }
+            if here <= 0 { joined = t + (0 - here) / (before - here) / 40; break }
             before = here
         }
+        // It turns into the palm's edge in a short curve rather than at a corner.
+        let join = onPalm(joined), settle = onPalm(min(1, joined + 0.14))
+        let lead = CGPoint(x: join.x + along.x * 1.2, y: join.y + along.y * 1.2)
         let start = mix(3, 1.4)
         var inner = Path(), outer = Path(), cover = Path()
         inner.move(to: edge(start, 1)); inner.addLine(to: edge(reach, 1))
-        outer.move(to: edge(reach, 1)); tipArc(&outer); outer.addLine(to: join)
-        cover.move(to: edge(0, 1)); cover.addLine(to: edge(reach, 1)); tipArc(&cover); cover.addLine(to: join); cover.closeSubpath()
+        outer.move(to: edge(reach, 1)); tipArc(&outer); outer.addLine(to: lead); outer.addQuadCurve(to: settle, control: join)
+        cover.move(to: edge(0, 1)); cover.addLine(to: edge(reach, 1)); tipArc(&cover); cover.addLine(to: lead)
+        cover.addQuadCurve(to: settle, control: join); cover.closeSubpath()
         return (outer, inner, cover, edge(reach, 0), (edge(start, 1), edge(start + 1.8, 1)))
     }
 
@@ -321,7 +326,7 @@ private struct BeadTheatre: View {
         return (Int(beat), beat - beat.rounded(.down))
     }
     private var move: (name: String, finger: Int, twice: Bool, held: Bool) { Plate.moves[gesture.index] }
-    /// How far the finger making the gesture is pressed to the thumb, 0…1: down quickly, up gently.
+    /// How far the finger making the gesture is pressed to the thumb, 0…1, eased at both ends.
     private var press: Double {
         let live = settled(on: .gestures)
         guard !still, live > 0 else { return 0 }
@@ -329,11 +334,13 @@ private struct BeadTheatre: View {
         func tap(_ from: Double, _ to: Double) -> Double {
             let along = (into - from) / (to - from)
             guard along > 0, along < 1 else { return 0 }
-            if along < 0.3 { return 1 - pow(1 - along / 0.3, 3) }
-            let up = max(0, (along - 0.5) / 0.5)
-            return 1 - up * up * (3 - 2 * up)
+            let down = min(1, along / 0.3), up = max(0, (along - 0.5) / 0.5)
+            return down * down * (3 - 2 * down) * (1 - up * up * (3 - 2 * up))
         }
-        if move.held { return live * min(1, max(0, min((into - 0.1) / 0.1, (0.92 - into) / 0.1))) }
+        if move.held {
+            let held = min(1, max(0, min((into - 0.08) / 0.12, (0.94 - into) / 0.12)))
+            return live * held * held * (3 - 2 * held)
+        }
         return live * (move.twice ? tap(0.08, 0.38) + tap(0.42, 0.72) : tap(0.12, 0.52))
     }
     /// 1 while the guide rests on `plate`, falling to 0 a third of the way to the next. Gestures
