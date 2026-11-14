@@ -28,6 +28,8 @@ final class SessionCore: @unchecked Sendable {
     /// Every raw band sample (gyro, orientation, EMG, gesture) while streaming, for the Motion Lab.
     var onRaw: ((RawSample) -> Void)?
     var onEMGStatus: ((String) -> Void)?
+    /// Each played pulse's answer from the band, with seconds from send to answer.
+    var onPulse: ((WristFeedbackResult, TimeInterval) -> Void)?
     /// Orientation and gyroscope samples, whether they were started for the Mac or for this phone.
     var onMotion: ((RelayWire.Event.Kind, [Double]) -> Void)?
     var onGesture: ((GestureEvent) -> Void)?
@@ -67,6 +69,7 @@ final class SessionCore: @unchecked Sendable {
     private var buzzQueue: [BandPulse] = []
     private var buzzResting = false
     private var buzzGeneration = 0
+    private var pulseSentAt: TimeInterval?
     private var pendingHandTarget: (band: UUID, attempt: Date)?
     private static let notNearbyAfter: TimeInterval = 30
 
@@ -426,11 +429,14 @@ final class SessionCore: @unchecked Sendable {
 
     /// Vibrates the band, replacing any pattern still playing. Works with the app in the
     /// background, as long as the band is streaming.
-    func buzzBand(_ buzz: BandBuzz) {
+    func buzzBand(_ buzz: BandBuzz) { play(buzz.pulses, name: buzz.rawValue) }
+
+    /// Plays any list of pulses, replacing a pattern still playing. An empty list stops it.
+    func play(_ pulses: [BandPulse], name: String = "custom") {
         guard snapshot.state == .streaming, proto != nil else { return }
         buzzGeneration += 1
-        buzzQueue = buzz.pulses; buzzResting = false
-        record("band_buzz", "\(buzz.rawValue) requested.")
+        buzzQueue = pulses; buzzResting = false
+        record("band_buzz", "\(name) requested.")
         sendNextPulse()
     }
 
@@ -440,7 +446,7 @@ final class SessionCore: @unchecked Sendable {
         guard snapshot.state == .streaming, let proto else { buzzQueue = []; return }
         guard proto.canSendWristFeedback else { return }
         let pulse = buzzQueue.removeFirst()
-        do { try rpc("wrist_feedback", 6, 17, pulse.payload) }
+        do { try rpc("wrist_feedback", 6, 17, pulse.payload); pulseSentAt = ProcessInfo.processInfo.systemUptime }
         catch { record("band_buzz", "Send unconfirmed."); buzzQueue = []; return }
         guard !buzzQueue.isEmpty else { return }
         buzzResting = true
@@ -532,9 +538,11 @@ final class SessionCore: @unchecked Sendable {
         case .wristFeedback(let result):
             if let feedback = feedbackInFlight {
                 record("wrist_feedback", "\(feedback.rawValue) \(result.rawValue).")
-            } else if result != .accepted {
-                record("band_buzz", "Pulse \(result.rawValue).")
+            } else {
+                if result != .accepted { record("band_buzz", "Pulse \(result.rawValue).") }
+                if let sent = pulseSentAt { onPulse?(result, receipt.uptime - sent) }
             }
+            pulseSentAt = nil
             feedbackInFlight = nil
             sendPendingHand(); sendNextPulse(); publish()
         case .emg(let values, let sequence, let timestamp):

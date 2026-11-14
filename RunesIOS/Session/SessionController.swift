@@ -112,6 +112,7 @@ final class SessionController: ObservableObject {
         WorkoutStore.shared.onActivity = { [weak self] state, alert in self?.live.show(workout: state, alert: alert) }
         WorkoutStore.shared.onReserve = { [weak self] in self?.reserve($0, for: .workouts) }
         ScoreAudio.shared.onBandBuzz = { [core] buzz in core.transport.perform { core.buzzBand(buzz) } }
+        core.onPulse = { result, latency in Task { @MainActor in VibrationLab.shared.answered(result, latency: latency) } }
         WorkoutStore.shared.onSound = { voice, volume in ScoreAudio.shared.cue(voice, volume: volume) }
         WorkoutStore.shared.onSoundsLive = { ScoreAudio.shared.setLive($0, for: "workout") }
         ScoreStore.shared.onReserve = { [weak self] in self?.reserve($0, for: .score) }
@@ -276,6 +277,7 @@ final class SessionController: ObservableObject {
         guard foreground, let band = snapshot.selected, let attempt = snapshot.connectionAttempt.startedAt else { return }
         core.transport.perform { [core] in core.wristFeedback(phase, for: hand, change: change, band: band, attempt: attempt) }
     }
+    func vibrate(_ pulses: [BandPulse]) { core.transport.perform { [core] in core.play(pulses, name: "lab") } }
     func cancelWristFeedback(change: UUID) {
         core.transport.perform { [core] in core.cancelWristFeedback(change: change) }
     }

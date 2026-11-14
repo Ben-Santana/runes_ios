@@ -283,6 +283,48 @@ struct BandPulse: Hashable, Sendable {
     var payload: Data { PB.field(1, PB.field(1, duration) + PB.field(3, min(amplitude, 255))) }
 }
 
+extension BandPulse {
+    /// The Vibration lab's drawing pad spans `sketchSlots` slots of `sketchSlot` ms.
+    static let sketchSlot = 100.0
+    static let sketchSlots = 20
+    /// Drawn quieter than this, a slot is a pause rather than a pulse.
+    static let sketchFloor: UInt64 = 25
+
+    /// A drawing (x 0…1 across the pad, y 0…1 strength) as pulses: each slot plays for most
+    /// of its time at the average height drawn in it; quiet or empty slots lengthen the pause.
+    static func sketch(_ points: [(x: Double, y: Double)]) -> [BandPulse] {
+        var pulses: [BandPulse] = []
+        for slot in 0..<sketchSlots {
+            let heights = points.filter { min(sketchSlots - 1, max(0, Int($0.x * Double(sketchSlots)))) == slot }
+                .map { min(1, max(0, $0.y)) }
+            let amplitude = heights.isEmpty ? 0 : UInt64((heights.reduce(0, +) / Double(heights.count) * 255).rounded())
+            if amplitude < sketchFloor {
+                if !pulses.isEmpty { pulses[pulses.count - 1].gap += UInt64(sketchSlot) }
+            } else {
+                pulses.append(BandPulse(duration: UInt64(sketchSlot * 0.8), amplitude: amplitude, gap: UInt64(sketchSlot * 0.2)))
+            }
+        }
+        return pulses
+    }
+
+    /// The Vibration lab's ring as pulses: each lit step plays for most of `stepLength` ms at
+    /// its strength, and unlit steps lengthen the pause. Each pulse keeps the step it came from.
+    static func loop(steps: [UInt64], stepLength: UInt64, laps: Int) -> [(pulse: BandPulse, step: Int)] {
+        var played: [(pulse: BandPulse, step: Int)] = []
+        for _ in 0..<max(1, laps) {
+            for (step, strength) in steps.enumerated() {
+                if strength == 0 {
+                    if !played.isEmpty { played[played.count - 1].pulse.gap += stepLength }
+                } else {
+                    let on = stepLength * 6 / 10
+                    played.append((BandPulse(duration: on, amplitude: min(strength, 255), gap: stepLength - on), step))
+                }
+            }
+        }
+        return played
+    }
+}
+
 /// The vibration patterns the band can play, offered beside the sounds in the library.
 enum BandBuzz: String, Codable, CaseIterable, Sendable {
     case buzz, tap, double, triple, long, heartbeat, rise, fade, flutter

@@ -87,6 +87,8 @@ struct SnapshotGallery: View {
             RingLab(autoplay: name == "ring-demo")
         } else if name.hasPrefix("wrist") {
             WristPreview(name: name)
+        } else if name == "vibration-lab" {
+            NavigationStack { VibrationLabScreen() }
         } else if name == "settings" {
             SettingsView(values: SettingsValues(battery: 82, handSetting: HandSetting(confirmed: .left), version: "0.2.0 (2)")) { EmptyView() }
         } else if name == "mappings" {
