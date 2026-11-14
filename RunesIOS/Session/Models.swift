@@ -321,8 +321,9 @@ enum WristFeedbackResult: String, Sendable {
     init(_ payload: Data) {
         guard let fields = try? Fields(payload), let status = try? fields.integer(2) else { self = .unconfirmed; return }
         guard status == 1 else { self = .rejected; return }
-        guard let response = try? Fields(fields.bytes(18)), (try? response.bytes(2)) != nil,
-              let result = try? response.integer(1) else { self = .unconfirmed; return }
+        // The band answers a pulse it ran with an empty result block: zero is left off the wire.
+        guard let response = try? Fields(fields.bytes(18)),
+              let result = try? response.integer(1, default: 0) else { self = .unconfirmed; return }
         self = result == 0 ? .accepted : .rejected
     }
 }

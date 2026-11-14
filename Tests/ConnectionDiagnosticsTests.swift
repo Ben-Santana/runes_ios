@@ -154,14 +154,19 @@ struct ConnectionDiagnosticsTests {
         precondition(WristFeedbackPhase.settle.payload == Data([0x0a, 0x05, 0x08, 0x64, 0x18, 0xe6, 0x01]))
         let nestedSuccess = PB.field(18, PB.field(1, 0) + PB.field(2, Data()))
         let responses: [(Data, WristFeedbackResult)] = [
+            // The band's real reply: status 1 and an empty result block, zero being left off the wire.
+            (PB.field(2, 1) + PB.field(18, Data()), .accepted),
             (PB.field(2, 1) + nestedSuccess, .accepted),
             (PB.field(2, 0) + nestedSuccess, .rejected),
             (nestedSuccess, .unconfirmed),
             (PB.field(2, 1), .unconfirmed),
             (PB.field(2, 1) + PB.field(2, 1) + nestedSuccess, .unconfirmed),
             (PB.field(2, 1) + PB.field(18, PB.field(1, 1) + PB.field(2, Data())), .rejected),
-            (PB.field(2, 1) + PB.field(18, PB.field(2, Data())), .unconfirmed),
-            (PB.field(2, 1) + PB.field(18, PB.field(1, 0) + PB.field(3, Data())), .unconfirmed)
+            (PB.field(2, 1) + PB.field(18, PB.field(2, Data())), .accepted),
+            (PB.field(2, 1) + PB.field(18, PB.field(1, 0) + PB.field(3, Data())), .accepted),
+            (PB.field(2, 1) + PB.field(18, PB.field(1, 7)), .rejected),
+            (PB.field(2, 1) + PB.field(18, PB.field(1, 0) + PB.field(1, 7)), .unconfirmed),
+            (PB.field(2, 1) + PB.field(18, PB.field(1, Data([1]))), .unconfirmed)
         ]
         for (response, expected) in responses {
             let fixture = try TrustFixture(); try fixture.authenticate()
