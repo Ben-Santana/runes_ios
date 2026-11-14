@@ -143,12 +143,14 @@ struct VibrationLabScreen: View {
     @State private var press: PressPad.Press?
     @State private var copied = false
     @AppStorage(EdgeStyle.key) private var edgeStyle = EdgeStyle.threads.rawValue
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var ready: Bool { controller.snapshot.state == .streaming }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 36) {
+                if reduceMotion { stillNotice }
                 instrument
                 tape
                 pad
@@ -174,6 +176,16 @@ struct VibrationLabScreen: View {
         selected = nil
         lab.play(loop.map(\.pulse), name: "Your loop", onBand: ready,
                  loop: VibrationLab.Loop(beads: loop.map(\.step), lap: stepLength * 8))
+    }
+
+    /// Reduce Motion replaces every movement here with a still state, which is easy to
+    /// mistake for the lab not working.
+    private var stillNotice: some View {
+        Text("Reduce Motion is on, so nothing here moves: the beads don’t shake, the wrist doesn’t turn and every edge style is the same still line. To see the motion, turn it off in Settings → Accessibility → Motion.")
+            .font(.caption).fixedSize(horizontal: false, vertical: true)
+            .padding(Metric.inset).frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.soft, in: RoundedRectangle(cornerRadius: Metric.panel))
+            .overlay(RoundedRectangle(cornerRadius: Metric.panel).strokeBorder(Color.rule, lineWidth: Metric.hairline))
     }
 
     // MARK: The ring
