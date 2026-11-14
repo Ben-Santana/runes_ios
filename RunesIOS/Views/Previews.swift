@@ -21,6 +21,7 @@ enum PreviewFixtures {
         ("sign-in", .signIn, .init(bluetooth: .allowed)),
         ("test", .test, .init(bluetooth: .allowed, phase: .connected, heard: "Middle tap")),
         ("test-passed", .test, .init(bluetooth: .allowed, phase: .connected, testPassed: true)),
+        ("wrist", .wrist, .init(bluetooth: .allowed, phase: .connected, handSetting: HandSetting(confirmed: .right), canChangeHand: true)),
         ("done", .done, .init(bluetooth: .allowed, phase: .connected)),
     ]
     static func event(_ finger: UInt64, _ action: UInt64, _ derived: UInt64, _ sequence: UInt64, _ secondsAgo: Double) -> GestureEvent {

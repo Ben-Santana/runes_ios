@@ -9,6 +9,11 @@ struct WristView: View {
     let choose: (Handedness) -> Void
     let feedback: (WristFeedbackPhase, Handedness, UUID) -> Void
     let cancelFeedback: (UUID) -> Void
+    /// `.page` is the Settings screen. `.embedded` is the calmer one inside onboarding: the
+    /// same hands and beads with no sounds, a title supplied by the host, and plain
+    /// Left and Right buttons under the drawing as well as the hands themselves.
+    enum Layout { case page, embedded }
+    var layout = Layout.page
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
     @State private var acceptedHand: Handedness?
@@ -23,9 +28,11 @@ struct WristView: View {
     @State private var nudged: Date?
 
     init(setting: HandSetting, connected: Bool, band: UUID?, choose: @escaping (Handedness) -> Void,
-         feedback: @escaping (WristFeedbackPhase, Handedness, UUID) -> Void, cancelFeedback: @escaping (UUID) -> Void) {
+         feedback: @escaping (WristFeedbackPhase, Handedness, UUID) -> Void, cancelFeedback: @escaping (UUID) -> Void,
+         layout: Layout = .page) {
         self.setting = setting; self.connected = connected; self.band = band
         self.choose = choose; self.feedback = feedback; self.cancelFeedback = cancelFeedback
+        self.layout = layout
         // Opens on the wrist the band is set for, rather than moving there once on screen.
         _chosenHand = State(initialValue: setting.confirmed)
     }
@@ -40,8 +47,58 @@ struct WristView: View {
     }
 
     var body: some View {
-        GeometryReader { viewport in
-        ScrollView {
+        Group {
+            if layout == .embedded {
+                VStack(spacing: 4) {
+                    scene(minHeight: nil)
+                    HStack(spacing: 10) { pick(.left); pick(.right) }
+                }
+            } else {
+                GeometryReader { viewport in
+                    ScrollView { scene(minHeight: viewport.size.height) }
+                }
+                .scrollBounceBehavior(.basedOnSize)
+                .page()
+                .navigationTitle("Choose wrist").navigationBarTitleDisplayMode(.inline)
+            }
+        }
+        .onAppear {
+            visible = true
+            enteredAt = reduceMotion ? nil : Date()
+            chosenHand = setting.confirmed
+            observedChange = setting.changeID
+            showConfirmedHand()
+            cues(scenePhase == .active)
+        }
+        .task {
+            do { try await Task.sleep(for: .seconds(Self.entranceDuration)) } catch { return }
+            enteredAt = nil
+        }
+        .onChange(of: setting) { _, _ in updateSetting() }
+        .onChange(of: connected) { _, connected in if !connected { stop() } }
+        .onChange(of: band) { _, _ in stop(); showConfirmedHand() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { stop() }
+            cues(visible && phase == .active)
+        }
+        .onChange(of: reduceMotion) { _, _ in stop() }
+        .onDisappear { visible = false; stop(); cues(false) }
+    }
+
+    /// The sound engine only runs for the full page; the embedded one stays quiet.
+    private func cues(_ on: Bool) { WristCues.shared.setActive(on && layout == .page) }
+
+    /// A standard button for one wrist, outlined in ink when the band is set to it.
+    private func pick(_ hand: Handedness) -> some View {
+        Button(hand == .left ? "Left" : "Right") { select(hand) }
+            .buttonStyle(.secondary)
+            .overlay(RoundedRectangle(cornerRadius: Metric.control)
+                .strokeBorder(Color.ink, lineWidth: selected == hand ? 1.5 : 0))
+            .disabled(!canSelect)
+            .accessibilityAddTraits(selected == hand ? .isSelected : [])
+    }
+
+    private func scene(minHeight: CGFloat?) -> some View {
             TimelineView(.animation(minimumInterval: 1 / 60, paused: reduceMotion || !visible || scenePhase != .active)) { context in
                 let entry = enteredAt.map { min(1, max(0, context.date.timeIntervalSince($0) / Self.entranceDuration)) } ?? 1
                 let progress = min(1, max(0, (entry - 0.16) / 0.18))
@@ -64,36 +121,10 @@ struct WristView: View {
                                 .modifier(WristReveal(progress: reveal))
                         }
                 }
-                .padding(.horizontal, Metric.gutter)
-                .padding(.vertical, 32)
-                .frame(maxWidth: .infinity, minHeight: viewport.size.height)
+                .padding(.horizontal, minHeight == nil ? 0 : Metric.gutter)
+                .padding(.vertical, minHeight == nil ? 0 : 32)
+                .frame(maxWidth: .infinity, minHeight: minHeight)
             }
-        }
-        }
-        .scrollBounceBehavior(.basedOnSize)
-        .page()
-        .navigationTitle("Choose wrist").navigationBarTitleDisplayMode(.inline)
-        .onAppear {
-            visible = true
-            enteredAt = reduceMotion ? nil : Date()
-            chosenHand = setting.confirmed
-            observedChange = setting.changeID
-            showConfirmedHand()
-            WristCues.shared.setActive(scenePhase == .active)
-        }
-        .task {
-            do { try await Task.sleep(for: .seconds(Self.entranceDuration)) } catch { return }
-            enteredAt = nil
-        }
-        .onChange(of: setting) { _, _ in updateSetting() }
-        .onChange(of: connected) { _, connected in if !connected { stop() } }
-        .onChange(of: band) { _, _ in stop(); showConfirmedHand() }
-        .onChange(of: scenePhase) { _, phase in
-            if phase != .active { stop() }
-            WristCues.shared.setActive(visible && phase == .active)
-        }
-        .onChange(of: reduceMotion) { _, _ in stop() }
-        .onDisappear { visible = false; stop(); WristCues.shared.setActive(false) }
     }
 
     /// The letters follow their hands: the chosen one darkens and leans in with it.

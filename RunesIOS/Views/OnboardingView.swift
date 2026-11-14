@@ -2,7 +2,7 @@ import SwiftUI
 import CoreBluetooth
 
 enum OnboardingStep: Int, CaseIterable {
-    case welcome, bluetooth, pairing, pick, signIn, test, done
+    case welcome, bluetooth, pairing, pick, signIn, test, wrist, done
 }
 
 /// Plain values describing what onboarding can show right now.
@@ -22,13 +22,15 @@ struct OnboardingContext: Equatable {
     var testPassed = false
     var canSetUpBandAgain = false
     var selectedBand: UUID?
+    var handSetting = HandSetting()
+    var canChangeHand = false
 
     static func == (a: Self, b: Self) -> Bool {
         a.bluetooth == b.bluetooth && a.devices.map(\.id) == b.devices.map(\.id) && a.searching == b.searching
             && a.working == b.working && a.issue == b.issue && a.phase == b.phase && a.gesture?.id == b.gesture?.id
             && a.heard == b.heard && a.testPassed == b.testPassed && a.systemPicker == b.systemPicker
             && a.canSetUpBandAgain == b.canSetUpBandAgain
-            && a.selectedBand == b.selectedBand
+            && a.selectedBand == b.selectedBand && a.handSetting == b.handSetting && a.canChangeHand == b.canChangeHand
     }
 }
 
@@ -45,6 +47,9 @@ struct OnboardingActions {
     var resolve: (SessionIssue.Action) -> Void = { _ in }
     var finish: () -> Void = {}
     var setUpBandAgain: (UUID) -> Void = { _ in }
+    var setHand: (Handedness) -> Void = { _ in }
+    var wristFeedback: (WristFeedbackPhase, Handedness, UUID) -> Void = { _, _, _ in }
+    var cancelWristFeedback: (UUID) -> Void = { _ in }
 }
 
 struct OnboardingView: View {
@@ -58,8 +63,15 @@ struct OnboardingView: View {
             topBar
             ScrollView {
                 VStack(spacing: 0) {
-                    HairlineRing(phase: ringPhase, gesture: context.gesture, emphasis: emphasis)
-                        .frame(maxWidth: 300).padding(.top, 8).padding(.bottom, 12)
+                    if step == .wrist {
+                        WristView(setting: context.handSetting, connected: context.canChangeHand, band: context.selectedBand,
+                                  choose: actions.setHand, feedback: actions.wristFeedback,
+                                  cancelFeedback: actions.cancelWristFeedback, layout: .embedded)
+                            .padding(.bottom, 20)
+                    } else {
+                        HairlineRing(phase: ringPhase, gesture: context.gesture, emphasis: emphasis)
+                            .frame(maxWidth: 300).padding(.top, 8).padding(.bottom, 12)
+                    }
                     VStack(alignment: .leading, spacing: 10) {
                         Text(title).font(.display).tracking(-0.6).fixedSize(horizontal: false, vertical: true)
                             .accessibilityAddTraits(.isHeader)
@@ -109,7 +121,7 @@ struct OnboardingView: View {
         case .pick: return context.searching ? .connecting : .notSetUp
         case .signIn: return context.working ? .connecting : (context.issue != nil ? .attention : .notSetUp)
         case .test: return context.phase == .connected ? .connected : .connecting
-        case .done: return .connected
+        case .wrist, .done: return .connected
         }
     }
 
@@ -131,6 +143,9 @@ struct OnboardingView: View {
         case .pick: return "Choose your band"
         case .signIn: return "Sign in with Meta"
         case .test: return context.testPassed ? "Got it" : "Tap your index finger"
+        case .wrist:
+            if context.handSetting.busy { return "Checking your band" }
+            return context.handSetting.confirmed.map { $0 == .left ? "Left wrist" : "Right wrist" } ?? "Which wrist?"
         case .done: return "You’re all set"
         }
     }
@@ -153,6 +168,13 @@ struct OnboardingView: View {
             if context.testPassed { return "Your band is talking to your phone." }
             if context.phase != .connected { return "Connecting to your band…" }
             return context.heard.map { "Heard “\($0.lowercased())”. Try your index finger." } ?? "Tap your index finger to your thumb, once."
+        case .wrist:
+            if !context.canChangeHand { return "Connect your band to set which wrist it’s on. You can also do this later in Settings." }
+            if context.handSetting.busy { return "Checking your band’s setting…" }
+            if let hand = context.handSetting.confirmed {
+                return "Your band is set for your \(hand.rawValue) wrist. Tap the other hand if that’s not where you wear it."
+            }
+            return "Tap the hand you wear your band on."
         case .done:
             return "Runes stays connected in the background. You can close the app; it reconnects by itself when the band is nearby."
         }
@@ -164,7 +186,7 @@ struct OnboardingView: View {
         switch step {
         case .pick: pickList
         case .signIn: signInContent
-        case .test, .done, .welcome, .bluetooth, .pairing:
+        case .test, .wrist, .done, .welcome, .bluetooth, .pairing:
             if let issue = context.issue, step == .test {
                 VStack(spacing: 12) {
                     IssueCard(issue: issue, action: actions.resolve)
@@ -268,6 +290,8 @@ struct OnboardingView: View {
                     Button("Skip", action: actions.next).buttonStyle(.quiet)
                     guideButton
                 }
+            case .wrist:
+                Button("Continue", action: actions.next).buttonStyle(.primary)
             case .done:
                 Button("Done", action: actions.finish).buttonStyle(.primary)
             }
@@ -324,7 +348,9 @@ struct OnboardingFlow: View {
             issue: step == .signIn && controller.uiError != nil ? .signInFailed : snapshot.issue,
             phase: BandStatus(snapshot, setupComplete: true, relayStatus: nil).phase,
             gesture: snapshot.lastGesture, heard: heard, testPassed: passed,
-            canSetUpBandAgain: controller.canSetUpBandAgain, selectedBand: snapshot.selected)
+            canSetUpBandAgain: controller.canSetUpBandAgain, selectedBand: snapshot.selected,
+            handSetting: snapshot.handSetting,
+            canChangeHand: snapshot.state == .streaming && snapshot.selected != nil)
     }
 
     private var actions: OnboardingActions {
@@ -349,7 +375,10 @@ struct OnboardingFlow: View {
                 if action == .retrySignIn { controller.uiError = nil; controller.enroll() } else { controller.perform(action) }
             },
             finish: { controller.completeSetup(); finished() },
-            setUpBandAgain: controller.setUpBandAgain)
+            setUpBandAgain: controller.setUpBandAgain,
+            setHand: controller.setHand,
+            wristFeedback: { phase, hand, change in controller.wristFeedback(phase, for: hand, change: change) },
+            cancelWristFeedback: { controller.cancelWristFeedback(change: $0) })
     }
 
     private func advance(to next: OnboardingStep) {
@@ -365,7 +394,8 @@ struct OnboardingFlow: View {
         case .pairing: advance(to: .pick)
         case .pick: afterPick()
         case .signIn: startTest()
-        case .test: advance(to: .done)
+        case .test: advance(to: .wrist)
+        case .wrist: advance(to: .done)
         case .done: break
         }
     }

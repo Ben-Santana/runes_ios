@@ -6,6 +6,9 @@ struct BandGuidePage: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {
+                // The wrist page's own drawing, still: the beads sit where the band goes.
+                WristArtwork(state: WristFrame(handBlend: 0), confirmed: true, moving: false, entrance: 1, focus: 1)
+                    .padding(.vertical, -24)
                 PanelGroup("Wearing it") {
                     GuideRow("On the hand you write with")
                     Rule()
@@ -67,7 +70,7 @@ struct BandGuideSheet: View {
 }
 
 /// One line of the guide: what, a sentence of how, and the band's light when that helps.
-private struct GuideRow: View {
+struct GuideRow: View {
     enum Light {
         case steady(Color), blinking(Color)
     }
@@ -81,7 +84,7 @@ private struct GuideRow: View {
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
-            if let light { dot(light).alignmentGuide(.firstTextBaseline) { $0[.bottom] - 1 } }
+            if let light { dot(light).alignmentGuide(.firstTextBaseline) { $0[.bottom] - 4 } }
             VStack(alignment: .leading, spacing: 3) {
                 Text(title).font(.bodyText)
                 if let detail {
@@ -95,13 +98,36 @@ private struct GuideRow: View {
         .accessibilityElement(children: .combine)
     }
 
-    /// The band's own light colours, the one place the app shows them. Blinking is a ring.
-    @ViewBuilder private func dot(_ light: Light) -> some View {
-        switch light {
-        case .steady(let colour):
-            Circle().fill(colour).frame(width: 10, height: 10)
-        case .blinking(let colour):
-            Circle().strokeBorder(colour, lineWidth: 2.5).frame(width: 10, height: 10)
+    /// The band's light drawn as one of its beads, in the light's own colour: the one place
+    /// the app shows colour. A blinking light pulses; Reduce Motion shows it as a ring.
+    private func dot(_ light: Light) -> some View {
+        BeadLight(light: light)
+    }
+}
+
+private struct BeadLight: View {
+    let light: GuideRow.Light
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var lit = true
+
+    var body: some View {
+        ZStack {
+            Circle().fill(Color.paper)
+            Circle().strokeBorder(Color.ink.opacity(0.7), lineWidth: Metric.hairline)
+            switch light {
+            case .steady(let colour):
+                Circle().fill(colour).frame(width: 8, height: 8)
+            case .blinking(let colour):
+                if reduceMotion {
+                    Circle().strokeBorder(colour, lineWidth: 2).frame(width: 9, height: 9)
+                } else {
+                    Circle().fill(colour).frame(width: 8, height: 8).opacity(lit ? 1 : 0.12)
+                        .animation(.easeInOut(duration: 0.55).repeatForever(autoreverses: true), value: lit)
+                        .onAppear { lit = false }
+                }
+            }
         }
+        .frame(width: 20, height: 20)
+        .accessibilityHidden(true)
     }
 }
