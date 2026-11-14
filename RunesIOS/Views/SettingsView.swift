@@ -57,7 +57,7 @@ struct SettingsView<Advanced: View>: View {
                         }
                         .buttonStyle(.plain)
                         Rule()
-                        LinkRow("Using your band") { BandGuidePage() }
+                        LinkRow("Band guide") { BandGuidePage() }
                         Rule()
                         ActionRow("Forget band") { confirmForget = true }.disabled(!values.bandSetUp)
                     }
