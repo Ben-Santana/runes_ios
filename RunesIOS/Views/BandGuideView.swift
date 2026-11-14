@@ -50,13 +50,22 @@ struct BandGuidePage: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dismiss) private var dismiss
-    /// The page as a fraction while it is being swiped.
-    @State private var position = 0.0
     @State private var page: Int? = 0
-    /// When each plate last came into view, so its lesson starts from the beginning.
+    /// Where the beads are headed and when they set off. They travel at their own pace, a little
+    /// behind the page, so each change of arrangement can be watched.
+    @State private var travel = (from: 0.0, to: 0.0, since: 0.0)
+    /// When the beads last set off for each plate, so its lesson starts from the beginning.
     @State private var entered = Array(repeating: Date().timeIntervalSinceReferenceDate, count: Plate.allCases.count)
 
     private var current: Int { page ?? 0 }
+    /// Seconds the beads take to cross from one plate to the next.
+    private static let tempo = 1.05
+    /// Where the beads are between plates at a moment in time.
+    private func place(at time: Double) -> Double {
+        let distance = abs(travel.to - travel.from)
+        guard !reduceMotion, distance > 0 else { return travel.to }
+        return travel.from + (travel.to - travel.from) * min(1, max(0, (time - travel.since) / (Self.tempo * distance)))
+    }
     private var isLast: Bool { current == Plate.allCases.count - 1 }
 
     var body: some View {
@@ -87,14 +96,14 @@ struct BandGuidePage: View {
                     .scrollTargetBehavior(.paging)
                     .scrollPosition(id: $page)
                     .scrollIndicators(.hidden)
-                    .onScrollGeometryChange(for: Double.self) { $0.contentOffset.x / max(1, $0.containerSize.width) } action: { old, value in
-                        position = value
-                        for plate in Plate.allCases where abs(value - Double(plate.rawValue)) < 1 && abs(old - Double(plate.rawValue)) >= 1 {
-                            entered[plate.rawValue] = Date().timeIntervalSinceReferenceDate
-                        }
+                    .onChange(of: page) { _, new in
+                        // Each lesson starts from its beginning as the beads set off for it.
+                        let now = Date().timeIntervalSinceReferenceDate, target = new ?? 0
+                        travel = (place(at: now), Double(target), now)
+                        entered[target] = now
                     }
                     TimelineView(.animation(minimumInterval: 1 / 60, paused: reduceMotion || scenePhase != .active)) { context in
-                        BeadTheatre(position: position, time: context.date.timeIntervalSinceReferenceDate, entered: entered, still: reduceMotion)
+                        BeadTheatre(position: place(at: context.date.timeIntervalSinceReferenceDate), time: context.date.timeIntervalSinceReferenceDate, entered: entered, still: reduceMotion)
                     }
                     .frame(height: stage)
                     .allowsHitTesting(false)
@@ -140,9 +149,61 @@ struct BandGuideSheet: View {
 private enum GuideHand {
     static let scale = 7.6, top = 26.0, wristX = 13.6
     static let rest = [5.0, 3, 5, 7.3]
-    /// The heel of the hand and the forearm; then the thumb side.
+    /// The heel of the hand and the forearm; then the edge of the palm that the thumb lies over, and the wrist.
     static let sides = ["M22 14C22 17.6 20.9 20 19.6 21.8C18.9 22.8 18.6 23.8 18.6 25C18.6 28 18.8 31.5 19.2 35.5",
-                        "M7 15L5.24 13.24a2 2 0 0 0-2.83 2.82L6.01 19.66C7.4 21 8.2 22.6 8.2 24.5C8.2 27.5 7.9 31 7.4 35.5"].map(SVGPath.cached)
+                        "M6 14C5.7 16 5.7 18.3 6.01 19.66C7.4 21 8.2 22.6 8.2 24.5C8.2 27.5 7.9 31 7.4 35.5"].map(SVGPath.cached)
+    /// The thumb at rest: where it joins the hand, its direction in degrees and its length.
+    static let thumbRest = (root: CGPoint(x: 7.72, y: 18.54), turn: 225.0, reach: 5.5)
+    /// For a press of the index or the middle finger: how far down its knuckle comes as it
+    /// folds, where its tip ends up in front of the palm, and the thumb reaching over to meet it.
+    /// The thumb's root rolls in over the palm, and it shortens as it points toward you.
+    static let pinch: [(knuckle: Double, finger: CGPoint, thumb: (root: CGPoint, turn: Double, reach: Double))] =
+        [(7.4, CGPoint(x: 8.5, y: 10.9), (CGPoint(x: 9.4, y: 18.2), 269, 4.3)),
+         (6.4, CGPoint(x: 11.7, y: 10.6), (CGPoint(x: 9.6, y: 18.2), 288, 4.7))]
+
+    /// A rounded limb from one point to another, which may widen as it comes toward you.
+    static func limb(from start: CGPoint, to end: CGPoint, radii: (Double, Double)) -> Path {
+        let length = max(0.001, hypot(end.x - start.x, end.y - start.y))
+        let across = CGPoint(x: -(end.y - start.y) / length, y: (end.x - start.x) / length)
+        let turn = Angle(radians: atan2(end.y - start.y, end.x - start.x))
+        var path = Path()
+        path.move(to: CGPoint(x: start.x + across.x * radii.0, y: start.y + across.y * radii.0))
+        path.addLine(to: CGPoint(x: end.x + across.x * radii.1, y: end.y + across.y * radii.1))
+        path.addArc(center: end, radius: radii.1, startAngle: turn + .degrees(90), endAngle: turn - .degrees(90), clockwise: true)
+        path.addLine(to: CGPoint(x: start.x - across.x * radii.0, y: start.y - across.y * radii.0))
+        path.addArc(center: start, radius: radii.0, startAngle: turn - .degrees(90), endAngle: turn - .degrees(270), clockwise: true)
+        path.closeSubpath()
+        return path
+    }
+
+    /// The thumb on its way to meet a finger, from 0 at rest to 1 touching: its outline, open
+    /// where it joins the hand; the crease at its base, which shows as it lifts off the palm's
+    /// edge; the shape it covers; and its tip.
+    static func thumb(meeting finger: Int, by swing: Double) -> (outline: Path, crease: Path, cover: Path, tip: CGPoint) {
+        let target = pinch[finger].thumb
+        func mix(_ rest: Double, _ met: Double) -> Double { rest + (met - rest) * swing }
+        let root = CGPoint(x: mix(thumbRest.root.x, target.root.x), y: mix(thumbRest.root.y, target.root.y))
+        let turn = Angle(degrees: mix(thumbRest.turn, target.turn)), reach = mix(thumbRest.reach, target.reach), radius = mix(2, 2.25)
+        let along = CGPoint(x: cos(turn.radians), y: sin(turn.radians))
+        /// A point `distance` along the thumb from its root, on its near (+1) or far (-1) edge.
+        func edge(_ distance: Double, _ side: Double) -> CGPoint {
+            CGPoint(x: root.x + along.x * distance - along.y * side * radius, y: root.y + along.y * distance + along.x * side * radius)
+        }
+        let tip = CGPoint(x: root.x + along.x * reach, y: root.y + along.y * reach), near = mix(3, 0.9), far = mix(0.42, 0.9)
+        func shape(from start: CGPoint, to end: CGPoint) -> Path {
+            var path = Path()
+            path.move(to: start); path.addLine(to: edge(reach, 1))
+            path.addArc(center: tip, radius: radius, startAngle: turn + .degrees(90), endAngle: turn - .degrees(90), clockwise: true)
+            path.addLine(to: end)
+            return path
+        }
+        var cover = shape(from: edge(0, 1), to: edge(0, -1)), crease = Path()
+        cover.closeSubpath()
+        crease.move(to: edge(far, -1))
+        crease.addQuadCurve(to: edge(near, 1), control: CGPoint(x: root.x - along.x * 1.1, y: root.y - along.y * 1.1))
+        return (shape(from: edge(near, 1), to: edge(far, -1)), crease, cover, tip)
+    }
+
     /// The lines of the palm.
     static let contours = ["M8.7 15.1c2 .3 3 1.6 3.2 3.7", "M11.1 13.9c2.1-.8 4.7-.8 6.7-.1"].map(SVGPath.cached)
 
@@ -226,13 +287,15 @@ private struct BeadTheatre: View {
             let leaving = beads(for: Plate(rawValue: from)!, centre: centre)
             let arriving = beads(for: Plate(rawValue: min(last, from + 1))!, centre: centre)
             let stage = zip(leaving, arriving).enumerated().map { index, pair -> Bead in
-                // Each bead sets off a beat after the one before and hops rather than slides.
-                let own = min(1, max(0, fraction * 1.5 - Double(index) * 0.07))
-                let glide = own * own * (3 - 2 * own), hop = sin(.pi * glide)
+                // Each bead sets off a beat after the one before, rises in an arc, lands a little
+                // past its place and settles back.
+                let own = min(1, max(0, fraction * 1.9 - Double(index) * 0.125))
+                func spring(_ x: Double) -> Double { 1 - exp(-5.5 * x) * (cos(7 * x) + 0.79 * sin(7 * x)) }
+                let glide = spring(own) / spring(1), hop = sin(.pi * min(1, own / 0.62))
                 var bead = pair.0.mixed(with: pair.1, by: glide)
                 // A bead that is hardly moving stays down.
                 let far = min(1, hypot(pair.1.x - pair.0.x, pair.1.y - pair.0.y) / 70)
-                bead.lift += hop * 26 * far; bead.radius *= 1 + hop * 0.12 * far
+                bead.lift += hop * 36 * far; bead.radius *= 1 + hop * 0.14 * far
                 return bead
             }
             drawBackdrop(in: &canvas, centre: centre, weight: weight)
@@ -301,7 +364,7 @@ private struct BeadTheatre: View {
     /// others follow it round, so the band settles like a string of beads.
     private func wearOffset(bead index: Int = 2) -> Double {
         guard !still else { return 0 }
-        let x = max(0, clock(.wear) - 0.45 - 0.04 * abs(Double(min(index, 4)) - 2)) * 1.9
+        let x = max(0, clock(.wear) - 0.9 - 0.04 * abs(Double(min(index, 4)) - 2)) * 1.9
         return 28 * exp(-4 * x) * (cos(5 * x) + 0.8 * sin(5 * x))
     }
     /// The charging row fills, then rests full for a moment.
@@ -415,42 +478,55 @@ private struct BeadTheatre: View {
     // MARK: The hand
 
     /// Draws the hand, then what each of its plates adds: the wrist bone and the band's line
-    /// for wearing; the pressed fingertip, its signal and the band's answer for gestures.
+    /// for wearing; the finger and thumb meeting, their signal and the band's answer for gestures.
     private func drawHand(in canvas: inout GraphicsContext, centre: Double, shown: Double, wear: Double, gesturing: Double) {
-        let ink = Color.ink.opacity(shown), wristY = Self.wristY
+        let ink = Color.ink.opacity(shown), paper = Color.paper.opacity(shown), wristY = Self.wristY
         let place = CGAffineTransform(translationX: centre - GuideHand.wristX * GuideHand.scale, y: GuideHand.top).scaledBy(x: GuideHand.scale, y: GuideHand.scale)
         let fading = GraphicsContext.Shading.linearGradient(Gradient(colors: [ink, ink.opacity(0)]),
                                                             startPoint: CGPoint(x: 0, y: wristY + Self.armEnd - 30), endPoint: CGPoint(x: 0, y: wristY + Self.armEnd))
-        let finger = move.finger, down = press * gesturing, column = 8 + 4 * Double(finger)
+        let hairline = StrokeStyle(lineWidth: 1.2, lineCap: .round, lineJoin: .round)
+        func between(_ from: CGPoint, _ to: CGPoint, _ along: Double) -> CGPoint { CGPoint(x: from.x + (to.x - from.x) * along, y: from.y + (to.y - from.y) * along) }
+        // At rest the hand is flat. As a finger presses it folds forward at its knuckle, and the
+        // thumb swings across the palm to meet it; both come toward you, so they grow a little.
+        let finger = move.finger, down = press * gesturing, pinch = GuideHand.pinch[finger]
         var tips = GuideHand.rest
-        tips[finger] += 4.5 * down
-        for path in [GuideHand.fingers(tips)] + GuideHand.sides {
-            canvas.stroke(path.applying(place), with: fading, style: StrokeStyle(lineWidth: 1.2, lineCap: .round, lineJoin: .round))
-        }
+        let straight = CGPoint(x: 8 + 4 * Double(finger), y: tips[finger])
+        let knuckle = between(straight, CGPoint(x: straight.x, y: pinch.knuckle), down)
+        let pad = between(straight, pinch.finger, down), thumb = GuideHand.thumb(meeting: finger, by: down)
+        tips[finger] = knuckle.y
+        for path in [GuideHand.fingers(tips)] + GuideHand.sides { canvas.stroke(path.applying(place), with: fading, style: hairline) }
         for path in GuideHand.contours { canvas.stroke(path.applying(place), with: .color(ink.opacity(0.3)), style: StrokeStyle(lineWidth: 0.8, lineCap: .round)) }
+        if down > 0.01 {
+            let folded = GuideHand.limb(from: knuckle, to: pad, radii: (2, 2 + 0.3 * down)).applying(place)
+            var layer = canvas
+            layer.opacity = min(1, down * 4)
+            layer.fill(folded, with: .color(paper)); layer.stroke(folded, with: .color(ink), style: hairline)
+        }
+        canvas.fill(thumb.cover.applying(place), with: .color(paper))
+        canvas.stroke(thumb.outline.applying(place), with: .color(ink), style: hairline)
+        canvas.stroke(thumb.crease.applying(place), with: .color(ink.opacity(0.3 * down)), style: StrokeStyle(lineWidth: 0.8, lineCap: .round))
 
         if wear > 0.01 {
             // The wrist bone as a level across the wrist; the band sits just below it.
             var level = Path()
             level.move(to: CGPoint(x: centre - Self.bandReach - 8, y: wristY - Self.boneRise))
             level.addLine(to: CGPoint(x: centre + Self.bandReach + 12, y: wristY - Self.boneRise))
-            canvas.stroke(level.trimmedPath(from: 0, to: arrived(0.15, 0.6)), with: .color(.muted.opacity(wear)), style: StrokeStyle(lineWidth: 1, lineCap: .round, dash: [1, 4]))
+            canvas.stroke(level.trimmedPath(from: 0, to: arrived(0.4, 0.85)), with: .color(.muted.opacity(wear)), style: StrokeStyle(lineWidth: 1, lineCap: .round, dash: [1, 4]))
             // The band's line, at the front where you can see it.
-            let drawn = arrived(1.1, 1.35), top = wristY + wearOffset() + 29
+            let drawn = arrived(1.55, 1.8), top = wristY + wearOffset() + 29
             var line = Path()
             line.move(to: CGPoint(x: centre, y: top)); line.addLine(to: CGPoint(x: centre, y: top + 10 * drawn))
             canvas.stroke(line, with: .color(.ink.opacity(wear * drawn)), style: StrokeStyle(lineWidth: 1.4, lineCap: .round))
         }
         guard gesturing > 0.01 else { return }
-        let tip = CGPoint(x: column, y: tips[finger]).applying(place), lit = band(centre: centre)[litBead]
-        // A pressed fingertip fills, the way a bead does.
-        canvas.fill(Path(ellipseIn: CGRect(x: tip.x - 5.5, y: tip.y - 5.5, width: 11, height: 11)), with: .color(.ink.opacity(down)))
+        let touch = between(pad, thumb.tip, 0.5).applying(place), lit = band(centre: centre)[litBead]
+        // Where the finger and thumb touch fills, the way a bead does.
+        canvas.fill(Path(ellipseIn: CGRect(x: touch.x - 4.5, y: touch.y - 4.5, width: 9, height: 9)), with: .color(.ink.opacity(down * down)))
         if let signal {
-            // The signal runs down the finger and through the palm to the bead that hears it.
+            // The signal runs from the touch down through the palm to the bead that hears it.
             var route = Path()
-            route.move(to: CGPoint(x: tip.x, y: tip.y + 9))
-            route.addLine(to: CGPoint(x: column, y: 14).applying(place))
-            route.addQuadCurve(to: CGPoint(x: lit.x, y: lit.y - lit.radius - 5), control: CGPoint(x: column, y: 21).applying(place))
+            route.move(to: CGPoint(x: touch.x, y: touch.y + 8))
+            route.addQuadCurve(to: CGPoint(x: lit.x, y: lit.y - lit.radius - 5), control: CGPoint(x: touch.x, y: CGPoint(x: 0, y: 21).applying(place).y))
             canvas.stroke(route.trimmedPath(from: max(0, signal - 0.25), to: signal), with: .color(.ink.opacity(gesturing)),
                           style: StrokeStyle(lineWidth: 1.6, lineCap: .round))
         }
@@ -497,8 +573,8 @@ private struct BeadTheatre: View {
                 if let detail = name.1 { write(detail, at: CGPoint(x: x, y: Self.rowY + 74), opacity: opacity) }
             }
         }
-        write("wrist bone", at: CGPoint(x: centre + Self.bandReach + 18, y: Self.wristY - Self.boneRise), anchor: .leading, opacity: weight(.wear) * arrived(0.5, 0.75))
-        write("line faces you", at: CGPoint(x: centre, y: Self.wristY + wearOffset() + 53), opacity: weight(.wear) * arrived(1.2, 1.45))
+        write("wrist bone", at: CGPoint(x: centre + Self.bandReach + 18, y: Self.wristY - Self.boneRise), anchor: .leading, opacity: weight(.wear) * arrived(0.75, 1))
+        write("line faces you", at: CGPoint(x: centre, y: Self.wristY + wearOffset() + 53), opacity: weight(.wear) * arrived(1.65, 1.9))
         if still {
             write(Plate.moves.map(\.name).joined(separator: " · "), at: CGPoint(x: centre, y: 296), strong: true, opacity: weight(.gestures))
             row(Plate.lights.map { ($0.name, $0.blink == nil ? nil : "blinking") }, opacity: weight(.light))
