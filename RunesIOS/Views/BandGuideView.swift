@@ -59,7 +59,7 @@ struct BandGuidePage: View {
 
     private var current: Int { page ?? 0 }
     /// Seconds the beads take to cross from one plate to the next.
-    private static let tempo = 1.05
+    private static let tempo = 0.6
     /// Where the beads are between plates at a moment in time.
     private func place(at time: Double) -> Double {
         let distance = abs(travel.to - travel.from)
@@ -139,7 +139,7 @@ struct BandGuideSheet: View {
     var body: some View {
         NavigationStack {
             BandGuidePage()
-                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() }.font(.label) } }
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() }.font(.label) } }
         }
     }
 }
@@ -177,31 +177,28 @@ private enum GuideHand {
     }
 
     /// The thumb on its way to meet a finger, from 0 at rest to 1 touching: its outline, open
-    /// where it joins the hand; the crease at its base, which shows as it lifts off the palm's
-    /// edge; the shape it covers; and its tip.
-    static func thumb(meeting finger: Int, by swing: Double) -> (outline: Path, crease: Path, cover: Path, tip: CGPoint) {
+    /// where it joins the hand; the shape it covers; its tip; and the stretch along it, from
+    /// its root, over which its outline softens into the palm once it has left the palm's edge.
+    static func thumb(meeting finger: Int, by swing: Double) -> (outline: Path, cover: Path, tip: CGPoint, soften: (from: CGPoint, to: CGPoint)) {
         let target = pinch[finger].thumb
         func mix(_ rest: Double, _ met: Double) -> Double { rest + (met - rest) * swing }
         let root = CGPoint(x: mix(thumbRest.root.x, target.root.x), y: mix(thumbRest.root.y, target.root.y))
         let turn = Angle(degrees: mix(thumbRest.turn, target.turn)), reach = mix(thumbRest.reach, target.reach), radius = mix(2, 2.25)
         let along = CGPoint(x: cos(turn.radians), y: sin(turn.radians))
-        /// A point `distance` along the thumb from its root, on its near (+1) or far (-1) edge.
+        /// A point `distance` along the thumb from its root, on its near (+1) or far (-1) edge, or down its middle (0).
         func edge(_ distance: Double, _ side: Double) -> CGPoint {
             CGPoint(x: root.x + along.x * distance - along.y * side * radius, y: root.y + along.y * distance + along.x * side * radius)
         }
-        let tip = CGPoint(x: root.x + along.x * reach, y: root.y + along.y * reach), near = mix(3, 0.9), far = mix(0.42, 0.9)
         func shape(from start: CGPoint, to end: CGPoint) -> Path {
             var path = Path()
             path.move(to: start); path.addLine(to: edge(reach, 1))
-            path.addArc(center: tip, radius: radius, startAngle: turn + .degrees(90), endAngle: turn - .degrees(90), clockwise: true)
+            path.addArc(center: edge(reach, 0), radius: radius, startAngle: turn + .degrees(90), endAngle: turn - .degrees(90), clockwise: true)
             path.addLine(to: end)
             return path
         }
-        var cover = shape(from: edge(0, 1), to: edge(0, -1)), crease = Path()
+        var cover = shape(from: edge(0, 1), to: edge(0, -1))
         cover.closeSubpath()
-        crease.move(to: edge(far, -1))
-        crease.addQuadCurve(to: edge(near, 1), control: CGPoint(x: root.x - along.x * 1.1, y: root.y - along.y * 1.1))
-        return (shape(from: edge(near, 1), to: edge(far, -1)), crease, cover, tip)
+        return (shape(from: edge(mix(3, 0.42), 1), to: edge(0.42, -1)), cover, edge(reach, 0), (edge(0.42, 0), edge(2.6, 0)))
     }
 
     /// The lines of the palm.
@@ -253,13 +250,15 @@ private struct BeadTheatre: View {
         var depth = 0.0
         /// Strength of its floor shadow, and how far above the floor it rides.
         var shadow = 0.0, lift = 0.0
+        /// 1 is a bead filled with ink.
+        var full = 0.0
 
         func mixed(with other: Bead, by f: Double) -> Bead {
             func mix(_ a: Double, _ b: Double) -> Double { a + (b - a) * f }
             return Bead(x: mix(x, other.x), y: mix(y, other.y), radius: mix(radius, other.radius),
                         opacity: mix(opacity, other.opacity), dark: mix(dark, other.dark), charge: mix(charge, other.charge),
                         light: f < 0.5 ? light : other.light, depth: mix(depth, other.depth),
-                        shadow: mix(shadow, other.shadow), lift: mix(lift, other.lift))
+                        shadow: mix(shadow, other.shadow), lift: mix(lift, other.lift), full: mix(full, other.full))
         }
     }
 
@@ -287,15 +286,13 @@ private struct BeadTheatre: View {
             let leaving = beads(for: Plate(rawValue: from)!, centre: centre)
             let arriving = beads(for: Plate(rawValue: min(last, from + 1))!, centre: centre)
             let stage = zip(leaving, arriving).enumerated().map { index, pair -> Bead in
-                // Each bead sets off a beat after the one before, rises in an arc, lands a little
-                // past its place and settles back.
-                let own = min(1, max(0, fraction * 1.9 - Double(index) * 0.125))
-                func spring(_ x: Double) -> Double { 1 - exp(-5.5 * x) * (cos(7 * x) + 0.79 * sin(7 * x)) }
-                let glide = spring(own) / spring(1), hop = sin(.pi * min(1, own / 0.62))
+                // Each bead sets off a beat after the one before and hops rather than slides.
+                let own = min(1, max(0, fraction * 1.5 - Double(index) * 0.07))
+                let glide = own * own * (3 - 2 * own), hop = sin(.pi * glide)
                 var bead = pair.0.mixed(with: pair.1, by: glide)
                 // A bead that is hardly moving stays down.
                 let far = min(1, hypot(pair.1.x - pair.0.x, pair.1.y - pair.0.y) / 70)
-                bead.lift += hop * 36 * far; bead.radius *= 1 + hop * 0.14 * far
+                bead.lift += hop * 28 * far; bead.radius *= 1 + hop * 0.12 * far
                 return bead
             }
             drawBackdrop(in: &canvas, centre: centre, weight: weight)
@@ -364,7 +361,7 @@ private struct BeadTheatre: View {
     /// others follow it round, so the band settles like a string of beads.
     private func wearOffset(bead index: Int = 2) -> Double {
         guard !still else { return 0 }
-        let x = max(0, clock(.wear) - 0.9 - 0.04 * abs(Double(min(index, 4)) - 2)) * 1.9
+        let x = max(0, clock(.wear) - 0.55 - 0.04 * abs(Double(min(index, 4)) - 2)) * 1.9
         return 28 * exp(-4 * x) * (cos(5 * x) + 0.8 * sin(5 * x))
     }
     /// The charging row fills, then rests full for a moment.
@@ -405,13 +402,17 @@ private struct BeadTheatre: View {
             }
         case .wear: return band(centre: centre) { wearOffset(bead: $0) }
         case .gestures:
-            // The band stays on the wrist. The bead nearest the finger that moved jumps as the
-            // signal reaches it; a tap fades again, a hold stays lit.
-            let jump = sinceHeard.map { exp(-$0 * 11) } ?? 0, lit = move.held && sinceHeard != nil ? press : jump
+            // The band stays on the wrist and answers as the signal reaches it. A tap blinks the
+            // bead nearest the finger. A hold fills the band with ink, bead by bead, until it lets go.
+            let since = sinceHeard, blink = since.map { exp(-$0 * 11) } ?? 0
             return band(centre: centre).enumerated().map { index, bead in
                 var bead = bead
-                let near = index == litBead ? 1 : abs(index - litBead) == 1 ? 0.35 : 0.0
-                bead.charge = lit * near; bead.lift = 7 * jump * near; bead.radius *= 1 + 0.16 * jump * near
+                let away = Double(abs(index - litBead))
+                if move.held {
+                    bead.full = since.map { min(1, max(0, ($0 - 0.03 * away) / 0.05)) * press } ?? 0
+                } else {
+                    bead.charge = blink * (away == 0 ? 1 : away == 1 ? 0.35 : 0)
+                }
                 return bead
             }
         case .light:
@@ -469,6 +470,7 @@ private struct BeadTheatre: View {
         layer.fill(Path(ellipseIn: body), with: .color(.paper))
         // A light's body is black in both appearances, so white reads as white.
         if bead.dark > 0.01 { layer.fill(Path(ellipseIn: body), with: .color(.black.opacity(bead.dark))) }
+        if bead.full > 0.01 { layer.fill(Path(ellipseIn: body), with: .color(.ink.opacity(bead.full))) }
         layer.stroke(Path(ellipseIn: body), with: .color(.ink.opacity(0.75)), lineWidth: bead.radius > 30 ? 1.5 : 1)
         guard bead.charge > 0.01 else { return }
         let dot = body.insetBy(dx: bead.radius * 0.6, dy: bead.radius * 0.6).offsetBy(dx: 0, dy: -bead.radius * 0.06)
@@ -503,17 +505,17 @@ private struct BeadTheatre: View {
             layer.fill(folded, with: .color(paper)); layer.stroke(folded, with: .color(ink), style: hairline)
         }
         canvas.fill(thumb.cover.applying(place), with: .color(paper))
-        canvas.stroke(thumb.outline.applying(place), with: .color(ink), style: hairline)
-        canvas.stroke(thumb.crease.applying(place), with: .color(ink.opacity(0.3 * down)), style: StrokeStyle(lineWidth: 0.8, lineCap: .round))
+        canvas.stroke(thumb.outline.applying(place), with: .linearGradient(Gradient(colors: [ink.opacity(1 - down), ink]),
+                      startPoint: thumb.soften.from.applying(place), endPoint: thumb.soften.to.applying(place)), style: hairline)
 
         if wear > 0.01 {
             // The wrist bone as a level across the wrist; the band sits just below it.
             var level = Path()
             level.move(to: CGPoint(x: centre - Self.bandReach - 8, y: wristY - Self.boneRise))
             level.addLine(to: CGPoint(x: centre + Self.bandReach + 12, y: wristY - Self.boneRise))
-            canvas.stroke(level.trimmedPath(from: 0, to: arrived(0.4, 0.85)), with: .color(.muted.opacity(wear)), style: StrokeStyle(lineWidth: 1, lineCap: .round, dash: [1, 4]))
+            canvas.stroke(level.trimmedPath(from: 0, to: arrived(0.2, 0.6)), with: .color(.muted.opacity(wear)), style: StrokeStyle(lineWidth: 1, lineCap: .round, dash: [1, 4]))
             // The band's line, at the front where you can see it.
-            let drawn = arrived(1.55, 1.8), top = wristY + wearOffset() + 29
+            let drawn = arrived(1.2, 1.45), top = wristY + wearOffset() + 29
             var line = Path()
             line.move(to: CGPoint(x: centre, y: top)); line.addLine(to: CGPoint(x: centre, y: top + 10 * drawn))
             canvas.stroke(line, with: .color(.ink.opacity(wear * drawn)), style: StrokeStyle(lineWidth: 1.4, lineCap: .round))
@@ -529,12 +531,6 @@ private struct BeadTheatre: View {
             route.addQuadCurve(to: CGPoint(x: lit.x, y: lit.y - lit.radius - 5), control: CGPoint(x: touch.x, y: CGPoint(x: 0, y: 21).applying(place).y))
             canvas.stroke(route.trimmedPath(from: max(0, signal - 0.25), to: signal), with: .color(.ink.opacity(gesturing)),
                           style: StrokeStyle(lineWidth: 1.6, lineCap: .round))
-        }
-        if let since = sinceHeard, since < 0.22 {
-            // A ripple around the bead as it hears the press.
-            let spread = since / 0.22, reach = lit.radius + 3 + 20 * spread
-            canvas.stroke(Path(ellipseIn: CGRect(x: lit.x - reach, y: lit.y - reach, width: reach * 2, height: reach * 2)),
-                          with: .color(.ink.opacity(gesturing * (1 - spread) * 0.45)), lineWidth: 1)
         }
     }
 
@@ -573,8 +569,8 @@ private struct BeadTheatre: View {
                 if let detail = name.1 { write(detail, at: CGPoint(x: x, y: Self.rowY + 74), opacity: opacity) }
             }
         }
-        write("wrist bone", at: CGPoint(x: centre + Self.bandReach + 18, y: Self.wristY - Self.boneRise), anchor: .leading, opacity: weight(.wear) * arrived(0.75, 1))
-        write("line faces you", at: CGPoint(x: centre, y: Self.wristY + wearOffset() + 53), opacity: weight(.wear) * arrived(1.65, 1.9))
+        write("wrist bone", at: CGPoint(x: centre + Self.bandReach + 18, y: Self.wristY - Self.boneRise), anchor: .leading, opacity: weight(.wear) * arrived(0.5, 0.75))
+        write("line faces you", at: CGPoint(x: centre, y: Self.wristY + wearOffset() + 53), opacity: weight(.wear) * arrived(1.3, 1.55))
         if still {
             write(Plate.moves.map(\.name).joined(separator: " · "), at: CGPoint(x: centre, y: 296), strong: true, opacity: weight(.gestures))
             row(Plate.lights.map { ($0.name, $0.blink == nil ? nil : "blinking") }, opacity: weight(.light))
