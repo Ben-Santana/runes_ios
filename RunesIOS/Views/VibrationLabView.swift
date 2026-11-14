@@ -159,6 +159,7 @@ struct VibrationLabScreen: View {
             .padding(.horizontal, Metric.gutter).padding(.bottom, 28)
         }
         .background(Color.paper)
+        .overlay { EdgeRipples(playback: lab.playback).ignoresSafeArea().allowsHitTesting(false) }
         .navigationTitle("Vibration lab")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -468,6 +469,91 @@ private struct StepRing: View {
                                   lineWidth: line * (pod.index == focus ? 1.5 : 1),
                                   charge: max(at.energy, on ? steps[pod.index] / 255 * 0.5 : 0))
         }
+    }
+}
+
+/// The screen's own edge acting out the vibration: while a pulse runs the border trembles
+/// like a plucked string, harder for stronger pulses, and each pulse sends a ripple inward
+/// from the bezel. Nothing is drawn at rest. Reduce Motion keeps a still line that darkens.
+private struct EdgeRipples: View {
+    let playback: VibrationLab.Playback?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Close to the display's corner, so the line follows the glass.
+    private static let corner = 54.0
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1 / 120, paused: playback == nil)) { context in
+            Canvas { canvas, size in
+                guard let playback else { return }
+                let t = context.date.timeIntervalSinceReferenceDate
+                let ms = context.date.timeIntervalSince(playback.started) * 1000
+                let state = level(of: playback.pulses, at: ms)
+                if !reduceMotion {
+                    // A pulse sheds a ripple when it starts and another every 120 ms it runs,
+                    // so a long pulse fills the edge and a tap leaves a single line.
+                    var start = 0.0
+                    for pulse in playback.pulses {
+                        guard start <= ms else { break }
+                        let strength = Double(min(pulse.amplitude, 255)) / 255
+                        for wave in 0...Int(Double(pulse.duration) / 120) {
+                            let age = (ms - start - Double(wave) * 120) / 800
+                            guard age >= 0, age < 1 else { continue }
+                            canvas.stroke(Self.border(size, inset: 6 + age * (10 + 16 * strength)) { _ in 0 },
+                                          with: .color(.ink.opacity((1 - age) * (1 - age) * 0.7 * strength)),
+                                          lineWidth: 0.75 + 1.5 * strength * (1 - age))
+                        }
+                        start += Double(pulse.duration + pulse.gap)
+                    }
+                }
+                guard state.amplitude > 0.01 else { return }
+                let swing = reduceMotion ? 0 : state.amplitude * 4.5
+                let string = Self.border(size, inset: 5 + swing) { along in
+                    swing * (sin(along / 13 + t * 46) * 0.7 + sin(along / 31 - t * 29) * 0.3)
+                }
+                canvas.stroke(string, with: .color(.ink.opacity(0.35 + 0.65 * state.amplitude)),
+                              style: StrokeStyle(lineWidth: 1 + 2.5 * state.amplitude, lineJoin: .round))
+            }
+        }
+        .accessibilityHidden(true)
+    }
+
+    /// A closed rounded rectangle `inset` points inside the screen edge, each point pushed
+    /// further in or out by `wave(distance along the edge)`.
+    private static func border(_ size: CGSize, inset: Double, wave: (Double) -> Double) -> Path {
+        let radius = max(4, corner - inset)
+        let left = inset, top = inset, right = size.width - inset, bottom = size.height - inset
+        var path = Path(), along = 0.0, started = false
+        func add(_ x: Double, _ y: Double, _ nx: Double, _ ny: Double) {
+            let push = wave(along)
+            let point = CGPoint(x: x + nx * push, y: y + ny * push)
+            if started { path.addLine(to: point) } else { path.move(to: point); started = true }
+        }
+        func edge(_ x0: Double, _ y0: Double, _ x1: Double, _ y1: Double, _ nx: Double, _ ny: Double) {
+            let length = hypot(x1 - x0, y1 - y0), steps = max(1, Int(length / 5))
+            for step in 0..<steps {
+                let k = Double(step) / Double(steps)
+                add(x0 + (x1 - x0) * k, y0 + (y1 - y0) * k, nx, ny)
+                along += length / Double(steps)
+            }
+        }
+        func turn(_ cx: Double, _ cy: Double, from: Double) {
+            let steps = max(2, Int(radius * .pi / 2 / 5))
+            for step in 0..<steps {
+                let a = from + .pi / 2 * Double(step) / Double(steps)
+                add(cx + cos(a) * radius, cy + sin(a) * radius, -cos(a), -sin(a))
+                along += radius * .pi / 2 / Double(steps)
+            }
+        }
+        edge(left + radius, top, right - radius, top, 0, 1)
+        turn(right - radius, top + radius, from: -.pi / 2)
+        edge(right, top + radius, right, bottom - radius, -1, 0)
+        turn(right - radius, bottom - radius, from: 0)
+        edge(right - radius, bottom, left + radius, bottom, 0, -1)
+        turn(left + radius, bottom - radius, from: .pi / 2)
+        edge(left, bottom - radius, left, top + radius, 1, 0)
+        turn(left + radius, top + radius, from: .pi)
+        path.closeSubpath()
+        return path
     }
 }
 

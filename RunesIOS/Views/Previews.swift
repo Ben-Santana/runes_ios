@@ -87,8 +87,14 @@ struct SnapshotGallery: View {
             RingLab(autoplay: name == "ring-demo")
         } else if name.hasPrefix("wrist") {
             WristPreview(name: name)
-        } else if name == "vibration-lab" {
+        } else if name == "vibration-lab" || name == "vibration-lab-buzz" {
             NavigationStack { VibrationLabScreen() }
+                .task {
+                    guard name == "vibration-lab-buzz" else { return }
+                    try? await Task.sleep(for: .seconds(1.5))
+                    VibrationLab.shared.play(Array(repeating: BandPulse(duration: 700, amplitude: 240, gap: 150), count: 40),
+                                             name: "Preview", onBand: false)
+                }
         } else if name == "settings" {
             SettingsView(values: SettingsValues(battery: 82, handSetting: HandSetting(confirmed: .left), version: "0.2.0 (2)")) { EmptyView() }
         } else if name == "mappings" {
