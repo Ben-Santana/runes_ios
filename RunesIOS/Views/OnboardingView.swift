@@ -57,6 +57,8 @@ struct OnboardingView: View {
     let context: OnboardingContext
     var actions = OnboardingActions()
     @State private var showingGuide = false
+    /// Temporary, while the drawer's looks are being compared.
+    @AppStorage(GuideDrawerStyle.key) private var drawerStyle = GuideDrawerStyle.lip
 
     var body: some View {
         VStack(spacing: 0) {
@@ -87,7 +89,9 @@ struct OnboardingView: View {
             .scrollBounceBehavior(.basedOnSize)
             footer.padding(.horizontal, Metric.gutter).padding(.bottom, 12)
             if step == .pairing || (step == .test && !context.testPassed) {
-                GuideDrawer { showingGuide = true }
+                HairlineSegments(selection: $drawerStyle, options: GuideDrawerStyle.allCases, title: \.title)
+                    .padding(.horizontal, Metric.gutter).padding(.bottom, 12)
+                GuideDrawer(style: drawerStyle) { showingGuide = true }.id(drawerStyle)
             }
         }
         .animation(.standard, value: step)
@@ -304,47 +308,92 @@ struct OnboardingView: View {
     }
 }
 
-/// The optional band guide, as the lip of a drawer across the foot of the screen, with three
-/// beads for a handle. It rises into view a moment after the step arrives; the beads hop once,
-/// one after another, and then keep still.
+/// Temporary: the looks of the guide drawer being compared.
+enum GuideDrawerStyle: String, CaseIterable, Hashable {
+    case lip, line, tab, card, bare
+    static let key = "guideDrawerStyle"
+    var title: String { rawValue.prefix(1).uppercased() + rawValue.dropFirst() }
+}
+
+/// The optional band guide, offered at the foot of the screen. It rises into view a moment
+/// after the step arrives; its three beads hop once, one after another, and then keep still.
 private struct GuideDrawer: View {
+    let style: GuideDrawerStyle
     let open: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var tucked = true
     @State private var hopping: Int?
 
     var body: some View {
-        let lip = UnevenRoundedRectangle(topLeadingRadius: 16, topTrailingRadius: 16)
-        Button(action: open) {
-            VStack(spacing: 8) {
-                HStack(spacing: 5) {
-                    ForEach(0..<3, id: \.self) { bead in
-                        Circle().fill(Color.soft).overlay(Circle().strokeBorder(Color.ink.opacity(0.75), lineWidth: Metric.hairline))
-                            .frame(width: 8, height: 8).offset(y: hopping == bead ? -5 : 0)
-                    }
+        Button(action: open) { look.contentShape(Rectangle()) }
+            .buttonStyle(.plain)
+            .offset(y: tucked ? 90 : 0)
+            .simultaneousGesture(DragGesture(minimumDistance: 12).onEnded { if $0.translation.height < -16 { open() } })
+            .accessibilityLabel("Band guide").accessibilityHint("How to wear and use your band")
+            .task {
+                guard !reduceMotion else { tucked = false; return }
+                try? await Task.sleep(for: .seconds(0.25))
+                withAnimation(.entrance) { tucked = false }
+                try? await Task.sleep(for: .seconds(1.1))
+                for bead in 0..<3 {
+                    withAnimation(.standard) { hopping = bead }
+                    try? await Task.sleep(for: .seconds(0.13))
                 }
-                Text("Band guide").font(.label)
+                withAnimation(.standard) { hopping = nil }
             }
-            .padding(.top, 12).padding(.bottom, 4)
-            .frame(maxWidth: .infinity)
-            // The drawer carries on below and past the sides of the screen, so only its lip shows.
-            .background { lip.fill(Color.soft).overlay(lip.strokeBorder(Color.faint, lineWidth: Metric.hairline)).padding(.bottom, -120).padding(.horizontal, -1) }
-            .contentShape(Rectangle())
+    }
+
+    private var beads: some View {
+        HStack(spacing: 5) {
+            ForEach(0..<3, id: \.self) { bead in
+                Circle().strokeBorder(Color.ink.opacity(0.75), lineWidth: Metric.hairline)
+                    .frame(width: 8, height: 8).offset(y: hopping == bead ? -5 : 0)
+            }
         }
-        .buttonStyle(.plain)
-        .offset(y: tucked ? 80 : 0)
-        .simultaneousGesture(DragGesture(minimumDistance: 12).onEnded { if $0.translation.height < -16 { open() } })
-        .accessibilityHint("How to wear and use your band")
-        .task {
-            guard !reduceMotion else { tucked = false; return }
-            try? await Task.sleep(for: .seconds(0.25))
-            withAnimation(.entrance) { tucked = false }
-            try? await Task.sleep(for: .seconds(1.1))
-            for bead in 0..<3 {
-                withAnimation(.standard) { hopping = bead }
-                try? await Task.sleep(for: .seconds(0.13))
+    }
+    private var name: some View { Text("Band guide").font(.label) }
+    /// A surface with rounded top corners that carries on below the screen, so only its top shows.
+    private func surface(_ fill: Color, _ border: Color, radius: CGFloat) -> some View {
+        let edge = UnevenRoundedRectangle(topLeadingRadius: radius, topTrailingRadius: radius)
+        return edge.fill(fill).overlay(edge.strokeBorder(border, lineWidth: Metric.hairline)).padding(.bottom, -120)
+    }
+
+    @ViewBuilder private var look: some View {
+        switch style {
+        case .lip:
+            // The lip of a drawer across the whole foot of the screen.
+            VStack(spacing: 8) { beads; name }
+                .padding(.top, 12).padding(.bottom, 4).frame(maxWidth: .infinity)
+                .background { surface(.soft, .faint, radius: 16).padding(.horizontal, -1) }
+        case .line:
+            // No surface: a hairline across the screen and one row under it, like the app's ledgers.
+            VStack(spacing: 0) {
+                Rule()
+                HStack { name; Spacer(); beads }.padding(.horizontal, Metric.gutter).frame(height: Metric.row)
             }
-            withAnimation(.standard) { hopping = nil }
+        case .tab:
+            // A small tab in the middle, like the tab of a folder.
+            HStack(spacing: 8) { beads; name }
+                .padding(.horizontal, 18).padding(.top, 10).padding(.bottom, 6)
+                .background { surface(.paper, .rule, radius: 10) }
+                .frame(maxWidth: .infinity)
+        case .card:
+            // The top of a panel, saying what is inside.
+            HStack(spacing: 12) {
+                beads
+                VStack(alignment: .leading, spacing: 2) {
+                    name
+                    Text("Wearing it, gestures and its light").font(.caption).foregroundStyle(Color.muted)
+                }
+                Spacer()
+            }
+            .padding(.horizontal, Metric.inset).padding(.top, 12).padding(.bottom, 6)
+            .background { surface(.paper, .rule, radius: Metric.panel) }
+            .padding(.horizontal, Metric.gutter)
+        case .bare:
+            // Nothing but the beads and the name.
+            VStack(spacing: 6) { beads; Text("Band guide").font(.caption).foregroundStyle(Color.muted) }
+                .padding(.top, 4).padding(.bottom, 2).frame(maxWidth: .infinity)
         }
     }
 }
