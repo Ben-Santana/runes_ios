@@ -12,7 +12,7 @@ struct WristArtwork: View, Animatable {
     }
     /// How far the chosen hand leans toward the other, in scene units.
     static let focusLean = 14.0
-    private static let mask = SVGPath.cached("M6 14V6a2 2 0 0 1 4 0V4a2 2 0 0 1 4 0v2a2 2 0 0 1 4 0v2" + LucideData.hand[3].dropFirst(5) + "Z M8.5 21.2H17.5V25.7Q13 26.2 8.5 25.7Z")
+    static let mask = SVGPath.cached("M6 14V6a2 2 0 0 1 4 0V4a2 2 0 0 1 4 0v2a2 2 0 0 1 4 0v2" + LucideData.hand[3].dropFirst(5) + "Z M8.5 21.2H17.5V25.7Q13 26.2 8.5 25.7Z")
     static let outline = LucideData.hand.map(SVGPath.cached)
     private static let wrist = ["M8.5 21.2V25.7", "M17.5 21.2V25.7"].map(SVGPath.cached)
     static let contours = ["M8.7 15.1c2 .3 3 1.6 3.2 3.7", "M11.1 13.9c2.1-.8 4.7-.8 6.7-.1"].map(SVGPath.cached)
