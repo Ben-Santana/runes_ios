@@ -113,6 +113,7 @@ final class SessionController: ObservableObject {
         WorkoutStore.shared.onReserve = { [weak self] in self?.reserve($0, for: .workouts) }
         ScoreAudio.shared.onBandBuzz = { [core] buzz in core.transport.perform { core.buzzBand(buzz) } }
         core.onPulse = { result, latency in Task { @MainActor in VibrationLab.shared.answered(result, latency: latency) } }
+        core.onPulseSent = { pulse in Task { @MainActor in BandBuzzFeed.shared.sent(pulse) } }
         WorkoutStore.shared.onSound = { voice, volume in ScoreAudio.shared.cue(voice, volume: volume) }
         WorkoutStore.shared.onSoundsLive = { ScoreAudio.shared.setLive($0, for: "workout") }
         ScoreStore.shared.onReserve = { [weak self] in self?.reserve($0, for: .score) }

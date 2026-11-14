@@ -30,6 +30,8 @@ final class SessionCore: @unchecked Sendable {
     var onEMGStatus: ((String) -> Void)?
     /// Each played pulse's answer from the band, with seconds from send to answer.
     var onPulse: ((WristFeedbackResult, TimeInterval) -> Void)?
+    /// Every vibration request that went out to the band, as it is sent.
+    var onPulseSent: ((BandPulse) -> Void)?
     /// Orientation and gyroscope samples, whether they were started for the Mac or for this phone.
     var onMotion: ((RelayWire.Event.Kind, [Double]) -> Void)?
     var onGesture: ((GestureEvent) -> Void)?
@@ -421,7 +423,7 @@ final class SessionCore: @unchecked Sendable {
               wristFeedbackGate.take(phase, change: change, now: now) else { return }
         feedbackInFlight = phase
         record("wrist_feedback", "\(phase.rawValue) requested.")
-        do { try rpc("wrist_feedback", 6, 17, phase.payload) }
+        do { try rpc("wrist_feedback", 6, 17, phase.payload); onPulseSent?(BandPulse(duration: phase.duration, amplitude: phase.amplitude)) }
         catch { record("wrist_feedback", "Send unconfirmed.") }
     }
 
@@ -446,7 +448,7 @@ final class SessionCore: @unchecked Sendable {
         guard snapshot.state == .streaming, let proto else { buzzQueue = []; return }
         guard proto.canSendWristFeedback else { return }
         let pulse = buzzQueue.removeFirst()
-        do { try rpc("wrist_feedback", 6, 17, pulse.payload); pulseSentAt = ProcessInfo.processInfo.systemUptime }
+        do { try rpc("wrist_feedback", 6, 17, pulse.payload); pulseSentAt = ProcessInfo.processInfo.systemUptime; onPulseSent?(pulse) }
         catch { record("band_buzz", "Send unconfirmed."); buzzQueue = []; return }
         guard !buzzQueue.isEmpty else { return }
         buzzResting = true

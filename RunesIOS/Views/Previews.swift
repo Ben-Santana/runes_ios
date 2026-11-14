@@ -89,11 +89,16 @@ struct SnapshotGallery: View {
             WristPreview(name: name)
         } else if name == "vibration-lab" || name == "vibration-lab-buzz" {
             NavigationStack { VibrationLabScreen() }
+                .overlay { EdgeEffect() }
                 .task {
                     guard name == "vibration-lab-buzz" else { return }
                     try? await Task.sleep(for: .seconds(1.5))
-                    VibrationLab.shared.play(Array(repeating: BandPulse(duration: 700, amplitude: 240, gap: 150), count: 40),
-                                             name: "Preview", onBand: false)
+                    // Stands in for a connected band: plays the lab and feeds the edge effect.
+                    let pulses = Array(repeating: BandPulse(duration: 700, amplitude: 240, gap: 150), count: 40)
+                    VibrationLab.shared.play(pulses, name: "Preview", onBand: false)
+                    for (offset, pulse) in pulses.enumerated() {
+                        BandBuzzFeed.shared.sent(pulse, at: Date().addingTimeInterval(Double(offset) * 0.85))
+                    }
                 }
         } else if name == "settings" {
             SettingsView(values: SettingsValues(battery: 82, handSetting: HandSetting(confirmed: .left), version: "0.2.0 (2)")) { EmptyView() }

@@ -142,6 +142,7 @@ struct VibrationLabScreen: View {
     @State private var drawing: [CGPoint] = []
     @State private var press: PressPad.Press?
     @State private var copied = false
+    @AppStorage(EdgeStyle.key) private var edgeStyle = EdgeStyle.threads.rawValue
 
     private var ready: Bool { controller.snapshot.state == .streaming }
 
@@ -154,12 +155,12 @@ struct VibrationLabScreen: View {
                 ledger("Patterns", LabPattern.library)
                 ledger("Find the limits", LabPattern.experiments)
                 draw
+                edge
                 keep
             }
             .padding(.horizontal, Metric.gutter).padding(.bottom, 28)
         }
         .background(Color.paper)
-        .overlay { EdgeRipples(playback: lab.playback).ignoresSafeArea().allowsHitTesting(false) }
         .navigationTitle("Vibration lab")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -315,6 +316,15 @@ struct VibrationLabScreen: View {
         }
     }
 
+    /// How a band vibration shows on the screen edge, here and everywhere else in the app.
+    private var edge: some View {
+        PanelGroup("On the screen edge", caption: "When the band vibrates, the edge of the screen shows it, in every part of the app. Picking a style plays a sample; otherwise it only appears for pulses the band was sent.") {
+            ChipRow(selection: $edgeStyle, options: EdgeStyle.allCases.map(\.rawValue)) { EdgeStyle(rawValue: $0)?.label ?? $0 }
+                .padding(.vertical, 12)
+                .onChange(of: edgeStyle) { _, _ in BandBuzzFeed.shared.sample() }
+        }
+    }
+
     /// Whatever played last, as the pulse list the rest of the app uses.
     private var keep: some View {
         PanelGroup(nil, caption: "Copies the last thing played as a list of pulses, ready to paste into a feature.") {
@@ -404,12 +414,13 @@ private struct StepRing: View {
             .filter { $0.1 <= reach }.min { $0.1 < $1.1 }?.0
     }
 
-    private static func arc(radius: Double, from: Double = 0, to: Double = 2 * .pi, _ transform: CGAffineTransform) -> Path {
+    private static func arc(radius: Double, from: Double = 0, to: Double = 2 * .pi, around centre: (x: Double, y: Double) = (0, 0),
+                            _ transform: CGAffineTransform) -> Path {
         var path = Path()
         let segments = max(2, Int(abs(to - from) / (2 * .pi) * 72))
         for step in 0...segments {
             let a = from + (to - from) * Double(step) / Double(segments)
-            let point = RingGeometry.project(cos(a) * radius, sin(a) * radius, 6).applying(transform)
+            let point = RingGeometry.project(centre.x + cos(a) * radius, centre.y + sin(a) * radius, 6).applying(transform)
             if step == 0 { path.move(to: point) } else { path.addLine(to: point) }
         }
         return path
@@ -422,9 +433,11 @@ private struct StepRing: View {
         let ms = playback.map { now.timeIntervalSince($0.started) * 1000 } ?? -1
         let state = playback.map { level(of: $0.pulses, at: ms) }
         let amplitude = state?.amplitude ?? 0
-        let turn = playback?.loop.flatMap { loop in state?.index.map { loop.beads[$0] } }
+        // Each pulse belongs to one bead: its step in a loop, otherwise the next bead round.
+        func bead(for pulse: Int) -> Int { playback?.loop?.beads[pulse] ?? pulse % 8 }
+        let turn = state?.index.map(bead)
 
-        // The wrist: a faint track, the loop's sweep, and a ripple for each pulse.
+        // The wrist: a faint track, the loop's sweep, and a ripple from each bead as it hits.
         canvas.stroke(Self.arc(radius: RingGeometry.radius, transform), with: .color(.rule), lineWidth: line)
         if let loop = playback?.loop, ms >= 0 {
             let lap = (ms / loop.lap).truncatingRemainder(dividingBy: 1)
@@ -433,17 +446,23 @@ private struct StepRing: View {
                           with: .color(.ink), style: StrokeStyle(lineWidth: line * 1.4, lineCap: .round))
         }
         if !reduceMotion, let state {
-            for (at, strength) in state.starts {
-                let age = (ms - at) / 700
+            for (pulse, (at, strength)) in state.starts.enumerated() {
+                let age = (ms - at) / 800
                 guard age >= 0, age < 1 else { continue }
-                canvas.stroke(Self.arc(radius: RingGeometry.radius + 8 + age * 26 * (0.5 + strength), transform),
-                              with: .color(.ink.opacity((1 - age) * (1 - age) * 0.3 * strength)), lineWidth: line * (0.5 + 0.5 * strength))
+                let angle = Double(bead(for: pulse)) * .pi / 4 + Self.rotation
+                let centre = (x: cos(angle) * RingGeometry.radius, y: sin(angle) * RingGeometry.radius)
+                for ring in 0..<2 {
+                    let spread = max(0, age - Double(ring) * 0.18)
+                    guard spread > 0 else { continue }
+                    canvas.stroke(Self.arc(radius: 9 + spread * 34 * (0.5 + strength), around: centre, transform),
+                                  with: .color(.ink.opacity((1 - age) * (1 - age) * 0.45 * strength)), lineWidth: line * 0.8)
+                }
             }
         }
 
         let pods = RingGeometry.pods(rotation: Self.rotation, radius: RingGeometry.radius)
         func placed(_ pod: RingGeometry.Pod) -> (x: Double, y: Double, lift: Double, energy: Double) {
-            let energy = playback?.loop == nil ? amplitude : (turn == pod.index ? amplitude : 0)
+            let energy = turn == pod.index ? amplitude : 0
             guard !reduceMotion, energy > 0 else { return (pod.x, pod.y, lift(pod.index), energy) }
             let seed = Double(pod.index) * 1.7, shake = energy * 3
             return (pod.x + sin(t * 173 + seed) * shake, pod.y + cos(t * 151 + seed * 1.3) * shake,
@@ -469,91 +488,6 @@ private struct StepRing: View {
                                   lineWidth: line * (pod.index == focus ? 1.5 : 1),
                                   charge: max(at.energy, on ? steps[pod.index] / 255 * 0.5 : 0))
         }
-    }
-}
-
-/// The screen's own edge acting out the vibration: while a pulse runs the border trembles
-/// like a plucked string, harder for stronger pulses, and each pulse sends a ripple inward
-/// from the bezel. Nothing is drawn at rest. Reduce Motion keeps a still line that darkens.
-private struct EdgeRipples: View {
-    let playback: VibrationLab.Playback?
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    /// Close to the display's corner, so the line follows the glass.
-    private static let corner = 54.0
-
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 1 / 120, paused: playback == nil)) { context in
-            Canvas { canvas, size in
-                guard let playback else { return }
-                let t = context.date.timeIntervalSinceReferenceDate
-                let ms = context.date.timeIntervalSince(playback.started) * 1000
-                let state = level(of: playback.pulses, at: ms)
-                if !reduceMotion {
-                    // A pulse sheds a ripple when it starts and another every 120 ms it runs,
-                    // so a long pulse fills the edge and a tap leaves a single line.
-                    var start = 0.0
-                    for pulse in playback.pulses {
-                        guard start <= ms else { break }
-                        let strength = Double(min(pulse.amplitude, 255)) / 255
-                        for wave in 0...Int(Double(pulse.duration) / 120) {
-                            let age = (ms - start - Double(wave) * 120) / 800
-                            guard age >= 0, age < 1 else { continue }
-                            canvas.stroke(Self.border(size, inset: 6 + age * (10 + 16 * strength)) { _ in 0 },
-                                          with: .color(.ink.opacity((1 - age) * (1 - age) * 0.7 * strength)),
-                                          lineWidth: 0.75 + 1.5 * strength * (1 - age))
-                        }
-                        start += Double(pulse.duration + pulse.gap)
-                    }
-                }
-                guard state.amplitude > 0.01 else { return }
-                let swing = reduceMotion ? 0 : state.amplitude * 4.5
-                let string = Self.border(size, inset: 5 + swing) { along in
-                    swing * (sin(along / 13 + t * 46) * 0.7 + sin(along / 31 - t * 29) * 0.3)
-                }
-                canvas.stroke(string, with: .color(.ink.opacity(0.35 + 0.65 * state.amplitude)),
-                              style: StrokeStyle(lineWidth: 1 + 2.5 * state.amplitude, lineJoin: .round))
-            }
-        }
-        .accessibilityHidden(true)
-    }
-
-    /// A closed rounded rectangle `inset` points inside the screen edge, each point pushed
-    /// further in or out by `wave(distance along the edge)`.
-    private static func border(_ size: CGSize, inset: Double, wave: (Double) -> Double) -> Path {
-        let radius = max(4, corner - inset)
-        let left = inset, top = inset, right = size.width - inset, bottom = size.height - inset
-        var path = Path(), along = 0.0, started = false
-        func add(_ x: Double, _ y: Double, _ nx: Double, _ ny: Double) {
-            let push = wave(along)
-            let point = CGPoint(x: x + nx * push, y: y + ny * push)
-            if started { path.addLine(to: point) } else { path.move(to: point); started = true }
-        }
-        func edge(_ x0: Double, _ y0: Double, _ x1: Double, _ y1: Double, _ nx: Double, _ ny: Double) {
-            let length = hypot(x1 - x0, y1 - y0), steps = max(1, Int(length / 5))
-            for step in 0..<steps {
-                let k = Double(step) / Double(steps)
-                add(x0 + (x1 - x0) * k, y0 + (y1 - y0) * k, nx, ny)
-                along += length / Double(steps)
-            }
-        }
-        func turn(_ cx: Double, _ cy: Double, from: Double) {
-            let steps = max(2, Int(radius * .pi / 2 / 5))
-            for step in 0..<steps {
-                let a = from + .pi / 2 * Double(step) / Double(steps)
-                add(cx + cos(a) * radius, cy + sin(a) * radius, -cos(a), -sin(a))
-                along += radius * .pi / 2 / Double(steps)
-            }
-        }
-        edge(left + radius, top, right - radius, top, 0, 1)
-        turn(right - radius, top + radius, from: -.pi / 2)
-        edge(right, top + radius, right, bottom - radius, -1, 0)
-        turn(right - radius, bottom - radius, from: 0)
-        edge(right - radius, bottom, left + radius, bottom, 0, -1)
-        turn(left + radius, bottom - radius, from: .pi / 2)
-        edge(left, bottom - radius, left, top + radius, 1, 0)
-        turn(left + radius, top + radius, from: .pi)
-        path.closeSubpath()
-        return path
     }
 }
 

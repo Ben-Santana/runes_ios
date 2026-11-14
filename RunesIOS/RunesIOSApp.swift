@@ -125,6 +125,7 @@ struct RunesIOSApp: App {
 
     private var live: some View {
         RootView(controller: .shared)
+            .overlay { EdgeEffect() }
             .onChange(of: scenePhase, initial: true) { _, phase in
                 switch phase {
                 case .active: SessionController.shared.lifecycle("foreground")
