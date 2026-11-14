@@ -319,7 +319,7 @@ private struct GuideDrawer: View {
             VStack(spacing: 8) {
                 HStack(spacing: 5) {
                     ForEach(0..<3, id: \.self) { bead in
-                        Circle().fill(Color.paper).overlay(Circle().strokeBorder(Color.ink.opacity(0.75), lineWidth: Metric.hairline))
+                        Circle().fill(Color.soft).overlay(Circle().strokeBorder(Color.ink.opacity(0.75), lineWidth: Metric.hairline))
                             .frame(width: 8, height: 8).offset(y: hopping == bead ? -5 : 0)
                     }
                 }
@@ -328,7 +328,7 @@ private struct GuideDrawer: View {
             .padding(.top, 12).padding(.bottom, 4)
             .frame(maxWidth: .infinity)
             // The drawer carries on below and past the sides of the screen, so only its lip shows.
-            .background { lip.fill(Color.paper).overlay(lip.strokeBorder(Color.rule, lineWidth: Metric.hairline)).padding(.bottom, -120).padding(.horizontal, -1) }
+            .background { lip.fill(Color.soft).overlay(lip.strokeBorder(Color.faint, lineWidth: Metric.hairline)).padding(.bottom, -120).padding(.horizontal, -1) }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -337,9 +337,9 @@ private struct GuideDrawer: View {
         .accessibilityHint("How to wear and use your band")
         .task {
             guard !reduceMotion else { tucked = false; return }
-            try? await Task.sleep(for: .seconds(0.7))
+            try? await Task.sleep(for: .seconds(0.25))
             withAnimation(.entrance) { tucked = false }
-            try? await Task.sleep(for: .seconds(1.6))
+            try? await Task.sleep(for: .seconds(1.1))
             for bead in 0..<3 {
                 withAnimation(.standard) { hopping = bead }
                 try? await Task.sleep(for: .seconds(0.13))

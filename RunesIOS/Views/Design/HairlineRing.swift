@@ -24,8 +24,9 @@ struct HairlineRing: View {
     var emphasis: Int? = nil
     /// Show the raised pod as the band's light, flashing white the way it does when pairing.
     var emphasisLight = false
-    /// For the welcome screen: the ring idles, drifting a little, and can be played with. A
-    /// touch scatters the pods near it, harder the faster it moves, and they drift back.
+    /// For the welcome screen: the ring orbits slowly, a pod hops now and then as if to be
+    /// noticed, and it can be played with. A finger nudges the pods near it aside and they
+    /// settle back.
     var playful = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -33,7 +34,7 @@ struct HairlineRing: View {
     @State private var hold: Hold?
     @State private var previous: BandPhase?
     @State private var phaseChangedAt = Date.distantPast
-    @State private var pokes: [Poke] = []
+    @State private var play = Play()
 
     private struct Effect: Equatable {
         enum Kind: Equatable { case tap, doubleTap, release, swipe(SwipeDirection) }
@@ -45,7 +46,42 @@ struct HairlineRing: View {
         }
     }
     private struct Hold: Equatable { let start: Date; var end: Date?; let origin: Int }
-    private struct Poke { let at: Date; let point: CGPoint; let strength: Double }
+
+    /// The pods' play: each sits on a soft spring about its place and is pushed away from a
+    /// finger while one is down, so however it is touched the motion stays continuous.
+    private final class Play {
+        var offset = [CGSize](repeating: .zero, count: 8)
+        private var speed = [CGSize](repeating: .zero, count: 8)
+        var finger: CGPoint?, fingerSpeed = 0.0
+        /// A touch that has just landed, to be felt as one kick.
+        var landed: CGPoint?
+        private var last: Date?
+
+        func step(to now: Date, rest: [CGPoint], width: Double) {
+            defer { last = now; landed = nil }
+            guard let last else { return }
+            let reach = width * 0.2, steps = 2, dt = min(1.0 / 30, max(0, now.timeIntervalSince(last))) / Double(steps)
+            for _ in 0..<steps {
+                for index in offset.indices {
+                    var pull = CGSize(width: -90 * offset[index].width - 14 * speed[index].width,
+                                      height: -90 * offset[index].height - 14 * speed[index].height)
+                    for (point, kick) in [(finger, 0.0), (landed, 1.0)] {
+                        guard let point else { continue }
+                        let dx = rest[index].x + offset[index].width - point.x, dy = rest[index].y + offset[index].height - point.y
+                        let distance = hypot(dx, dy), near = exp(-pow(distance / reach, 2)) / (distance + 6)
+                        if kick > 0 {
+                            speed[index].width += dx * near * 150 / Double(steps); speed[index].height += dy * near * 150 / Double(steps)
+                        } else {
+                            let push = 1500 * (0.5 + min(1, fingerSpeed / 800))
+                            pull.width += dx * near * push; pull.height += dy * near * push
+                        }
+                    }
+                    speed[index].width += pull.width * dt; speed[index].height += pull.height * dt
+                    offset[index].width += speed[index].width * dt; offset[index].height += speed[index].height * dt
+                }
+            }
+        }
+    }
 
     private static let blend = 0.45
     private static let longestHold: TimeInterval = 12
@@ -58,7 +94,10 @@ struct HairlineRing: View {
         }
         .aspectRatio(1.25, contentMode: .fit)
         .contentShape(Rectangle())
-        .gesture(DragGesture(minimumDistance: 0).onChanged(poke), isEnabled: playful && !reduceMotion)
+        .gesture(DragGesture(minimumDistance: 0).onChanged { touch in
+            play.finger = touch.location; play.fingerSpeed = hypot(touch.velocity.width, touch.velocity.height)
+            if touch.translation == .zero { play.landed = touch.location }
+        }.onEnded { _ in play.finger = nil }, isEnabled: playful && !reduceMotion)
         .onChange(of: gesture?.id) { _, _ in if let gesture { react(to: gesture) } }
         .onChange(of: phase) { old, _ in
             previous = old; phaseChangedAt = Date()
@@ -74,31 +113,7 @@ struct HairlineRing: View {
         return phase == .connecting || phase == .connected || previous != nil || emphasis != nil
     }
 
-    // MARK: Playing
-
-    /// A touch lands as one poke; a moving finger leaves a trail of them, stronger the faster it goes.
-    private func poke(_ touch: DragGesture.Value) {
-        let now = Date(), landed = touch.translation == .zero
-        if let last = pokes.last, !landed, hypot(touch.location.x - last.point.x, touch.location.y - last.point.y) < 12 { return }
-        let speed = hypot(touch.velocity.width, touch.velocity.height)
-        pokes = pokes.filter { now.timeIntervalSince($0.at) < Self.pokeLife }.suffix(14) + [Poke(at: now, point: touch.location, strength: landed ? 1 : min(1.2, 0.35 + speed / 1200))]
-    }
-    private static let pokeLife = 1.6
-
-    /// How far a pod resting at `centre` is pushed aside by the pokes still playing out, and how high it hops.
-    private func scatter(from centre: CGPoint, width: Double, now: Date) -> (push: CGSize, hop: Double) {
-        var push = CGSize.zero, hop = 0.0
-        for poke in pokes {
-            let tau = now.timeIntervalSince(poke.at)
-            guard tau > 0, tau < Self.pokeLife else { continue }
-            let dx = centre.x - poke.point.x, dy = centre.y - poke.point.y, distance = max(1, hypot(dx, dy))
-            let near = poke.strength * exp(-pow(distance / (width * 0.4), 2))
-            let out = 0.11 * width * near * (1 - exp(-22 * tau)) * exp(-3.4 * tau)
-            push.width += dx / distance * out; push.height += dy / distance * out
-            hop += 6 * near * Self.bounce(tau)
-        }
-        return (push, hop)
-    }
+    private static let winkEvery = 4.2
 
     // MARK: Reacting
 
@@ -192,7 +207,12 @@ struct HairlineRing: View {
         default: break
         }
         if index == emphasis { value = reduceMotion ? 10 : 8 + 2 * sin(t * 2 * .pi / 1.6) }
-        if playful, !reduceMotion { value += 1.6 * (1 + sin(t * 2 * .pi / 4.5 + angle)) / 2 }
+        if playful, !reduceMotion {
+            value += 1.6 * (1 + sin(t * 2 * .pi / 4.5 + angle)) / 2
+            // Every few seconds a different pod hops, and its neighbours follow a little.
+            let turn = (t / Self.winkEvery).rounded(.down), away = Self.steps(index, Int(turn) * 3 % 8)
+            if away <= 1 { value += (away == 0 ? 7 : 3) * Self.bounce(t - turn * Self.winkEvery - 1 - away * 0.05) }
+        }
         return value
     }
 
@@ -219,7 +239,7 @@ struct HairlineRing: View {
     private func frame(at now: Date) -> Frame {
         var f = Frame()
         let t = now.timeIntervalSinceReferenceDate
-        if playful, !reduceMotion { f.rotation = (t * 0.035).truncatingRemainder(dividingBy: 2 * .pi) }
+        if playful, !reduceMotion { f.rotation = (t * 0.11).truncatingRemainder(dividingBy: 2 * .pi) }
         for i in 0..<8 {
             let angle = Double(i) * .pi / 4
             var value = stateLift(phase, index: i, angle: angle, t: t)
@@ -345,11 +365,15 @@ struct HairlineRing: View {
         let radius = Self.radius + f.radiusKick
         let placed = pods(rotation: f.rotation, radius: radius)
         // Shadows first, so no ball is drawn under another ball's shadow.
-        // Where play has pushed each pod, measured from where it rests.
+        // Where play has nudged each pod, measured from where it rests; a nudged pod rides a little higher.
+        if playful, !reduceMotion {
+            var rest = [CGPoint](repeating: .zero, count: 8)
+            for pod in placed { let body = ball(pod.x, pod.y, pod.z + f.lift[pod.index], transform); rest[pod.index] = CGPoint(x: body.midX, y: body.midY) }
+            play.step(to: now, rest: rest, width: size.width)
+        }
         let scattered = placed.map { pod -> (push: CGSize, hop: Double) in
-            guard playful, !pokes.isEmpty else { return (.zero, 0) }
-            let rest = ball(pod.x, pod.y, pod.z + f.lift[pod.index], transform)
-            return scatter(from: CGPoint(x: rest.midX, y: rest.midY), width: size.width, now: now)
+            let push = playful ? play.offset[pod.index] : .zero
+            return (push, min(4, hypot(push.width, push.height) * 0.25))
         }
         for (pod, play) in zip(placed, scattered) {
             let lift = max(0, f.lift[pod.index] + play.hop)
