@@ -53,6 +53,8 @@ struct BandGuidePage: View {
     /// The page as a fraction while it is being swiped.
     @State private var position = 0.0
     @State private var page: Int? = 0
+    /// When each plate last came into view, so its lesson starts from the beginning.
+    @State private var entered = Array(repeating: Date().timeIntervalSinceReferenceDate, count: Plate.allCases.count)
 
     private var current: Int { page ?? 0 }
     private var isLast: Bool { current == Plate.allCases.count - 1 }
@@ -85,11 +87,14 @@ struct BandGuidePage: View {
                     .scrollTargetBehavior(.paging)
                     .scrollPosition(id: $page)
                     .scrollIndicators(.hidden)
-                    .onScrollGeometryChange(for: Double.self) { $0.contentOffset.x / max(1, $0.containerSize.width) } action: { _, value in
+                    .onScrollGeometryChange(for: Double.self) { $0.contentOffset.x / max(1, $0.containerSize.width) } action: { old, value in
                         position = value
+                        for plate in Plate.allCases where abs(value - Double(plate.rawValue)) < 1 && abs(old - Double(plate.rawValue)) >= 1 {
+                            entered[plate.rawValue] = Date().timeIntervalSinceReferenceDate
+                        }
                     }
                     TimelineView(.animation(minimumInterval: 1 / 60, paused: reduceMotion || scenePhase != .active)) { context in
-                        BeadTheatre(position: position, time: context.date.timeIntervalSinceReferenceDate, still: reduceMotion)
+                        BeadTheatre(position: position, time: context.date.timeIntervalSinceReferenceDate, entered: entered, still: reduceMotion)
                     }
                     .frame(height: stage)
                     .allowsHitTesting(false)
@@ -138,6 +143,7 @@ private struct BeadTheatre: View {
     static let designHeight: CGFloat = 330
     let position: Double
     let time: Double
+    let entered: [Double]
     let still: Bool
 
     private struct Bead {
@@ -161,18 +167,49 @@ private struct BeadTheatre: View {
         }
     }
 
+    /// The wearing lesson as a short loop: the band comes up the forearm loose, stops against
+    /// the wrist bone, tightens, shows its line, and its sensors wake one after another.
+    private struct Wearing {
+        /// How far down the forearm the band is, and how loose, 0…1.
+        var offset = 0.0, loose = 0.0
+        /// The bone's label, its nudge as the band meets it, and the line, each 0…1.
+        var bone = 1.0, knock = 0.0, line = 1.0
+        /// The angle around the band of the sensor waking now.
+        var sense: Double?
+
+        init(at elapsed: Double?) {
+            guard let elapsed else { return }
+            let e = elapsed.truncatingRemainder(dividingBy: 8)
+            func ramp(_ a: Double, _ b: Double) -> Double { let x = min(1, max(0, (e - a) / (b - a))); return x * x * (3 - 2 * x) }
+            /// Eases away from 0, runs a little past 1 and settles.
+            func spring(_ x: Double) -> Double { x <= 0 ? 0 : 1 - exp(-4 * x) * (cos(5 * x) + 0.8 * sin(5 * x)) }
+            let leaving = ramp(6.8, 7.6), shown = 1 - ramp(6.4, 6.8)
+            offset = 60 * (1 - spring(e - 0.5) + leaving)
+            loose = max(1 - spring((e - 2.1) * 1.6), ramp(6.5, 7))
+            knock = exp(-pow((e - 1.13) / 0.16, 2))
+            bone = ramp(1, 1.4) * shown
+            line = ramp(3, 3.5) * shown
+            if e > 3.7, e < 4.9 { sense = -0.4 + (e - 3.7) / 1.2 * (.pi + 0.8) }
+        }
+    }
+
     private static let hand = LucideData.hand.map(SVGPath.cached)
-    private static let forearm = ["M8.5 21.2V33", "M17.5 21.2V33"].map(SVGPath.cached)
+    /// The forearm, in the hand's 24-unit drawing: its top, where it has faded out, and its sides.
+    private static let armTop = 21.2, armEnd = 36.0, armLeft = 8.5, armRight = 17.5
+    private static let forearm = [armLeft, armRight].map { SVGPath.cached("M\($0) \(armTop)V\(armEnd)") }
     private static let ringScale = 1.55
-    private static let handScale = 6.4
-    private static let handTop = 38.0
-    private static let handsApart = 78.0
-    /// The wrist, a little below the palm in the hand's 24-unit drawing.
+    /// Drawn large and close on the wrist; the fingertips fade out at the top.
+    private static let handScale = 10.0
+    private static let handTop = -30.0
+    /// Where the band sits, a little below the palm.
     private static let wristY = handTop + 24.4 * handScale
+    /// The wrist bone, on the little-finger side just above the band.
+    private static let boneY = wristY - 26
+    private static let armHalfWidth = (armRight - armLeft) / 2 * handScale
     private static let columnWidth = 78.0
     private static let rowY = 150.0
     /// Seconds each gesture, light and lap of the loops below is shown.
-    private static let gestureBeat = 1.5, lightBeat = 2.2, wearLoop = 5.0, chargeLoop = 6.0
+    private static let gestureBeat = 1.5, lightBeat = 2.2, chargeLoop = 6.0
 
     var body: some View {
         Canvas { canvas, size in
@@ -204,29 +241,25 @@ private struct BeadTheatre: View {
 
     // MARK: Loops
 
-    private var t: Double { still ? 0 : time }
+    /// Seconds since `plate` came into view.
+    private func clock(_ plate: Plate) -> Double { still ? 0 : max(0, time - entered[plate.rawValue]) }
     private func column(_ index: Int, of count: Int, centre: Double) -> Double {
         centre + (Double(index) - Double(count - 1) / 2) * Self.columnWidth
     }
-    private func writingWrist(_ centre: Double) -> Double { centre + Self.handsApart + Self.handScale }
     /// Which gesture is showing, and how far into it.
     private var gesture: (index: Int, into: Double) {
-        let beat = (t / Self.gestureBeat).truncatingRemainder(dividingBy: Double(Plate.moves.count))
+        let beat = (clock(.gestures) / Self.gestureBeat).truncatingRemainder(dividingBy: Double(Plate.moves.count))
         return (Int(beat), beat - beat.rounded(.down))
     }
-    private var lightIndex: Int { Int(t / Self.lightBeat) % Plate.lights.count }
+    private var lightIndex: Int { Int(clock(.light) / Self.lightBeat) % Plate.lights.count }
     private func glow(of light: (colour: Color, blink: Double?, name: String)) -> Double {
         guard let blink = light.blink, !still else { return 1 }
-        return light.colour == .white ? 0.5 + 0.5 * sin(t * 2 * .pi * blink) : (sin(t * 2 * .pi * blink) > 0 ? 1 : 0.1)
+        let wave = sin(clock(.light) * 2 * .pi * blink)
+        return light.colour == .white ? 0.5 + 0.5 * wave : (wave > 0 ? 1 : 0.1)
     }
-    /// How far down the forearm the band is from its place: it slides on, then settles.
-    private var wearOffset: Double {
-        guard !still else { return 0 }
-        let into = time.truncatingRemainder(dividingBy: Self.wearLoop)
-        return 46 * pow(max(0, 1 - into / 0.9), 2) + 9 * exp(-into * 2.6) * cos(into * 7)
-    }
+    private var wearing: Wearing { Wearing(at: still ? nil : clock(.wear)) }
     /// The charging row fills, then rests full for a moment.
-    private var chargeLevel: Double { still ? 1 : min(1, (t / Self.chargeLoop).truncatingRemainder(dividingBy: 1) * 1.2) }
+    private var chargeLevel: Double { still ? 1 : min(1, (clock(.charging) / Self.chargeLoop).truncatingRemainder(dividingBy: 1) * 1.2) }
 
     // MARK: Arrangements
 
@@ -243,16 +276,21 @@ private struct BeadTheatre: View {
     private func beads(for plate: Plate, centre: Double) -> [Bead] {
         switch plate {
         case .meet:
+            let t = clock(.meet)
             return ring(centre: centre, rotation: t * 0.35, y: 175).enumerated().map { index, bead in
                 var bead = bead
                 bead.lift += still ? 0 : 5 + 5 * sin(t * 1.5 + Double(index) * .pi / 4)
                 return bead
             }
         case .wear:
+            let story = wearing
             return (0..<8).map { index in
-                let angle = Double(index) * .pi / 4 + .pi / 8, front = sin(angle)
-                return Bead(x: writingWrist(centre) + cos(angle) * 36, y: Self.wristY + front * 7 + wearOffset,
-                            radius: 7 + front * 1.1, opacity: front < 0 ? 0.3 : 1, charge: 0.2, depth: front)
+                // Three beads across the front and one at each side; the other three are behind the arm.
+                let angle = Double(index) * .pi / 4, front = sin(angle)
+                let woken = story.sense.map { 0.8 * exp(-pow(angle - $0, 2) * 5) } ?? 0
+                return Bead(x: centre + cos(angle) * (Self.armHalfWidth + 3 + 14 * story.loose),
+                            y: Self.wristY + story.offset + front * (12 + 5 * story.loose),
+                            radius: 9.5 + front * 4.5, opacity: front < -0.01 ? 0 : 1, charge: 0.2 + woken, depth: front)
             }
         case .gestures:
             let now = gesture, played = Plate.moves[now.index]
@@ -277,7 +315,7 @@ private struct BeadTheatre: View {
                 if index == 0 {
                     return Bead(x: centre, y: 165, radius: 44, dark: 1, charge: brightness, light: light.colour, depth: 10, lift: 6 * brightness)
                 }
-                let angle = Double(index) * 2 * .pi / 7 + t * 0.4
+                let angle = Double(index) * 2 * .pi / 7 + clock(.light) * 0.4
                 return Bead(x: centre + cos(angle) * 118, y: 165 + sin(angle) * 34, radius: 5, opacity: 0.5, depth: sin(angle))
             }
         case .button:
@@ -327,25 +365,30 @@ private struct BeadTheatre: View {
     private func drawBackdrop(in canvas: inout GraphicsContext, centre: Double, weight: (Plate) -> Double) {
         let wear = weight(.wear)
         if wear > 0.01 {
-            // Both hands, the other one faint, each with a forearm that fades out.
-            for writing in [false, true] {
-                // The left hand is the right one mirrored about its 24-unit box.
-                let x = centre + (writing ? 1 : -1) * (Self.handsApart - 12 * Self.handScale)
-                let place = CGAffineTransform(translationX: x, y: Self.handTop).scaledBy(x: (writing ? 1 : -1) * Self.handScale, y: Self.handScale)
-                let ink = (writing ? Color.ink : Color.faint).opacity(wear)
-                let stroke = StrokeStyle(lineWidth: 1.3, lineCap: .round, lineJoin: .round)
-                for path in Self.hand { canvas.stroke(path.applying(place), with: .color(ink), style: stroke) }
-                let fade = GraphicsContext.Shading.linearGradient(Gradient(colors: [ink, ink.opacity(0)]),
-                                                                  startPoint: CGPoint(x: 0, y: 21.2).applying(place), endPoint: CGPoint(x: 0, y: 33).applying(place))
-                for path in Self.forearm { canvas.stroke(path.applying(place), with: fade, style: stroke) }
-            }
-            let x = writingWrist(centre), ink = Color.ink.opacity(wear)
-            // The wrist bone, and the band's reference line at the front where you can see it.
-            var marks = Path()
-            marks.addArc(center: CGPoint(x: x + 31, y: Self.wristY - 15), radius: 4.5, startAngle: .degrees(-70), endAngle: .degrees(70), clockwise: false)
-            marks.move(to: CGPoint(x: x, y: Self.wristY + 17 + wearOffset))
-            marks.addLine(to: CGPoint(x: x, y: Self.wristY + 27 + wearOffset))
-            canvas.stroke(marks, with: .color(ink), style: StrokeStyle(lineWidth: 1.4, lineCap: .round))
+            let story = wearing, ink = Color.ink.opacity(wear)
+            let place = CGAffineTransform(translationX: centre - (Self.armLeft + Self.armRight) / 2 * Self.handScale, y: Self.handTop)
+                .scaledBy(x: Self.handScale, y: Self.handScale)
+            let stroke = StrokeStyle(lineWidth: 1.4, lineCap: .round, lineJoin: .round)
+            // Close on the wrist: the fingertips and the forearm fade out of the picture.
+            let fade = GraphicsContext.Shading.linearGradient(
+                Gradient(stops: [.init(color: ink.opacity(0), location: 0), .init(color: ink, location: 0.17),
+                                 .init(color: ink, location: 0.82), .init(color: ink.opacity(0), location: 1)]),
+                startPoint: .zero, endPoint: CGPoint(x: 0, y: Self.designHeight))
+            for path in Self.hand + Self.forearm { canvas.stroke(path.applying(place), with: fade, style: stroke) }
+            var bone = Path()
+            bone.addArc(center: CGPoint(x: centre + Self.armHalfWidth, y: Self.boneY), radius: 7 + 3 * story.knock,
+                        startAngle: .degrees(-75), endAngle: .degrees(75), clockwise: false)
+            canvas.stroke(bone, with: .color(ink), style: StrokeStyle(lineWidth: 1.4 + story.knock, lineCap: .round))
+            // The band's line, at the front where you can see it.
+            let lineTop = Self.wristY + story.offset + 33
+            var line = Path()
+            line.move(to: CGPoint(x: centre, y: lineTop))
+            line.addLine(to: CGPoint(x: centre, y: lineTop + 12 * story.line))
+            canvas.stroke(line, with: .color(ink.opacity(story.line)), style: StrokeStyle(lineWidth: 1.8, lineCap: .round))
+            var leader = Path()
+            leader.move(to: CGPoint(x: centre - Self.armHalfWidth - 8, y: lineTop + 6))
+            leader.addLine(to: CGPoint(x: centre - 7, y: lineTop + 6))
+            canvas.stroke(leader, with: .color(.rule.opacity(wear * story.line)), lineWidth: 1)
         }
         let listen = weight(.gestures)
         if listen > 0.01, !still {
@@ -359,7 +402,7 @@ private struct BeadTheatre: View {
             // Each hold as an arc, an eighth of a turn per second, drawn at the pace it takes.
             for (index, hold) in Plate.holds.enumerated() {
                 let middle = CGPoint(x: column(index, of: Plate.holds.count, centre: centre), y: Self.rowY)
-                let sweep = still ? 1 : min(1, t.truncatingRemainder(dividingBy: 6) / (0.5 + hold.seconds * 0.45))
+                let sweep = still ? 1 : min(1, clock(.button).truncatingRemainder(dividingBy: 6) / (0.5 + hold.seconds * 0.45))
                 var arc = Path()
                 arc.addArc(center: middle, radius: 29, startAngle: .degrees(-90), endAngle: .degrees(-90 + 45 * hold.seconds * sweep), clockwise: false)
                 canvas.stroke(Path(ellipseIn: CGRect(x: middle.x - 29, y: middle.y - 29, width: 58, height: 58)), with: .color(.rule.opacity(holds)), lineWidth: 1)
@@ -383,9 +426,9 @@ private struct BeadTheatre: View {
                 if let detail = name.1 { write(detail, at: CGPoint(x: x, y: Self.rowY + 74), opacity: opacity) }
             }
         }
-        let x = writingWrist(centre)
-        write("wrist bone", at: CGPoint(x: x + 42, y: Self.wristY - 15), anchor: .leading, opacity: weight(.wear))
-        write("line faces you", at: CGPoint(x: x - 46, y: Self.wristY + 22), anchor: .trailing, opacity: weight(.wear))
+        let story = wearing
+        write("wrist bone", at: CGPoint(x: centre + Self.armHalfWidth + 18, y: Self.boneY), anchor: .leading, opacity: weight(.wear) * story.bone)
+        write("line faces you", at: CGPoint(x: centre - Self.armHalfWidth - 14, y: Self.wristY + story.offset + 39), anchor: .trailing, opacity: weight(.wear) * story.line)
         if still {
             write(Plate.moves.map(\.name).joined(separator: " · "), at: CGPoint(x: centre, y: 296), strong: true, opacity: weight(.gestures))
             row(Plate.lights.map { ($0.name, $0.blink == nil ? nil : "blinking") }, opacity: weight(.light))
