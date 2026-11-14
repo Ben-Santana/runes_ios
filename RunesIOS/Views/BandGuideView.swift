@@ -140,13 +140,13 @@ struct BandGuideSheet: View {
 private enum GuideHand {
     static let scale = 7.6, top = 26.0, wristX = 13.6
     static let rest = [5.0, 3, 5, 7.3]
-    /// The heel of the hand and the forearm; then the edge of the palm that the thumb lies over, and the wrist.
+    /// The heel of the hand and the forearm; then the edge of the palm, which the thumb lies over.
     static let sides = ["M22 14C22 17.6 20.9 20 19.6 21.8C18.9 22.8 18.6 23.8 18.6 25C18.6 28 18.8 31.5 19.2 35.5",
-                        "M6 14C5.7 16 5.22 18.9 6.01 19.66C7.4 21 8.2 22.6 8.2 24.5C8.2 27.5 7.9 31 7.4 35.5"].map(SVGPath.cached)
-    /// The thumb at rest: where it joins the hand, its direction in degrees and its length.
-    static let thumbRoot = CGPoint(x: 7.72, y: 18.54), thumbRest = (turn: 225.0, reach: 5.5)
-    /// The edge of the palm the thumb lies over, from the first finger down to the wrist: the first curve of `sides[1]`.
-    static let palmEdge = [CGPoint(x: 6, y: 14), CGPoint(x: 5.7, y: 16), CGPoint(x: 5.22, y: 18.9), CGPoint(x: 6.01, y: 19.66)]
+                        "M6 14C5.7 16 5.22 18.9 6.01 19.66"].map(SVGPath.cached)
+    /// The wrist and forearm on the thumb's side, from where the thumb's outer edge ends.
+    static let wrist = SVGPath.cached("M6.01 19.66C7.4 21 8.2 22.6 8.2 24.5C8.2 27.5 7.9 31 7.4 35.5")
+    /// The thumb at rest: where it turns, its direction in degrees and its length; and where its outer edge meets the wrist.
+    static let thumbRoot = CGPoint(x: 7.72, y: 18.54), thumbRest = (turn: 225.0, reach: 5.5), thumbBase = CGPoint(x: 6.01, y: 19.66)
     /// For a press of the index or the middle finger: how far down its knuckle comes as it
     /// folds, where its tip ends up in front of the palm, and how the thumb turns and reaches
     /// to meet it.
@@ -168,10 +168,11 @@ private enum GuideHand {
         return path
     }
 
-    /// The thumb on its way to meet a finger, from 0 at rest to 1 touching. It turns about the
-    /// point where it joins the hand, so its outer edge always springs from the palm's edge.
-    /// Gives that outer edge with the tip; the inner edge, which softens into the palm from
-    /// `soften.from` to `soften.to` as the thumb crosses it; the shape it covers; and its tip.
+    /// The thumb on its way to meet a finger, from 0 at rest to 1 touching. It turns about its
+    /// root, and its outer edge always runs down into the wrist at the same point, so nothing
+    /// jumps as it moves. Gives that outer edge with the tip; the inner edge, which softens into
+    /// the palm from `soften.from` to `soften.to` as the thumb crosses it; the shape it covers,
+    /// which reaches back past its root to hide the palm's edge beneath; and its tip.
     static func thumb(meeting finger: Int, by swing: Double) -> (outer: Path, inner: Path, cover: Path, tip: CGPoint, soften: (from: CGPoint, to: CGPoint)) {
         let target = pinch[finger].thumb, root = thumbRoot
         func mix(_ rest: Double, _ met: Double) -> Double { rest + (met - rest) * swing }
@@ -184,30 +185,11 @@ private enum GuideHand {
         func tipArc(_ path: inout Path) {
             path.addArc(center: edge(reach, 0), radius: radius, startAngle: turn + .degrees(90), endAngle: turn - .degrees(90), clockwise: true)
         }
-        // The outer edge ends exactly where it meets the palm's edge, wherever the thumb has
-        // turned to, so the two always join. Found by walking the palm's edge up from the wrist.
-        func onPalm(_ t: Double) -> CGPoint {
-            let u = 1 - t, weights = [u * u * u, 3 * u * u * t, 3 * u * t * t, t * t * t]
-            return zip(palmEdge, weights).reduce(CGPoint.zero) { CGPoint(x: $0.x + $1.0.x * $1.1, y: $0.y + $1.0.y * $1.1) }
-        }
-        /// How far inside the thumb's outer edge a point is; negative once it is clear of it.
-        /// The margin keeps the two edges from running on top of each other before they part.
-        func inside(_ point: CGPoint) -> Double { radius + 0.3 - (point.x - root.x) * along.y + (point.y - root.y) * along.x }
-        var joined = 1.0, before = inside(palmEdge[3])
-        for step in 1...40 where before > 0 {
-            let t = 1 - Double(step) / 40, here = inside(onPalm(t))
-            if here <= 0 { joined = t + (0 - here) / (before - here) / 40; break }
-            before = here
-        }
-        // It turns into the palm's edge in a short curve rather than at a corner.
-        let join = onPalm(joined), settle = onPalm(min(1, joined + 0.14))
-        let lead = CGPoint(x: join.x + along.x * 1.2, y: join.y + along.y * 1.2)
         let start = mix(3, 1.4)
         var inner = Path(), outer = Path(), cover = Path()
         inner.move(to: edge(start, 1)); inner.addLine(to: edge(reach, 1))
-        outer.move(to: edge(reach, 1)); tipArc(&outer); outer.addLine(to: lead); outer.addQuadCurve(to: settle, control: join)
-        cover.move(to: edge(0, 1)); cover.addLine(to: edge(reach, 1)); tipArc(&cover); cover.addLine(to: lead)
-        cover.addQuadCurve(to: settle, control: join); cover.closeSubpath()
+        outer.move(to: edge(reach, 1)); tipArc(&outer); outer.addLine(to: edge(0.9, -1)); outer.addQuadCurve(to: thumbBase, control: edge(mix(0.42, -0.5), -1))
+        cover.move(to: edge(-2.5, 1)); cover.addLine(to: edge(reach, 1)); tipArc(&cover); cover.addLine(to: edge(-2.5, -1)); cover.closeSubpath()
         return (outer, inner, cover, edge(reach, 0), (edge(start, 1), edge(start + 1.8, 1)))
     }
 
@@ -537,6 +519,7 @@ private struct BeadTheatre: View {
             layer.fill(folded, with: .color(paper)); layer.stroke(folded, with: .color(ink), style: hairline)
         }
         canvas.fill(thumb.cover.applying(place), with: .color(paper))
+        stroke(GuideHand.wrist, fading)
         stroke(thumb.outer, .color(ink))
         stroke(thumb.inner, .linearGradient(Gradient(colors: [ink.opacity(1 - down), ink]),
                                             startPoint: thumb.soften.from.applying(place), endPoint: thumb.soften.to.applying(place)))
