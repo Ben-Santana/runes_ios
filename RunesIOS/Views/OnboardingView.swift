@@ -69,7 +69,7 @@ struct OnboardingView: View {
                                   cancelFeedback: actions.cancelWristFeedback, layout: .embedded)
                             .padding(.bottom, 20)
                     } else {
-                        HairlineRing(phase: ringPhase, gesture: context.gesture, emphasis: emphasis, emphasisLight: step == .pairing)
+                        HairlineRing(phase: ringPhase, gesture: context.gesture, emphasis: emphasis, emphasisLight: step == .pairing, playful: step == .welcome)
                             .frame(maxWidth: 300).padding(.top, 8).padding(.bottom, 12)
                     }
                     VStack(alignment: .leading, spacing: 10) {
@@ -87,7 +87,7 @@ struct OnboardingView: View {
             .scrollBounceBehavior(.basedOnSize)
             footer.padding(.horizontal, Metric.gutter).padding(.bottom, 12)
             if step == .pairing || (step == .test && !context.testPassed) {
-                GuideDrawer { showingGuide = true }.padding(.horizontal, Metric.gutter)
+                GuideDrawer { showingGuide = true }
             }
         }
         .animation(.standard, value: step)
@@ -304,37 +304,47 @@ struct OnboardingView: View {
     }
 }
 
-/// The optional band guide, as the top row of a panel that carries on below the screen. It
-/// rises into view a moment after the step arrives and lifts once more, then keeps still.
+/// The optional band guide, as the lip of a drawer across the foot of the screen, with three
+/// beads for a handle. It rises into view a moment after the step arrives; the beads hop once,
+/// one after another, and then keep still.
 private struct GuideDrawer: View {
     let open: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var tucked = true
-    @State private var lifted = false
+    @State private var hopping: Int?
 
     var body: some View {
-        let edge = UnevenRoundedRectangle(topLeadingRadius: Metric.panel, topTrailingRadius: Metric.panel)
+        let lip = UnevenRoundedRectangle(topLeadingRadius: 16, topTrailingRadius: 16)
         Button(action: open) {
-            HStack {
-                Text("Band guide").font(.bodyText)
-                Spacer()
-                LucideIcon(.chevronUp, size: 16).foregroundStyle(Color.muted)
+            VStack(spacing: 8) {
+                HStack(spacing: 5) {
+                    ForEach(0..<3, id: \.self) { bead in
+                        Circle().fill(Color.paper).overlay(Circle().strokeBorder(Color.ink.opacity(0.75), lineWidth: Metric.hairline))
+                            .frame(width: 8, height: 8).offset(y: hopping == bead ? -5 : 0)
+                    }
+                }
+                Text("Band guide").font(.label)
             }
-            .panelRow()
-            .background { edge.fill(Color.paper).overlay(edge.strokeBorder(Color.rule, lineWidth: Metric.hairline)).padding(.bottom, -120) }
+            .padding(.top, 12).padding(.bottom, 4)
+            .frame(maxWidth: .infinity)
+            // The drawer carries on below and past the sides of the screen, so only its lip shows.
+            .background { lip.fill(Color.paper).overlay(lip.strokeBorder(Color.rule, lineWidth: Metric.hairline)).padding(.bottom, -120).padding(.horizontal, -1) }
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .offset(y: tucked ? 70 : lifted ? -4 : 0)
+        .offset(y: tucked ? 80 : 0)
         .simultaneousGesture(DragGesture(minimumDistance: 12).onEnded { if $0.translation.height < -16 { open() } })
         .accessibilityHint("How to wear and use your band")
         .task {
             guard !reduceMotion else { tucked = false; return }
             try? await Task.sleep(for: .seconds(0.7))
             withAnimation(.entrance) { tucked = false }
-            try? await Task.sleep(for: .seconds(2.4))
-            withAnimation(.standard) { lifted = true }
-            try? await Task.sleep(for: .seconds(0.2))
-            withAnimation(.entrance) { lifted = false }
+            try? await Task.sleep(for: .seconds(1.6))
+            for bead in 0..<3 {
+                withAnimation(.standard) { hopping = bead }
+                try? await Task.sleep(for: .seconds(0.13))
+            }
+            withAnimation(.standard) { hopping = nil }
         }
     }
 }

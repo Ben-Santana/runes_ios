@@ -24,12 +24,16 @@ struct HairlineRing: View {
     var emphasis: Int? = nil
     /// Show the raised pod as the band's light, flashing white the way it does when pairing.
     var emphasisLight = false
+    /// For the welcome screen: the ring idles, drifting a little, and can be played with. A
+    /// touch scatters the pods near it, harder the faster it moves, and they drift back.
+    var playful = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var effects: [Effect] = []
     @State private var hold: Hold?
     @State private var previous: BandPhase?
     @State private var phaseChangedAt = Date.distantPast
+    @State private var pokes: [Poke] = []
 
     private struct Effect: Equatable {
         enum Kind: Equatable { case tap, doubleTap, release, swipe(SwipeDirection) }
@@ -41,6 +45,7 @@ struct HairlineRing: View {
         }
     }
     private struct Hold: Equatable { let start: Date; var end: Date?; let origin: Int }
+    private struct Poke { let at: Date; let point: CGPoint; let strength: Double }
 
     private static let blend = 0.45
     private static let longestHold: TimeInterval = 12
@@ -52,6 +57,8 @@ struct HairlineRing: View {
             }
         }
         .aspectRatio(1.25, contentMode: .fit)
+        .contentShape(Rectangle())
+        .gesture(DragGesture(minimumDistance: 0).onChanged(poke), isEnabled: playful && !reduceMotion)
         .onChange(of: gesture?.id) { _, _ in if let gesture { react(to: gesture) } }
         .onChange(of: phase) { old, _ in
             previous = old; phaseChangedAt = Date()
@@ -63,7 +70,34 @@ struct HairlineRing: View {
     private var isAnimating: Bool {
         if !effects.isEmpty || hold != nil { return true }
         if reduceMotion { return false }
+        if playful { return true }
         return phase == .connecting || phase == .connected || previous != nil || emphasis != nil
+    }
+
+    // MARK: Playing
+
+    /// A touch lands as one poke; a moving finger leaves a trail of them, stronger the faster it goes.
+    private func poke(_ touch: DragGesture.Value) {
+        let now = Date(), landed = touch.translation == .zero
+        if let last = pokes.last, !landed, hypot(touch.location.x - last.point.x, touch.location.y - last.point.y) < 12 { return }
+        let speed = hypot(touch.velocity.width, touch.velocity.height)
+        pokes = pokes.filter { now.timeIntervalSince($0.at) < Self.pokeLife }.suffix(14) + [Poke(at: now, point: touch.location, strength: landed ? 1 : min(1.2, 0.35 + speed / 1200))]
+    }
+    private static let pokeLife = 1.6
+
+    /// How far a pod resting at `centre` is pushed aside by the pokes still playing out, and how high it hops.
+    private func scatter(from centre: CGPoint, width: Double, now: Date) -> (push: CGSize, hop: Double) {
+        var push = CGSize.zero, hop = 0.0
+        for poke in pokes {
+            let tau = now.timeIntervalSince(poke.at)
+            guard tau > 0, tau < Self.pokeLife else { continue }
+            let dx = centre.x - poke.point.x, dy = centre.y - poke.point.y, distance = max(1, hypot(dx, dy))
+            let near = poke.strength * exp(-pow(distance / (width * 0.4), 2))
+            let out = 0.11 * width * near * (1 - exp(-22 * tau)) * exp(-3.4 * tau)
+            push.width += dx / distance * out; push.height += dy / distance * out
+            hop += 6 * near * Self.bounce(tau)
+        }
+        return (push, hop)
     }
 
     // MARK: Reacting
@@ -158,6 +192,7 @@ struct HairlineRing: View {
         default: break
         }
         if index == emphasis { value = reduceMotion ? 10 : 8 + 2 * sin(t * 2 * .pi / 1.6) }
+        if playful, !reduceMotion { value += 1.6 * (1 + sin(t * 2 * .pi / 4.5 + angle)) / 2 }
         return value
     }
 
@@ -184,6 +219,7 @@ struct HairlineRing: View {
     private func frame(at now: Date) -> Frame {
         var f = Frame()
         let t = now.timeIntervalSinceReferenceDate
+        if playful, !reduceMotion { f.rotation = (t * 0.035).truncatingRemainder(dividingBy: 2 * .pi) }
         for i in 0..<8 {
             let angle = Double(i) * .pi / 4
             var value = stateLift(phase, index: i, angle: angle, t: t)
@@ -309,17 +345,23 @@ struct HairlineRing: View {
         let radius = Self.radius + f.radiusKick
         let placed = pods(rotation: f.rotation, radius: radius)
         // Shadows first, so no ball is drawn under another ball's shadow.
-        for pod in placed {
-            let lift = max(0, f.lift[pod.index])
-            let shadow = Self.shadow(pod.x, pod.y, lift: lift, transform)
+        // Where play has pushed each pod, measured from where it rests.
+        let scattered = placed.map { pod -> (push: CGSize, hop: Double) in
+            guard playful, !pokes.isEmpty else { return (.zero, 0) }
+            let rest = ball(pod.x, pod.y, pod.z + f.lift[pod.index], transform)
+            return scatter(from: CGPoint(x: rest.midX, y: rest.midY), width: size.width, now: now)
+        }
+        for (pod, play) in zip(placed, scattered) {
+            let lift = max(0, f.lift[pod.index] + play.hop)
+            let shadow = Self.shadow(pod.x, pod.y, lift: lift, transform).offsetBy(dx: play.push.width, dy: play.push.height)
             canvas.stroke(Path(ellipseIn: shadow), with: .color(strokeColor.opacity(0.35 * max(0.25, 1 - lift / 20))), lineWidth: line * 0.7)
         }
-        for pod in placed {
-            let lift = f.lift[pod.index], glow = f.glow[pod.index]
+        for (pod, play) in zip(placed, scattered) {
+            let lift = f.lift[pod.index] + play.hop, glow = f.glow[pod.index]
             let emphasised = pod.index == emphasis || (phase == .attention && pod.index == Self.front)
             let energised = f.flash > 0 || emphasised || lift > 4 || glow > 0.2
             let stroke: Color = energised ? .ink : strokeColor
-            let body = ball(pod.x, pod.y, pod.z + lift, transform)
+            let body = ball(pod.x, pod.y, pod.z + lift, transform).offsetBy(dx: play.push.width, dy: play.push.height)
             RingGeometry.drawBall(in: &canvas, body: body, stroke: stroke, lineWidth: line,
                                   charge: max(glow, f.flash * 0.7))
             if emphasisLight, pod.index == emphasis {
