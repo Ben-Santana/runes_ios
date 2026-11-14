@@ -307,7 +307,8 @@ private struct BeadTheatre: View {
     private var move: (name: String, finger: Int, twice: Bool, held: Bool) { Plate.moves[gesture.index] }
     /// How far the finger making the gesture is pressed to the thumb, 0…1: down quickly, up gently.
     private var press: Double {
-        guard !still else { return 0 }
+        let live = settled(on: .gestures)
+        guard !still, live > 0 else { return 0 }
         let into = gesture.into
         func tap(_ from: Double, _ to: Double) -> Double {
             let along = (into - from) / (to - from)
@@ -316,20 +317,23 @@ private struct BeadTheatre: View {
             let up = max(0, (along - 0.5) / 0.5)
             return 1 - up * up * (3 - 2 * up)
         }
-        if move.held { return min(1, max(0, min((into - 0.1) / 0.1, (0.92 - into) / 0.1))) }
-        return move.twice ? tap(0.08, 0.38) + tap(0.42, 0.72) : tap(0.12, 0.52)
+        if move.held { return live * min(1, max(0, min((into - 0.1) / 0.1, (0.92 - into) / 0.1))) }
+        return live * (move.twice ? tap(0.08, 0.38) + tap(0.42, 0.72) : tap(0.12, 0.52))
     }
+    /// 1 while the guide rests on `plate`, falling to 0 a third of the way to the next. Gestures
+    /// only play on a plate that has settled, so nothing is caught half-made by a swipe.
+    private func settled(on plate: Plate) -> Double { min(1, max(0, 1 - abs(position - Double(plate.rawValue)) / 0.3)) }
     /// When each press of the gesture lands, and how long its signal takes to reach the band, in beats.
     private var landings: [Double] { move.held ? [0.2] : move.twice ? [0.17, 0.51] : [0.24] }
     private static let signalTime = 0.1
     /// The signal on its way from the finger to the band while it travels, 0…1.
     private var signal: Double? {
-        guard !still else { return nil }
+        guard !still, settled(on: .gestures) >= 1 else { return nil }
         return landings.map { (gesture.into - $0) / Self.signalTime }.first { $0 > 0 && $0 < 1 }
     }
     /// How long ago the band last heard a press, in beats.
     private var sinceHeard: Double? {
-        guard !still else { return nil }
+        guard !still, settled(on: .gestures) >= 1 else { return nil }
         return landings.map { gesture.into - $0 - Self.signalTime }.filter { $0 >= 0 }.min()
     }
     private var lightIndex: Int { Int(clock(.light) / Self.lightBeat) % Plate.lights.count }
@@ -471,7 +475,7 @@ private struct BeadTheatre: View {
     /// Draws the hand, then what each of its plates adds: the wrist bone and the band's line
     /// for wearing; the finger and thumb meeting, their signal and the band's answer for gestures.
     private func drawHand(in canvas: inout GraphicsContext, centre: Double, shown: Double, wear: Double, gesturing: Double) {
-        let ink = Color.ink.opacity(shown), paper = Color.paper.opacity(shown), wristY = Self.wristY
+        let ink = Color.ink, paper = Color.paper, wristY = Self.wristY
         let place = CGAffineTransform(translationX: centre - GuideHand.wristX * GuideHand.scale, y: GuideHand.top).scaledBy(x: GuideHand.scale, y: GuideHand.scale)
         let fading = GraphicsContext.Shading.linearGradient(Gradient(colors: [ink, ink.opacity(0)]),
                                                             startPoint: CGPoint(x: 0, y: wristY + Self.armEnd - 30), endPoint: CGPoint(x: 0, y: wristY + Self.armEnd))
@@ -479,14 +483,20 @@ private struct BeadTheatre: View {
         func between(_ from: CGPoint, _ to: CGPoint, _ along: Double) -> CGPoint { CGPoint(x: from.x + (to.x - from.x) * along, y: from.y + (to.y - from.y) * along) }
         // At rest the hand is flat. As a finger presses it folds forward at its knuckle, and the
         // thumb swings across the palm to meet it; both come toward you, so they grow a little.
-        let finger = move.finger, down = press * gesturing, pinch = GuideHand.pinch[finger]
+        let finger = move.finger, down = press, pinch = GuideHand.pinch[finger]
         var tips = GuideHand.rest
         let straight = CGPoint(x: 8 + 4 * Double(finger), y: tips[finger])
         let knuckle = between(straight, CGPoint(x: straight.x, y: pinch.knuckle), down)
         let pad = between(straight, pinch.finger, down), thumb = GuideHand.thumb(meeting: finger, by: down)
         tips[finger] = knuckle.y
-        for path in [GuideHand.fingers(tips)] + GuideHand.sides { canvas.stroke(path.applying(place), with: fading, style: hairline) }
-        for path in GuideHand.contours { canvas.stroke(path.applying(place), with: .color(ink.opacity(0.3)), style: StrokeStyle(lineWidth: 0.8, lineCap: .round)) }
+        // The hand draws in as its plates arrive and draws back out as they are left, rather
+        // than fading. The thumb's cover stays solid throughout, so what it hides stays hidden.
+        let drawn = shown * shown * (3 - 2 * shown)
+        func stroke(_ path: Path, _ shading: GraphicsContext.Shading, _ style: StrokeStyle = StrokeStyle(lineWidth: 1.2, lineCap: .round, lineJoin: .round)) {
+            canvas.stroke(path.trimmedPath(from: 0, to: drawn).applying(place), with: shading, style: style)
+        }
+        for path in [GuideHand.fingers(tips)] + GuideHand.sides { stroke(path, fading) }
+        for path in GuideHand.contours { stroke(path, .color(ink.opacity(0.3)), StrokeStyle(lineWidth: 0.8, lineCap: .round)) }
         if down > 0.01 {
             let folded = GuideHand.limb(from: knuckle, to: pad, radii: (2, 2 + 0.3 * down)).applying(place)
             var layer = canvas
@@ -494,9 +504,9 @@ private struct BeadTheatre: View {
             layer.fill(folded, with: .color(paper)); layer.stroke(folded, with: .color(ink), style: hairline)
         }
         canvas.fill(thumb.cover.applying(place), with: .color(paper))
-        canvas.stroke(thumb.outer.applying(place), with: .color(ink), style: hairline)
-        canvas.stroke(thumb.inner.applying(place), with: .linearGradient(Gradient(colors: [ink.opacity(1 - down), ink]),
-                      startPoint: thumb.soften.from.applying(place), endPoint: thumb.soften.to.applying(place)), style: hairline)
+        stroke(thumb.outer, .color(ink))
+        stroke(thumb.inner, .linearGradient(Gradient(colors: [ink.opacity(1 - down), ink]),
+                                            startPoint: thumb.soften.from.applying(place), endPoint: thumb.soften.to.applying(place)))
 
         if wear > 0.01 {
             // The wrist bone as a level across the wrist; the band sits just below it.
@@ -526,7 +536,10 @@ private struct BeadTheatre: View {
 
     private func drawBackdrop(in canvas: inout GraphicsContext, centre: Double, weight: (Plate) -> Double) {
         // One hand serves the wearing and the gestures plates, and stays put between them.
-        let wear = weight(.wear), gesturing = weight(.gestures), shown = min(1, wear.squareRoot() + gesturing.squareRoot())
+        // It is gone soon after either is left for another plate.
+        let wear = weight(.wear), gesturing = weight(.gestures)
+        let beyond = max(0, Double(Plate.wear.rawValue) - position, position - Double(Plate.gestures.rawValue))
+        let shown = max(0, 1 - 2.5 * beyond)
         if shown > 0.01 {
             drawHand(in: &canvas, centre: centre, shown: shown, wear: wear, gesturing: gesturing.squareRoot())
         }
