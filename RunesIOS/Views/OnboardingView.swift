@@ -304,7 +304,7 @@ struct OnboardingView: View {
     }
 }
 
-/// The optional band guide, as the top of a drawer showing at the foot of the screen. It
+/// The optional band guide, as the top row of a panel that carries on below the screen. It
 /// rises into view a moment after the step arrives and lifts once more, then keeps still.
 private struct GuideDrawer: View {
     let open: () -> Void
@@ -313,23 +313,18 @@ private struct GuideDrawer: View {
     @State private var lifted = false
 
     var body: some View {
-        let edge = UnevenRoundedRectangle(topLeadingRadius: 14, topTrailingRadius: 14)
+        let edge = UnevenRoundedRectangle(topLeadingRadius: Metric.panel, topTrailingRadius: Metric.panel)
         Button(action: open) {
-            VStack(spacing: 8) {
-                Capsule().fill(Color.faint).frame(width: 36, height: 4)
-                HStack(spacing: 6) {
-                    Text("Band guide").font(.label)
-                    LucideIcon(.chevronUp, size: 14).foregroundStyle(Color.muted)
-                }
+            HStack {
+                Text("Band guide").font(.bodyText)
+                Spacer()
+                LucideIcon(.chevronUp, size: 16).foregroundStyle(Color.muted)
             }
-            .padding(.top, 8).padding(.bottom, 8)
-            .frame(maxWidth: .infinity)
-            // The drawer carries on below the screen, so only its top edge shows.
-            .background { edge.fill(Color.soft).overlay(edge.strokeBorder(Color.rule, lineWidth: Metric.hairline)).padding(.bottom, -120) }
-            .contentShape(Rectangle())
+            .panelRow()
+            .background { edge.fill(Color.paper).overlay(edge.strokeBorder(Color.rule, lineWidth: Metric.hairline)).padding(.bottom, -120) }
         }
         .buttonStyle(.plain)
-        .offset(y: tucked ? 70 : lifted ? -5 : 0)
+        .offset(y: tucked ? 70 : lifted ? -4 : 0)
         .simultaneousGesture(DragGesture(minimumDistance: 12).onEnded { if $0.translation.height < -16 { open() } })
         .accessibilityHint("How to wear and use your band")
         .task {
@@ -337,9 +332,9 @@ private struct GuideDrawer: View {
             try? await Task.sleep(for: .seconds(0.7))
             withAnimation(.entrance) { tucked = false }
             try? await Task.sleep(for: .seconds(2.4))
-            withAnimation(.easeInOut(duration: 0.28)) { lifted = true }
-            try? await Task.sleep(for: .seconds(0.28))
-            withAnimation(.easeInOut(duration: 0.4)) { lifted = false }
+            withAnimation(.standard) { lifted = true }
+            try? await Task.sleep(for: .seconds(0.2))
+            withAnimation(.entrance) { lifted = false }
         }
     }
 }
