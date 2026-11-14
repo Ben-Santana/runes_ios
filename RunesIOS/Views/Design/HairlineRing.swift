@@ -50,35 +50,29 @@ struct HairlineRing: View {
     /// The pods' play: each sits on a soft spring about its place and is pushed away from a
     /// finger while one is down, so however it is touched the motion stays continuous.
     private final class Play {
-        var offset = [CGSize](repeating: .zero, count: 8)
-        private var speed = [CGSize](repeating: .zero, count: 8)
-        var finger: CGPoint?, fingerSpeed = 0.0
-        /// A touch that has just landed, to be felt as one kick.
-        var landed: CGPoint?
+        private(set) var offset = [SIMD2<Double>](repeating: .zero, count: 8)
+        private var speed = [SIMD2<Double>](repeating: .zero, count: 8)
+        /// Where a finger is, how fast it is moving, and whether it has only just landed.
+        var finger: SIMD2<Double>?, fingerSpeed = 0.0, landed = false
         private var last: Date?
 
-        func step(to now: Date, rest: [CGPoint], width: Double) {
-            defer { last = now; landed = nil }
+        static func length(_ vector: SIMD2<Double>) -> Double { (vector * vector).sum().squareRoot() }
+
+        func step(to now: Date, rest: [SIMD2<Double>], width: Double) {
+            defer { last = now; landed = false }
             guard let last else { return }
-            let reach = width * 0.2, steps = 2, dt = min(1.0 / 30, max(0, now.timeIntervalSince(last))) / Double(steps)
-            for _ in 0..<steps {
-                for index in offset.indices {
-                    var pull = CGSize(width: -90 * offset[index].width - 14 * speed[index].width,
-                                      height: -90 * offset[index].height - 14 * speed[index].height)
-                    for (point, kick) in [(finger, 0.0), (landed, 1.0)] {
-                        guard let point else { continue }
-                        let dx = rest[index].x + offset[index].width - point.x, dy = rest[index].y + offset[index].height - point.y
-                        let distance = hypot(dx, dy), near = exp(-pow(distance / reach, 2)) / (distance + 6)
-                        if kick > 0 {
-                            speed[index].width += dx * near * 150 / Double(steps); speed[index].height += dy * near * 150 / Double(steps)
-                        } else {
-                            let push = 1500 * (0.5 + min(1, fingerSpeed / 800))
-                            pull.width += dx * near * push; pull.height += dy * near * push
-                        }
-                    }
-                    speed[index].width += pull.width * dt; speed[index].height += pull.height * dt
-                    offset[index].width += speed[index].width * dt; offset[index].height += speed[index].height * dt
+            let dt = min(1.0 / 30, max(0, now.timeIntervalSince(last)))
+            for index in offset.indices {
+                var pull = -90 * offset[index] - 14 * speed[index]
+                if let finger {
+                    let away = rest[index] + offset[index] - finger, distance = Self.length(away)
+                    let push = away / (distance + 6) * exp(-pow(distance / (width * 0.24), 2))
+                    // A faster finger pushes harder, and one that has just landed gives a kick.
+                    pull += push * 2300 * (0.5 + min(1, fingerSpeed / 800))
+                    if landed { speed[index] += push * 230 }
                 }
+                speed[index] += pull * dt
+                offset[index] += speed[index] * dt
             }
         }
     }
@@ -95,8 +89,9 @@ struct HairlineRing: View {
         .aspectRatio(1.25, contentMode: .fit)
         .contentShape(Rectangle())
         .gesture(DragGesture(minimumDistance: 0).onChanged { touch in
-            play.finger = touch.location; play.fingerSpeed = hypot(touch.velocity.width, touch.velocity.height)
-            if touch.translation == .zero { play.landed = touch.location }
+            play.finger = SIMD2(touch.location.x, touch.location.y)
+            play.fingerSpeed = hypot(touch.velocity.width, touch.velocity.height)
+            if touch.translation == .zero { play.landed = true }
         }.onEnded { _ in play.finger = nil }, isEnabled: playful && !reduceMotion)
         .onChange(of: gesture?.id) { _, _ in if let gesture { react(to: gesture) } }
         .onChange(of: phase) { old, _ in
@@ -209,9 +204,12 @@ struct HairlineRing: View {
         if index == emphasis { value = reduceMotion ? 10 : 8 + 2 * sin(t * 2 * .pi / 1.6) }
         if playful, !reduceMotion {
             value += 1.6 * (1 + sin(t * 2 * .pi / 4.5 + angle)) / 2
-            // Every few seconds a different pod hops, and its neighbours follow a little.
-            let turn = (t / Self.winkEvery).rounded(.down), away = Self.steps(index, Int(turn) * 3 % 8)
-            if away <= 1 { value += (away == 0 ? 7 : 3) * Self.bounce(t - turn * Self.winkEvery - 1 - away * 0.05) }
+            // Every few seconds a pod picked by chance hops, at a moment picked by chance, and
+            // its neighbours follow a little.
+            let turn = (t / Self.winkEvery).rounded(.down)
+            func chance(_ salt: Double) -> Double { let x = sin(turn * 12.9898 + salt) * 43758.5453; return x - x.rounded(.down) }
+            let away = Self.steps(index, Int(chance(0) * 8) % 8)
+            if away <= 1 { value += (away == 0 ? 7 : 3) * Self.bounce(t - turn * Self.winkEvery - 0.4 - 2 * chance(7) - away * 0.05) }
         }
         return value
     }
@@ -364,28 +362,29 @@ struct HairlineRing: View {
 
         let radius = Self.radius + f.radiusKick
         let placed = pods(rotation: f.rotation, radius: radius)
-        // Shadows first, so no ball is drawn under another ball's shadow.
-        // Where play has nudged each pod, measured from where it rests; a nudged pod rides a little higher.
+        // In play each pod is nudged from where it rests, and rides a little higher for it.
+        var nudge = [SIMD2<Double>](repeating: .zero, count: 8)
         if playful, !reduceMotion {
-            var rest = [CGPoint](repeating: .zero, count: 8)
-            for pod in placed { let body = ball(pod.x, pod.y, pod.z + f.lift[pod.index], transform); rest[pod.index] = CGPoint(x: body.midX, y: body.midY) }
+            var rest = nudge
+            for pod in placed { let body = ball(pod.x, pod.y, pod.z + f.lift[pod.index], transform); rest[pod.index] = SIMD2(body.midX, body.midY) }
             play.step(to: now, rest: rest, width: size.width)
+            nudge = play.offset
         }
-        let scattered = placed.map { pod -> (push: CGSize, hop: Double) in
-            let push = playful ? play.offset[pod.index] : .zero
-            return (push, min(4, hypot(push.width, push.height) * 0.25))
-        }
-        for (pod, play) in zip(placed, scattered) {
-            let lift = max(0, f.lift[pod.index] + play.hop)
-            let shadow = Self.shadow(pod.x, pod.y, lift: lift, transform).offsetBy(dx: play.push.width, dy: play.push.height)
+        func hop(_ index: Int) -> Double { min(4, Play.length(nudge[index]) * 0.25) }
+        // Shadows first, so no ball is drawn under another ball's shadow.
+        for pod in placed {
+            let lift = max(0, f.lift[pod.index] + hop(pod.index))
+            let shadow = Self.shadow(pod.x, pod.y, lift: lift, transform).offsetBy(dx: nudge[pod.index].x, dy: nudge[pod.index].y)
             canvas.stroke(Path(ellipseIn: shadow), with: .color(strokeColor.opacity(0.35 * max(0.25, 1 - lift / 20))), lineWidth: line * 0.7)
         }
-        for (pod, play) in zip(placed, scattered) {
-            let lift = f.lift[pod.index] + play.hop, glow = f.glow[pod.index]
+        for pod in placed {
+            let lift = f.lift[pod.index] + hop(pod.index), glow = f.glow[pod.index]
             let emphasised = pod.index == emphasis || (phase == .attention && pod.index == Self.front)
-            let energised = f.flash > 0 || emphasised || lift > 4 || glow > 0.2
+            // In play a pod darkens only when a fast finger has knocked it well aside, never for its own hops.
+            let risen = playful ? Play.length(nudge[pod.index]) > 14 : lift > 4
+            let energised = f.flash > 0 || emphasised || risen || glow > 0.2
             let stroke: Color = energised ? .ink : strokeColor
-            let body = ball(pod.x, pod.y, pod.z + lift, transform).offsetBy(dx: play.push.width, dy: play.push.height)
+            let body = ball(pod.x, pod.y, pod.z + lift, transform).offsetBy(dx: nudge[pod.index].x, dy: nudge[pod.index].y)
             RingGeometry.drawBall(in: &canvas, body: body, stroke: stroke, lineWidth: line,
                                   charge: max(glow, f.flash * 0.7))
             if emphasisLight, pod.index == emphasis {
