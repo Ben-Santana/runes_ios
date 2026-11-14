@@ -6,18 +6,12 @@ private struct GuidePlate {
     let message: String
 
     static let all: [GuidePlate] = [
-        GuidePlate(title: "Eight beads, one band",
-                   message: "Your band reads the tiny signals your wrist makes when your fingers move. Swipe to see how to wear it and what it can tell you."),
-        GuidePlate(title: "Wear it on your writing hand",
-                   message: "Just past your wrist bone, with the line on the band facing you and the thicker part on top. Snug and comfortable, clasp closed."),
-        GuidePlate(title: "It listens to your fingers",
-                   message: "Tap, double tap, hold or swipe a finger against your thumb. Rest your hand at your side or in your lap; you don’t need to hold it out."),
-        GuidePlate(title: "It answers in light",
-                   message: "Press the button once to see the charge. White means it is turning on, or ready to pair."),
-        GuidePlate(title: "One button, four holds",
-                   message: "How long you hold decides what happens. After an hour without movement the band switches itself off; one second wakes it."),
-        GuidePlate(title: "Charging",
-                   message: "Clip the charger under the thicker part and plug it into a wall adapter. The USB-C port on a glasses case won’t charge it."),
+        GuidePlate(title: "Your band", message: "It reads your wrist when your fingers move."),
+        GuidePlate(title: "Where to wear it", message: "Writing hand, just past the wrist bone. Line facing you, snug."),
+        GuidePlate(title: "Gestures", message: "A finger against your thumb. Keep your arm relaxed."),
+        GuidePlate(title: "The light", message: "Press the button once to see the charge."),
+        GuidePlate(title: "The button", message: "How long you hold it decides what it does."),
+        GuidePlate(title: "Charging", message: "The charger clips under the band. Use a wall adapter."),
     ]
 }
 
@@ -31,6 +25,11 @@ struct BandGuidePage: View {
     @State private var page: Int? = 0
 
     private var current: Int { min(GuidePlate.all.count - 1, max(0, Int(position.rounded()))) }
+
+    private func advance() {
+        guard current < GuidePlate.all.count - 1 else { return }
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.55)) { page = current + 1 }
+    }
 
     var body: some View {
         GeometryReader { geometry in
@@ -48,6 +47,8 @@ struct BandGuidePage: View {
                                 }
                                 .padding(.horizontal, Metric.gutter)
                                 .frame(width: geometry.size.width, alignment: .leading)
+                                .contentShape(Rectangle())
+                                .onTapGesture { advance() }
                                 .id(index)
                             }
                         }
@@ -75,8 +76,7 @@ struct BandGuidePage: View {
                 .padding(.bottom, 16)
                 .accessibilityElement().accessibilityLabel("Page \(current + 1) of \(GuidePlate.all.count)")
                 Button(current == GuidePlate.all.count - 1 ? "Done" : "Next") {
-                    if current == GuidePlate.all.count - 1 { dismiss() }
-                    else { withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.55)) { page = current + 1 } }
+                    if current == GuidePlate.all.count - 1 { dismiss() } else { advance() }
                 }
                 .buttonStyle(.primary)
                 .padding(.horizontal, Metric.gutter).padding(.bottom, 12)
@@ -118,12 +118,15 @@ private struct BeadTheatre: View {
         var charge = 0.0
         var light: Color?
         var depth = 0.0
+        /// Where its shadow falls, if it has one; fixed while the bead lifts.
+        var floor: Double?
 
         func mixed(with other: Bead, by f: Double) -> Bead {
             func mix(_ a: Double, _ b: Double) -> Double { a + (b - a) * f }
             return Bead(x: mix(x, other.x), y: mix(y, other.y), radius: mix(radius, other.radius),
                         opacity: mix(opacity, other.opacity), dark: mix(dark, other.dark), charge: mix(charge, other.charge),
-                        light: f < 0.5 ? light : other.light, depth: mix(depth, other.depth))
+                        light: f < 0.5 ? light : other.light, depth: mix(depth, other.depth),
+                        floor: floor.map { mix($0, other.floor ?? other.y + other.radius) } ?? other.floor.map { mix(y + radius, $0) })
         }
     }
 
@@ -143,6 +146,7 @@ private struct BeadTheatre: View {
             let stage = zip(a, b).map { $0.mixed(with: $1, by: eased) }
 
             drawBackdrop(in: &canvas, size: size, weight: weight)
+            for bead in stage { drawShadow(of: bead, in: &canvas) }
             for bead in stage.sorted(by: { $0.depth < $1.depth }) { draw(bead, in: &canvas) }
             drawCaptions(in: &canvas, size: size, weight: weight)
         }
@@ -158,7 +162,9 @@ private struct BeadTheatre: View {
             let angle = Double(index) * .pi / 4 + rotation
             let x = cos(angle) * RingGeometry.radius, y = sin(angle) * RingGeometry.radius
             let flat = RingGeometry.project(x, y, 10)
-            return Bead(x: size.width / 2 + flat.x * scale, y: centreY + flat.y * scale, radius: RingGeometry.ballRadius * scale, depth: x + y)
+            let ground = RingGeometry.project(x, y, 0)
+            return Bead(x: size.width / 2 + flat.x * scale, y: centreY + flat.y * scale, radius: RingGeometry.ballRadius * scale,
+                        depth: x + y, floor: centreY + (ground.y + 14) * scale)
         }
     }
 
@@ -228,14 +234,23 @@ private struct BeadTheatre: View {
     private var lightPhase: (colour: Color, glow: Double, name: String) {
         let step = still ? 0 : Int(t / 2.2) % 4
         switch step {
-        case 0: return (.green, 1, "Green · over 80% charged")
-        case 1: return (.orange, 1, "Orange · 20% to 80%")
-        case 2: return (.orange, sin(t * 2 * .pi * 1.6) > 0 ? 1 : 0.1, "Blinking orange · under 20%")
-        default: return (.white, 0.5 + 0.5 * sin(t * 2 * .pi * 1.1), "Flashing white · turning on, or ready to pair")
+        case 0: return (.green, 1, "Over 80%")
+        case 1: return (.orange, 1, "20 to 80%")
+        case 2: return (.orange, sin(t * 2 * .pi * 1.6) > 0 ? 1 : 0.1, "Under 20%")
+        default: return (.white, 0.5 + 0.5 * sin(t * 2 * .pi * 1.1), "On, or ready to pair")
         }
     }
 
     // MARK: Drawing
+
+    /// A soft contact shadow that spreads and fades as the bead rises off it.
+    private func drawShadow(of bead: Bead, in canvas: inout GraphicsContext) {
+        guard let floor = bead.floor, bead.opacity > 0.01 else { return }
+        let height = max(0, floor - bead.y - bead.radius)
+        let spread = bead.radius * (0.8 + height / 90)
+        canvas.fill(Path(ellipseIn: CGRect(x: bead.x - spread, y: floor - spread * 0.3, width: spread * 2, height: spread * 0.6)),
+                    with: .color(.ink.opacity(0.1 * bead.opacity * max(0.3, 1 - height / 70))))
+    }
 
     private func draw(_ bead: Bead, in canvas: inout GraphicsContext) {
         guard bead.opacity > 0.01, bead.radius > 0.5 else { return }
@@ -305,7 +320,7 @@ private struct BeadTheatre: View {
         }
         let listen = weight(2)
         if listen > 0.01 {
-            let names = ["Tap index · select", "Tap middle · back", "Double tap index", "Hold · more"]
+            let names = ["Tap index", "Tap middle", "Double tap", "Hold"]
             let gesture = still ? 0 : Int((t / 1.5).truncatingRemainder(dividingBy: 4))
             layer.opacity = listen
             layer.draw(Text(names[gesture]).font(.label), at: CGPoint(x: centre, y: 296), anchor: .center)
@@ -323,17 +338,12 @@ private struct BeadTheatre: View {
                 layer.draw(Text(hold.1).font(.label), at: CGPoint(x: x, y: 204), anchor: .center)
                 layer.draw(Text(hold.0).font(.caption).foregroundStyle(Color.muted), at: CGPoint(x: x, y: 224), anchor: .center)
             }
-            layer.draw(Text("Off: let go when the light goes dark and it buzzes.").font(.caption).foregroundStyle(Color.muted),
-                       at: CGPoint(x: centre, y: 270), anchor: .center)
         }
         let charging = weight(5)
         if charging > 0.01 {
             layer.opacity = charging
             let percent = Int(chargeLevel * 100)
-            layer.draw(Text(chargeLevel > 0.8 ? "\(percent)% · green above 80%" : "\(percent)% · orange").font(.label).monospacedDigit(),
-                       at: CGPoint(x: centre, y: 214), anchor: .center)
-            layer.draw(Text("If it won’t connect: hold 8 s to turn off, then 2 s to turn on.").font(.caption).foregroundStyle(Color.muted),
-                       at: CGPoint(x: centre, y: 250), anchor: .center)
+            layer.draw(Text("\(percent)%").font(.label).monospacedDigit(), at: CGPoint(x: centre, y: 214), anchor: .center)
         }
     }
 }
