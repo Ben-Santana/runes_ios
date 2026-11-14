@@ -537,9 +537,9 @@ final class SessionCore: @unchecked Sendable {
             snapshot.handSetting.fail(reason); record("hand", reason); publish()
         case .wristFeedback(let result):
             if let feedback = feedbackInFlight {
-                record("wrist_feedback", "\(feedback.rawValue) \(result.rawValue).")
+                record("wrist_feedback", "\(feedback.rawValue) \(result.rawValue)\(result == .accepted ? "" : ": " + (proto?.feedbackNote ?? "")).")
             } else {
-                if result != .accepted { record("band_buzz", "Pulse \(result.rawValue).") }
+                if result != .accepted { record("band_buzz", "Pulse \(result.rawValue): \(proto?.feedbackNote ?? "").") }
                 if let sent = pulseSentAt { onPulse?(result, receipt.uptime - sent) }
             }
             pulseSentAt = nil

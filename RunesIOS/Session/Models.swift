@@ -367,6 +367,18 @@ enum WristFeedbackResult: String, Sendable {
               let result = try? response.integer(1) else { self = .unconfirmed; return }
         self = result == 0 ? .accepted : .rejected
     }
+
+    /// Which fields a reply carried and its status numbers, for the journal. No payload bytes.
+    static func shape(_ payload: Data) -> String {
+        guard let fields = try? Fields(payload) else { return "reply unreadable" }
+        var note = "reply fields=\(fields.values.keys.sorted())"
+        if let status = try? fields.integer(2) { note += " status=\(status)" }
+        if let inner = try? Fields(fields.bytes(18)) {
+            note += " inner=\(inner.values.keys.sorted())"
+            if let result = try? inner.integer(1) { note += " result=\(result)" }
+        }
+        return note
+    }
 }
 
 struct WristFeedbackGate: Sendable {

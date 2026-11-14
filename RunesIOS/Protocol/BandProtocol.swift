@@ -34,6 +34,8 @@ final class BandProtocol {
     private var deadline = TimeInterval.infinity
     var canSendWristFeedback: Bool { stage == "ready" && pending.isEmpty }
     var wristFeedbackPending: Bool { pending[6]?.isWristFeedback == true }
+    /// How the band last answered a wrist feedback request, for the journal.
+    private(set) var feedbackNote = ""
     init(identity: BandIdentity?, ceremony: OwnershipCeremony? = nil) throws {
         guard (identity == nil) != (ceremony == nil) else { throw BandError.authentication("Provide identity or explicit enrollment.") }
         self.identity = identity; self.ceremony = ceremony
@@ -53,7 +55,7 @@ final class BandProtocol {
         var signals: [Signal] = []
         for (channel, request) in pending where now >= request.deadline {
             if request.isWristFeedback {
-                pending[channel] = nil; signals.append(.wristFeedback(.unconfirmed)); continue
+                pending[channel] = nil; feedbackNote = "no reply in time"; signals.append(.wristFeedback(.unconfirmed)); continue
             }
             guard request.isHandRequest else { throw BandError.timeout(stage: request.operation) }
             pending[channel] = nil
@@ -180,7 +182,10 @@ final class BandProtocol {
             pending[packet.channel] = nil
             // EMG is optional: a refused configuration read is reported, never fatal.
             if p.operation == "emg_configuration" { return (Data(), [.reply(operation: p.operation, payload: packet.payload)]) }
-            if p.isWristFeedback { return (Data(), [.wristFeedback(WristFeedbackResult(packet.payload))]) }
+            if p.isWristFeedback {
+                feedbackNote = WristFeedbackResult.shape(packet.payload)
+                return (Data(), [.wristFeedback(WristFeedbackResult(packet.payload))])
+            }
             if p.isHandRequest {
                 guard let status = try? f.integer(2), status == 1 else {
                     return (Data(), [.handUnavailable("The band did not confirm the wrist setting request. Try again.")])
@@ -246,6 +251,7 @@ final class BandProtocol {
         }
         if let p = pending[channel], p.isWristFeedback {
             pending[channel] = nil; opened.remove(channel)
+            feedbackNote = "service result 0x\(String(kind, radix: 16))"
             return (Data(), [.wristFeedback(.unconfirmed)])
         }
         if channel == 6, pending[channel] == nil {
