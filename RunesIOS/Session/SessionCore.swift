@@ -703,6 +703,7 @@ final class SessionCore: @unchecked Sendable {
             transport.close()
             reconnectAt = ProcessInfo.processInfo.systemUptime + delay
             if case .storage = error { snapshot.issue = .phoneLocked }
+            if ConnectionRetryPolicy.reportsSilence(error, failures: failures) { snapshot.issue = .bandNotResponding }
             transition(.reconnecting, detail + " Retry \(failures) in \(Int(delay)) s; automatic connection stays on.")
         } else {
             transport.disconnect()

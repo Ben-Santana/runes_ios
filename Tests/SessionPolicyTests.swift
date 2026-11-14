@@ -40,6 +40,12 @@ struct SessionPolicyTests {
                       .pairing("bond mismatch"), .transport("lost")] {
             precondition(!ConnectionRetryPolicy.mayPass(error), "\(error) is not retried as a trust failure")
         }
+        // A band that is not answering is reported from the second failure; retries carry on.
+        precondition(!ConnectionRetryPolicy.reportsSilence(.timeout(stage: "encryption"), failures: 1))
+        precondition(ConnectionRetryPolicy.reportsSilence(.timeout(stage: "encryption"), failures: 2))
+        precondition(ConnectionRetryPolicy.reportsSilence(.timeout(stage: "encryption"), failures: 9))
+        precondition(!ConnectionRetryPolicy.reportsSilence(.transport("lost"), failures: 9))
+        precondition(!ConnectionRetryPolicy.stopsAutoConnect(.timeout(stage: "encryption")))
         precondition(ConnectionRetryPolicy.backoff(failures: 1) == 1)
         precondition(ConnectionRetryPolicy.backoff(failures: 5) == 16)
         for failures in 1...1_000 {

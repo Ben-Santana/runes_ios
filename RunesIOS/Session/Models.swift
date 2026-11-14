@@ -416,6 +416,12 @@ extension ConnectionRetryPolicy {
     static func backoff(failures: Int) -> TimeInterval {
         delay(for: .transport("retry"), retries: max(0, failures - 1)).map { min($0, ceiling) } ?? ceiling
     }
+    /// From the second failure in a row, a band that is not answering is shown as a
+    /// problem instead of an endless "connecting". Retries carry on.
+    static func reportsSilence(_ error: BandError, failures: Int) -> Bool {
+        if case .timeout = error { return failures >= 2 }
+        return false
+    }
     /// After a handshake is abandoned (repair, forget, or the app quitting mid-trust) the
     /// band refuses (0x03001043) or ignores the next trust attempt for the same saved
     /// identity, then accepts the one after. Such a failure earns one retry before the
