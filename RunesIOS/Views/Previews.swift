@@ -89,7 +89,7 @@ struct SnapshotGallery: View {
             WristPreview(name: name)
         } else if name == "vibration-lab" || name == "vibration-lab-buzz" {
             NavigationStack { VibrationLabScreen() }
-                .overlay { EdgeEffect() }
+                .background { EdgeEffectHost() }
                 .task {
                     guard name == "vibration-lab-buzz" else { return }
                     try? await Task.sleep(for: .seconds(1.5))

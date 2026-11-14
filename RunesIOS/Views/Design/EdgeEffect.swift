@@ -40,6 +40,30 @@ final class BandBuzzFeed: ObservableObject {
     }
 }
 
+/// Puts the edge effect in its own window above everything, so it also shows over Settings,
+/// Mappings and the apps, which open as full-screen covers. The window takes no touches.
+struct EdgeEffectHost: UIViewRepresentable {
+    func makeUIView(context: Context) -> UIView { Anchor() }
+    func updateUIView(_ view: UIView, context: Context) {}
+
+    private final class Anchor: UIView {
+        private static var window: UIWindow?
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            guard Self.window == nil, let scene = window?.windowScene else { return }
+            let host = UIHostingController(rootView: EdgeEffect())
+            host.view.backgroundColor = .clear
+            let overlay = UIWindow(windowScene: scene)
+            overlay.windowLevel = .alert + 1
+            overlay.backgroundColor = .clear
+            overlay.isUserInteractionEnabled = false
+            overlay.rootViewController = host
+            overlay.isHidden = false
+            Self.window = overlay
+        }
+    }
+}
+
 /// How a band vibration shows on the screen edge.
 enum EdgeStyle: String, CaseIterable {
     case threads, braid, ripples, line, off
