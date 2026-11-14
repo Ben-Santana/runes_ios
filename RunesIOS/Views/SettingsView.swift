@@ -57,6 +57,8 @@ struct SettingsView<Advanced: View>: View {
                         }
                         .buttonStyle(.plain)
                         Rule()
+                        LinkRow("Using your band") { BandGuidePage() }
+                        Rule()
                         ActionRow("Forget band") { confirmForget = true }.disabled(!values.bandSetUp)
                     }
                     PanelGroup("Mac") {

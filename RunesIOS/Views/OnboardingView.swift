@@ -51,6 +51,7 @@ struct OnboardingView: View {
     let step: OnboardingStep
     let context: OnboardingContext
     var actions = OnboardingActions()
+    @State private var showingGuide = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -143,7 +144,7 @@ struct OnboardingView: View {
                 ? "Bluetooth is turned off for Runes. Allow it in Settings to continue."
                 : "Runes uses Bluetooth to talk to your band and to keep the connection when your phone is locked."
         case .pairing:
-            return "Use the steps from your band’s guide or the Meta app, then keep the band close to your phone."
+            return "Hold the band’s button for 3 seconds until its light flashes white, then keep the band close to your phone."
         case .pick:
             return context.systemPicker ? "Your iPhone will show bands nearby." : "Bands nearby appear below."
         case .signIn:
@@ -249,6 +250,7 @@ struct OnboardingView: View {
                 }
             case .pairing:
                 Button("My band is in pairing mode", action: actions.next).buttonStyle(.primary)
+                guideButton
             case .pick:
                 if context.systemPicker {
                     Button("Choose band", action: actions.chooseWithSystem).buttonStyle(.primary)
@@ -264,11 +266,21 @@ struct OnboardingView: View {
                     Button("Continue", action: actions.next).buttonStyle(.primary)
                 } else {
                     Button("Skip", action: actions.next).buttonStyle(.quiet)
+                    guideButton
                 }
             case .done:
                 Button("Done", action: actions.finish).buttonStyle(.primary)
             }
         }
+    }
+}
+
+extension OnboardingView {
+    /// Opens the optional guide to wearing the band, its button and its light.
+    var guideButton: some View {
+        Button("How to wear and use your band") { showingGuide = true }
+            .buttonStyle(.quiet)
+            .sheet(isPresented: $showingGuide) { BandGuideSheet() }
     }
 }
 
