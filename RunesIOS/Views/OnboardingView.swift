@@ -86,6 +86,9 @@ struct OnboardingView: View {
             }
             .scrollBounceBehavior(.basedOnSize)
             footer.padding(.horizontal, Metric.gutter).padding(.bottom, 12)
+            if step == .pairing || (step == .test && !context.testPassed) {
+                GuideDrawer { showingGuide = true }.padding(.horizontal, Metric.gutter)
+            }
         }
         .animation(.standard, value: step)
         .animation(.standard, value: context)
@@ -261,11 +264,6 @@ struct OnboardingView: View {
         }
     }
 
-    /// Opens the optional guide to wearing and using the band.
-    private var guideButton: some View {
-        Button("How to wear and use your band") { showingGuide = true }.buttonStyle(.quiet)
-    }
-
     // MARK: Footer
 
     @ViewBuilder private var footer: some View {
@@ -281,7 +279,6 @@ struct OnboardingView: View {
                 }
             case .pairing:
                 Button("My band is in pairing mode", action: actions.next).buttonStyle(.primary)
-                guideButton
             case .pick:
                 if context.systemPicker {
                     Button("Choose band", action: actions.chooseWithSystem).buttonStyle(.primary)
@@ -297,13 +294,52 @@ struct OnboardingView: View {
                     Button("Continue", action: actions.next).buttonStyle(.primary)
                 } else {
                     Button("Skip", action: actions.next).buttonStyle(.quiet)
-                    guideButton
                 }
             case .wrist:
                 Button("Continue", action: actions.next).buttonStyle(.primary)
             case .done:
                 Button("Done", action: actions.finish).buttonStyle(.primary)
             }
+        }
+    }
+}
+
+/// The optional band guide, as the top of a drawer showing at the foot of the screen. It
+/// rises into view a moment after the step arrives and lifts once more, then keeps still.
+private struct GuideDrawer: View {
+    let open: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var tucked = true
+    @State private var lifted = false
+
+    var body: some View {
+        let edge = UnevenRoundedRectangle(topLeadingRadius: 14, topTrailingRadius: 14)
+        Button(action: open) {
+            VStack(spacing: 8) {
+                Capsule().fill(Color.faint).frame(width: 36, height: 4)
+                HStack(spacing: 6) {
+                    Text("Band guide").font(.label)
+                    LucideIcon(.chevronUp, size: 14).foregroundStyle(Color.muted)
+                }
+            }
+            .padding(.top, 8).padding(.bottom, 8)
+            .frame(maxWidth: .infinity)
+            // The drawer carries on below the screen, so only its top edge shows.
+            .background { edge.fill(Color.soft).overlay(edge.strokeBorder(Color.rule, lineWidth: Metric.hairline)).padding(.bottom, -120) }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .offset(y: tucked ? 70 : lifted ? -5 : 0)
+        .simultaneousGesture(DragGesture(minimumDistance: 12).onEnded { if $0.translation.height < -16 { open() } })
+        .accessibilityHint("How to wear and use your band")
+        .task {
+            guard !reduceMotion else { tucked = false; return }
+            try? await Task.sleep(for: .seconds(0.7))
+            withAnimation(.entrance) { tucked = false }
+            try? await Task.sleep(for: .seconds(2.4))
+            withAnimation(.easeInOut(duration: 0.28)) { lifted = true }
+            try? await Task.sleep(for: .seconds(0.28))
+            withAnimation(.easeInOut(duration: 0.4)) { lifted = false }
         }
     }
 }
