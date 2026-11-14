@@ -497,6 +497,16 @@ private struct BeadTheatre: View {
         }
         for path in [GuideHand.fingers(tips)] + GuideHand.sides { stroke(path, fading) }
         for path in GuideHand.contours { stroke(path, .color(ink.opacity(0.3)), StrokeStyle(lineWidth: 0.8, lineCap: .round)) }
+        let touch = between(pad, thumb.tip, 0.5).applying(place)
+        if gesturing > 0.01, let signal {
+            // The signal runs from the touch down through the palm to the bead that hears it. It
+            // is drawn first, so it passes under the finger and thumb and shows only on the palm.
+            let lit = band(centre: centre)[litBead]
+            var route = Path()
+            route.move(to: touch)
+            route.addQuadCurve(to: CGPoint(x: lit.x, y: lit.y - lit.radius - 5), control: CGPoint(x: touch.x, y: CGPoint(x: 0, y: 21).applying(place).y))
+            canvas.stroke(route.trimmedPath(from: max(0, signal - 0.25), to: signal), with: .color(ink), style: StrokeStyle(lineWidth: 1.6, lineCap: .round))
+        }
         if down > 0.01 {
             let folded = GuideHand.limb(from: knuckle, to: pad, radii: (2, 2 + 0.3 * down)).applying(place)
             var layer = canvas
@@ -520,17 +530,9 @@ private struct BeadTheatre: View {
             line.move(to: CGPoint(x: centre, y: top)); line.addLine(to: CGPoint(x: centre, y: top + 10 * drawn))
             canvas.stroke(line, with: .color(.ink.opacity(wear * drawn)), style: StrokeStyle(lineWidth: 1.4, lineCap: .round))
         }
-        guard gesturing > 0.01 else { return }
-        let touch = between(pad, thumb.tip, 0.5).applying(place), lit = band(centre: centre)[litBead]
         // Where the finger and thumb touch fills, the way a bead does.
-        canvas.fill(Path(ellipseIn: CGRect(x: touch.x - 4.5, y: touch.y - 4.5, width: 9, height: 9)), with: .color(.ink.opacity(down * down)))
-        if let signal {
-            // The signal runs from the touch down through the palm to the bead that hears it.
-            var route = Path()
-            route.move(to: CGPoint(x: touch.x, y: touch.y + 8))
-            route.addQuadCurve(to: CGPoint(x: lit.x, y: lit.y - lit.radius - 5), control: CGPoint(x: touch.x, y: CGPoint(x: 0, y: 21).applying(place).y))
-            canvas.stroke(route.trimmedPath(from: max(0, signal - 0.25), to: signal), with: .color(.ink.opacity(gesturing)),
-                          style: StrokeStyle(lineWidth: 1.6, lineCap: .round))
+        if gesturing > 0.01 {
+            canvas.fill(Path(ellipseIn: CGRect(x: touch.x - 4.5, y: touch.y - 4.5, width: 9, height: 9)), with: .color(.ink.opacity(down * down)))
         }
     }
 
