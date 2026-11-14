@@ -1,170 +1,90 @@
 import SwiftUI
 
-/// What the band's light is doing on the guide's stage.
-enum BandLight: Equatable {
-    /// Resting: the band is on and its light is dark.
-    case dark
-    /// A short press: the charge, as green, orange or blinking orange.
-    case charge(Double)
-    case waking
-    /// Slow white flash, with a buzz.
-    case turningOn
-    /// Quick white flash.
-    case pairing
-    /// Goes dark, with a buzz.
-    case turningOff
+/// One lesson of the band guide.
+private struct GuidePlate {
+    let title: String
+    let message: String
 
-    /// What a press of `seconds` does, following Meta's instructions for the band.
-    static func after(hold seconds: Double, charge: Double) -> BandLight {
-        switch seconds {
-        case ..<1: .charge(charge)
-        case ..<2: .waking
-        case ..<3: .turningOn
-        case ..<8: .pairing
-        default: .turningOff
-        }
-    }
-
-    var title: String {
-        switch self {
-        case .dark: "Try the button"
-        case .charge(let level): level > 0.8 ? "Green: over 80%" : level >= 0.2 ? "Orange: 20% to 80%" : "Blinking orange: under 20%"
-        case .waking: "1 second: wake"
-        case .turningOn: "2 seconds: on"
-        case .pairing: "3 seconds: pairing"
-        case .turningOff: "8 seconds: off"
-        }
-    }
-    var detail: String {
-        switch self {
-        case .dark: "Press and hold below, the way you would hold the band’s button."
-        case .charge: "A short press shows the charge. So does putting the band on its charger."
-        case .waking: "The band switches itself off after an hour without movement. This wakes it."
-        case .turningOn: "The light flashes white slowly and the band buzzes."
-        case .pairing: "The light flashes white quickly. The band is ready to be set up."
-        case .turningOff: "Let go when the light goes dark and the band buzzes."
-        }
-    }
-    var buzzes: Bool { self == .turningOn || self == .turningOff }
+    static let all: [GuidePlate] = [
+        GuidePlate(title: "Eight beads, one band",
+                   message: "Your band reads the tiny signals your wrist makes when your fingers move. Swipe to see how to wear it and what it can tell you."),
+        GuidePlate(title: "Wear it on your writing hand",
+                   message: "Just past your wrist bone, with the line on the band facing you and the thicker part on top. Snug and comfortable, clasp closed."),
+        GuidePlate(title: "It listens to your fingers",
+                   message: "Tap, double tap, hold or swipe a finger against your thumb. Rest your hand at your side or in your lap; you don’t need to hold it out."),
+        GuidePlate(title: "It answers in light",
+                   message: "Press the button once to see the charge. White means it is turning on, or ready to pair."),
+        GuidePlate(title: "One button, four holds",
+                   message: "How long you hold decides what happens. After an hour without movement the band switches itself off; one second wakes it."),
+        GuidePlate(title: "Charging",
+                   message: "Clip the charger under the thicker part and plug it into a wall adapter. The USB-C port on a glasses case won’t charge it."),
+    ]
 }
 
-/// An optional guide to the band itself. The top is a stage: one large bead standing in for
-/// the band's light, a button to hold like the band's own, and a charge to drag. Below it,
-/// how to wear the band and how to charge it. Timings and colours follow Meta's published
-/// instructions for the band.
+/// An optional guide to the band, told by its own eight beads. Each plate is one lesson;
+/// swiping moves the same beads into the next shape, so nothing is ever a new picture.
+/// Timings and colours follow Meta's published instructions for the band.
 struct BandGuidePage: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var light = BandLight.dark
-    @State private var since = Date()
-    @State private var holdingSince: Date?
-    @State private var charge = 0.65
+    @Environment(\.dismiss) private var dismiss
+    @State private var position = 0.0
+    @State private var page: Int? = 0
+
+    private var current: Int { min(GuidePlate.all.count - 1, max(0, Int(position.rounded()))) }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 28) {
-                stage
-                PanelGroup("The light", caption: "Drag to see the light at any charge. On the band it shows when you press the button, or put it on or take it off its charger.") {
-                    VStack(spacing: 6) {
-                        HStack {
-                            Text("Charge").font(.bodyText)
-                            Spacer()
-                            Text("\(Int(charge * 100))%").font(.bodyText).monospacedDigit().foregroundStyle(Color.muted)
+        GeometryReader { geometry in
+            VStack(spacing: 0) {
+                ZStack(alignment: .top) {
+                    ScrollView(.horizontal) {
+                        LazyHStack(spacing: 0) {
+                            ForEach(Array(GuidePlate.all.enumerated()), id: \.offset) { index, plate in
+                                VStack(alignment: .leading, spacing: 10) {
+                                    Color.clear.frame(height: BeadTheatre.height)
+                                    Text(plate.title).font(.display).tracking(-0.6).fixedSize(horizontal: false, vertical: true)
+                                        .accessibilityAddTraits(.isHeader)
+                                    Text(plate.message).font(.bodyText).foregroundStyle(Color.muted).fixedSize(horizontal: false, vertical: true)
+                                    Spacer(minLength: 0)
+                                }
+                                .padding(.horizontal, Metric.gutter)
+                                .frame(width: geometry.size.width, alignment: .leading)
+                                .id(index)
+                            }
                         }
-                        Slider(value: $charge, in: 0.02...1).tint(Color.ink).accessibilityLabel("Charge")
-                            .onChange(of: charge) { _, level in show(.charge(level)) }
+                        .scrollTargetLayout()
                     }
-                    .padding(.horizontal, Metric.inset).padding(.vertical, 10)
-                    Rule()
-                    GuideRow("Green", "More than 80% charged.", light: .steady(.green))
-                    Rule()
-                    GuideRow("Orange", "Between 20% and 80%.", light: .steady(.orange))
-                    Rule()
-                    GuideRow("Orange, blinking", "Under 20%. Charge it soon.", light: .blinking(.orange))
-                    Rule()
-                    GuideRow("White, flashing", "Turning on, or ready to pair.", light: .blinking(.white))
-                }
-                VStack(alignment: .leading, spacing: 8) {
-                    SectionLabel("Wearing it").padding(.leading, 2)
-                    // The wrist page's own drawing, still: the beads sit where the band goes.
-                    WristArtwork(state: WristFrame(handBlend: 0), confirmed: true, moving: false, entrance: 1, focus: 1)
-                        .padding(.vertical, -28)
-                    VStack(spacing: 0) {
-                        GuideRow("On the hand you write with")
-                        Rule()
-                        GuideRow("The line on the band faces you", "The thicker part sits on top of your wrist.")
-                        Rule()
-                        GuideRow("Just past your wrist bone", "Snug and comfortable, with the clasp closed.")
-                        Rule()
-                        GuideRow("Rest your hand", "Gestures work with your arm at your side or in your lap. You don’t need to hold it out.")
+                    .scrollTargetBehavior(.paging)
+                    .scrollPosition(id: $page)
+                    .scrollIndicators(.hidden)
+                    .onScrollGeometryChange(for: Double.self) { $0.contentOffset.x / max(1, $0.containerSize.width) } action: { _, value in
+                        position = value
                     }
-                    .panel()
+                    TimelineView(.animation(minimumInterval: 1 / 60, paused: reduceMotion)) { context in
+                        BeadTheatre(position: position, time: context.date.timeIntervalSinceReferenceDate, still: reduceMotion)
+                    }
+                    .frame(height: BeadTheatre.height)
+                    .allowsHitTesting(false)
                 }
-                PanelGroup("Charging") {
-                    GuideRow("Clip the charger under the band", "It attaches to the thicker part. The light comes on while it charges.")
-                    Rule()
-                    GuideRow("Plug into a wall adapter", "The USB-C port on a glasses case won’t charge the band.")
+                HStack(spacing: 6) {
+                    ForEach(GuidePlate.all.indices, id: \.self) { index in
+                        Capsule().fill(index == current ? Color.ink : Color.faint)
+                            .frame(width: index == current ? 16 : 6, height: 6)
+                    }
                 }
-                PanelGroup("If it won’t connect") {
-                    GuideRow("Restart the band", "Hold for 8 seconds to turn it off, then 2 seconds to turn it on. A press that only shows green or orange is a battery check, not a restart.")
-                    Rule()
-                    GuideRow("Then try again", "Runes retries by itself once the band is back.")
+                .animation(.standard, value: current)
+                .padding(.bottom, 16)
+                .accessibilityElement().accessibilityLabel("Page \(current + 1) of \(GuidePlate.all.count)")
+                Button(current == GuidePlate.all.count - 1 ? "Done" : "Next") {
+                    if current == GuidePlate.all.count - 1 { dismiss() }
+                    else { withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.55)) { page = current + 1 } }
                 }
+                .buttonStyle(.primary)
+                .padding(.horizontal, Metric.gutter).padding(.bottom, 12)
             }
-            .padding(Metric.gutter)
         }
         .background(Color.paper)
         .navigationTitle("Your band")
         .navigationBarTitleDisplayMode(.inline)
-    }
-
-    private func show(_ next: BandLight) {
-        light = next; since = Date()
-    }
-
-    // MARK: Stage
-
-    /// The inverted panel: the band's light as one large bead, what it means, and the button.
-    private var stage: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            TimelineView(.animation(minimumInterval: 1 / 60, paused: reduceMotion && holdingSince == nil)) { context in
-                let held = holdingSince.map { context.date.timeIntervalSince($0) }
-                let showing = held.map { BandLight.after(hold: $0, charge: charge) } ?? light
-                VStack(alignment: .leading, spacing: 0) {
-                    BeadStage(light: showing, age: held == nil ? context.date.timeIntervalSince(since) : 0,
-                              time: context.date.timeIntervalSinceReferenceDate, still: reduceMotion)
-                        .frame(height: 190)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(held.map { String(format: "%.1f s", min($0, 9.9)) + " · " + showing.title } ?? showing.title)
-                            .font(.heading).monospacedDigit()
-                        Text(showing.detail).font(.caption).opacity(0.7).fixedSize(horizontal: false, vertical: true)
-                            .frame(minHeight: 34, alignment: .top)
-                    }
-                    .padding(.horizontal, 16)
-                    HoldTrack(held: held).padding(.horizontal, 16).padding(.top, 14)
-                }
-            }
-            Text(holdingSince == nil ? "Press and hold" : "Let go to see what it does")
-                .font(.label)
-                .frame(maxWidth: .infinity, minHeight: Metric.row)
-                .foregroundStyle(holdingSince == nil ? Color.ink : Color.paper)
-                .background(holdingSince == nil ? Color.paper : Color.paper.opacity(0.18), in: RoundedRectangle(cornerRadius: Metric.control))
-                .padding(16)
-                .contentShape(Rectangle())
-                .gesture(DragGesture(minimumDistance: 0)
-                    .onChanged { _ in if holdingSince == nil { holdingSince = Date() } }
-                    .onEnded { _ in
-                        guard let start = holdingSince else { return }
-                        holdingSince = nil
-                        show(.after(hold: Date().timeIntervalSince(start), charge: charge))
-                    })
-                .sensoryFeedback(.impact(weight: .medium), trigger: holdingSince == nil)
-                .accessibilityLabel("Hold to see what the band’s button does")
-                .accessibilityAddTraits(.isButton)
-        }
-        .foregroundStyle(Color.paper)
-        .background(Color.ink, in: RoundedRectangle(cornerRadius: Metric.panel))
-        // The stage is always dark so a white light reads as white in either appearance.
-        .environment(\.colorScheme, .light)
     }
 }
 
@@ -174,172 +94,246 @@ struct BandGuideSheet: View {
     var body: some View {
         NavigationStack {
             BandGuidePage()
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() }.font(.label) } }
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() }.font(.label) } }
         }
         .tint(Color.ink)
     }
 }
 
-/// One of the band's beads, large, carrying its light. It floats over a small shadow; a
-/// flashing light lifts and drops it, and a buzz sends ripples out across the floor.
-private struct BeadStage: View {
-    let light: BandLight
-    /// Seconds this light has been showing.
-    let age: Double
+/// Eight beads acting out the guide. `position` is the page, fractional while swiping; the
+/// beads glide between each plate's arrangement and every plate adds its own few strokes.
+private struct BeadTheatre: View {
+    static let height: CGFloat = 330
+    let position: Double
     let time: Double
     let still: Bool
 
-    private var colour: Color {
-        switch light {
-        case .charge(let level): level > 0.8 ? .green : .orange
-        case .dark, .turningOff: .clear
-        default: .white
+    /// One bead on stage.
+    private struct Bead {
+        var x = 0.0, y = 0.0, radius = 12.0
+        var opacity = 1.0
+        /// 0 is the app's hairline bead; 1 is a dark bead, the body of a light.
+        var dark = 0.0
+        /// How full the centre is, 0…1.
+        var charge = 0.0
+        var light: Color?
+        var depth = 0.0
+
+        func mixed(with other: Bead, by f: Double) -> Bead {
+            func mix(_ a: Double, _ b: Double) -> Double { a + (b - a) * f }
+            return Bead(x: mix(x, other.x), y: mix(y, other.y), radius: mix(radius, other.radius),
+                        opacity: mix(opacity, other.opacity), dark: mix(dark, other.dark), charge: mix(charge, other.charge),
+                        light: f < 0.5 ? light : other.light, depth: mix(depth, other.depth))
         }
     }
-    /// 0…1 brightness right now.
-    private var glow: Double {
-        func flash(_ hertz: Double) -> Double { still ? 1 : 0.5 + 0.5 * sin(time * 2 * .pi * hertz) }
-        switch light {
-        case .dark, .turningOff: return 0
-        case .charge(let level): return level < 0.2 ? (still ? 1 : (sin(time * 2 * .pi * 1.6) > 0 ? 1 : 0.08)) : 1
-        case .waking: return min(1, age / 0.4)
-        case .turningOn: return flash(0.8)
-        case .pairing: return flash(3)
-        }
-    }
+
+    private static let hand = LucideData.hand.map(SVGPath.cached)
+    private static let wrist = ["M8.5 21.2V27.5", "M17.5 21.2V27.5"].map(SVGPath.cached)
 
     var body: some View {
         Canvas { canvas, size in
-            let floor = size.height - 34, radius = 36.0
-            // The bead rides its light: up as it brightens, down as it dims.
-            let float = still ? 0 : 5 * sin(time * 1.7) + 7 * glow
-            let centre = CGPoint(x: size.width / 2, y: floor - radius - 16 - float)
+            let last = GuidePlate.all.count - 1
+            let clamped = min(Double(last), max(0, position))
+            let from = min(last, Int(clamped)), to = min(last, from + 1)
+            let fraction = clamped - Double(from)
+            let eased = fraction * fraction * (3 - 2 * fraction)
+            func weight(_ plate: Int) -> Double { let w = max(0, 1 - abs(clamped - Double(plate))); return w * w }
 
-            if light.buzzes, !still {
-                for ring in 0..<3 {
-                    let spread = (age - Double(ring) * 0.16) / 0.9
-                    guard spread > 0, spread < 1 else { continue }
-                    let width = radius * (1.3 + spread * 3.4)
-                    canvas.stroke(Path(ellipseIn: CGRect(x: centre.x - width, y: floor - width * 0.2, width: width * 2, height: width * 0.4)),
-                                  with: .color(.paper.opacity((1 - spread) * 0.55)), lineWidth: 1)
-                }
-            }
-            let shadow = radius * (0.95 - float / 60)
-            canvas.fill(Path(ellipseIn: CGRect(x: centre.x - shadow, y: floor - shadow * 0.18, width: shadow * 2, height: shadow * 0.36)),
-                        with: .color(.paper.opacity(0.14)))
+            let a = beads(for: from, in: size), b = beads(for: to, in: size)
+            let stage = zip(a, b).map { $0.mixed(with: $1, by: eased) }
 
-            if glow > 0.02 {
-                for halo in 1...4 {
-                    let reach = radius + Double(halo) * 9
-                    canvas.fill(Path(ellipseIn: CGRect(x: centre.x - reach, y: centre.y - reach, width: reach * 2, height: reach * 2)),
-                                with: .color(colour.opacity(0.07 * glow)))
-                }
-            }
-            let body = CGRect(x: centre.x - radius, y: centre.y - radius, width: radius * 2, height: radius * 2)
-            canvas.fill(Path(ellipseIn: body), with: .color(.ink))
-            canvas.stroke(Path(ellipseIn: body), with: .color(.paper.opacity(0.85)), lineWidth: 1.25)
-            let dot = body.insetBy(dx: radius * 0.62, dy: radius * 0.62).offsetBy(dx: 0, dy: -radius * 0.08)
-            if glow <= 0.02 {
-                canvas.stroke(Path(ellipseIn: dot), with: .color(.paper.opacity(0.35)), lineWidth: 1)
-            } else {
-                canvas.fill(Path(ellipseIn: dot), with: .color(colour.opacity(0.15 + 0.85 * glow)))
-            }
+            drawBackdrop(in: &canvas, size: size, weight: weight)
+            for bead in stage.sorted(by: { $0.depth < $1.depth }) { draw(bead, in: &canvas) }
+            drawCaptions(in: &canvas, size: size, weight: weight)
         }
         .accessibilityHidden(true)
     }
-}
 
-/// How long the button has been held, against the four holds that mean something.
-private struct HoldTrack: View {
-    let held: Double?
-    private static let marks: [(Double, String)] = [(1, "Wake"), (2, "On"), (3, "Pair"), (8, "Off")]
-    private static let span = 9.0
+    private var t: Double { still ? 0 : time }
 
-    var body: some View {
-        GeometryReader { geometry in
-            let width = geometry.size.width
-            ZStack(alignment: .topLeading) {
-                Rectangle().fill(Color.paper.opacity(0.25)).frame(height: Metric.hairline).offset(y: 5)
-                Rectangle().fill(Color.paper).frame(width: width * min(1, (held ?? 0) / Self.span), height: 3).offset(y: 4)
-                ForEach(Self.marks, id: \.0) { seconds, name in
-                    let reached = (held ?? 0) >= seconds
-                    VStack(spacing: 4) {
-                        Rectangle().fill(Color.paper.opacity(reached ? 1 : 0.5)).frame(width: Metric.hairline, height: 11)
-                        Text(name).font(.caption).opacity(reached ? 1 : 0.55)
-                        Text("\(Int(seconds)) s").font(.caption).monospacedDigit().opacity(0.4)
-                    }
-                    .frame(width: 44)
-                    .position(x: width * seconds / Self.span, y: 28)
+    // MARK: Arrangements
+
+    private func ring(_ size: CGSize, scale: Double, rotation: Double, centreY: Double) -> [Bead] {
+        (0..<8).map { index in
+            let angle = Double(index) * .pi / 4 + rotation
+            let x = cos(angle) * RingGeometry.radius, y = sin(angle) * RingGeometry.radius
+            let flat = RingGeometry.project(x, y, 10)
+            return Bead(x: size.width / 2 + flat.x * scale, y: centreY + flat.y * scale, radius: RingGeometry.ballRadius * scale, depth: x + y)
+        }
+    }
+
+    private func beads(for plate: Int, in size: CGSize) -> [Bead] {
+        let centre = size.width / 2
+        switch plate {
+        case 0:
+            // The band: its ring, breathing and slowly turning.
+            return ring(size, scale: 1.55, rotation: t * 0.35, centreY: 175).enumerated().map { index, bead in
+                var bead = bead
+                bead.y -= still ? 0 : 5 * sin(t * 1.5 + Double(index) * .pi / 4)
+                return bead
+            }
+        case 1:
+            // Around the wrist, just below the hand.
+            return (0..<8).map { index in
+                let angle = Double(index) * .pi / 4 + t * 0.5
+                let front = sin(angle)
+                return Bead(x: centre + 8 + cos(angle) * 46, y: 262 + front * 9, radius: 8.5 + front * 1.2,
+                            opacity: front < 0 ? 0.35 : 1, charge: 0.25, depth: front)
+            }
+        case 2:
+            // Listening: the bead under the finger that moved jumps.
+            let beat = still ? 0.0 : (t / 1.5).truncatingRemainder(dividingBy: 4)
+            let gesture = Int(beat), into = beat - Double(gesture)
+            let finger = [1, 2, 1, 3][gesture]
+            return ring(size, scale: 1.55, rotation: .pi / 4, centreY: 170).enumerated().map { index, bead in
+                var bead = bead
+                guard index == finger, !still else { return bead }
+                let kick = exp(-into * 5) * abs(cos(into * (gesture == 2 ? 18 : 9)))
+                bead.y -= 22 * kick; bead.charge = kick
+                return bead
+            }
+        case 3:
+            // One bead becomes the light; the rest orbit quietly.
+            let phase = lightPhase
+            return (0..<8).map { index in
+                if index == 0 {
+                    return Bead(x: centre, y: 165 - (still ? 0 : 6 * phase.glow), radius: 44, dark: 1, charge: phase.glow, light: phase.colour, depth: 10)
                 }
+                let angle = Double(index) * 2 * .pi / 7 + t * 0.4
+                return Bead(x: centre + cos(angle) * 118, y: 165 + sin(angle) * 34, radius: 5, opacity: 0.5, depth: sin(angle))
+            }
+        case 4:
+            // Four holds, one bead each.
+            return (0..<8).map { index in
+                guard index < 4 else {
+                    return Bead(x: centre + (Double(index) - 5.5) * 30, y: 286, radius: 3, opacity: 0)
+                }
+                return Bead(x: centre + (Double(index) - 1.5) * 78, y: 150, radius: 20, charge: 0.2, depth: Double(index))
+            }
+        default:
+            // Charging: the row fills, orange until it is nearly full.
+            let level = chargeLevel
+            return (0..<8).map { index in
+                let filled = level * 8 > Double(index)
+                return Bead(x: centre + (Double(index) - 3.5) * 38, y: 160, radius: 13, dark: filled ? 1 : 0,
+                            charge: filled ? 1 : 0, light: filled ? (level > 0.8 ? .green : .orange) : nil, depth: Double(index))
             }
         }
-        .frame(height: 56)
-        .accessibilityHidden(true)
-    }
-}
-
-/// One line of the guide: what, a sentence of how, and the band's light when that helps.
-struct GuideRow: View {
-    enum Light {
-        case steady(Color), blinking(Color)
-    }
-    let title: String
-    var detail: String?
-    var light: Light?
-
-    init(_ title: String, _ detail: String? = nil, light: Light? = nil) {
-        self.title = title; self.detail = detail; self.light = light
     }
 
-    var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            if let light { BeadLight(light: light) }
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title).font(.bodyText)
-                if let detail {
-                    Text(detail).font(.caption).foregroundStyle(Color.muted).fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            Spacer(minLength: 0)
+    /// The charging plate fills over five seconds, then rests full for one.
+    private var chargeLevel: Double { still ? 1 : min(1, (t / 5).truncatingRemainder(dividingBy: 1.2)) }
+
+    /// The light plate's cycle: green, orange, blinking orange, flashing white.
+    private var lightPhase: (colour: Color, glow: Double, name: String) {
+        let step = still ? 0 : Int(t / 2.2) % 4
+        switch step {
+        case 0: return (.green, 1, "Green · over 80% charged")
+        case 1: return (.orange, 1, "Orange · 20% to 80%")
+        case 2: return (.orange, sin(t * 2 * .pi * 1.6) > 0 ? 1 : 0.1, "Blinking orange · under 20%")
+        default: return (.white, 0.5 + 0.5 * sin(t * 2 * .pi * 1.1), "Flashing white · turning on, or ready to pair")
         }
-        .padding(.horizontal, Metric.inset).padding(.vertical, 12)
-        .frame(maxWidth: .infinity, minHeight: Metric.rowDense, alignment: .leading)
-        .accessibilityElement(children: .combine)
     }
-}
 
-/// The band's light as a small dark bead in the light's own colour: the one place the app
-/// shows colour. A blinking light flashes and the bead rises and falls with it; with Reduce
-/// Motion it is a still ring.
-private struct BeadLight: View {
-    let light: GuideRow.Light
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var lit = true
+    // MARK: Drawing
 
-    var body: some View {
-        ZStack {
-            Circle().fill(Color.black)
-            Circle().strokeBorder(Color.faint, lineWidth: Metric.hairline)
-            switch light {
-            case .steady(let colour):
-                Circle().fill(colour).frame(width: 9, height: 9)
-            case .blinking(let colour):
-                if reduceMotion {
-                    Circle().strokeBorder(colour, lineWidth: 2).frame(width: 10, height: 10)
-                } else {
-                    Circle().fill(colour).frame(width: 9, height: 9).opacity(lit ? 1 : 0.1)
-                }
+    private func draw(_ bead: Bead, in canvas: inout GraphicsContext) {
+        guard bead.opacity > 0.01, bead.radius > 0.5 else { return }
+        var layer = canvas
+        layer.opacity = bead.opacity
+        let body = CGRect(x: bead.x - bead.radius, y: bead.y - bead.radius, width: bead.radius * 2, height: bead.radius * 2)
+        if let light = bead.light, bead.dark > 0.5, bead.radius > 20 {
+            for halo in 1...4 {
+                let reach = bead.radius + Double(halo) * 10
+                layer.fill(Path(ellipseIn: CGRect(x: bead.x - reach, y: bead.y - reach, width: reach * 2, height: reach * 2)),
+                           with: .color(light.opacity(0.06 * bead.charge)))
             }
         }
-        .frame(width: 24, height: 24)
-        .offset(y: blinks && !reduceMotion ? (lit ? -3 : 3) : 0)
-        .animation(blinks && !reduceMotion ? .easeInOut(duration: 0.5).repeatForever(autoreverses: true) : nil, value: lit)
-        .onAppear { if blinks { lit = false } }
-        .accessibilityHidden(true)
+        layer.fill(Path(ellipseIn: body), with: .color(.paper))
+        if bead.dark > 0.01 { layer.fill(Path(ellipseIn: body), with: .color(.black.opacity(bead.dark))) }
+        layer.stroke(Path(ellipseIn: body), with: .color(.ink.opacity(0.75)), lineWidth: bead.radius > 30 ? 1.5 : 1)
+        guard bead.charge > 0.01 else { return }
+        let dot = body.insetBy(dx: bead.radius * 0.6, dy: bead.radius * 0.6).offsetBy(dx: 0, dy: -bead.radius * 0.06)
+        layer.fill(Path(ellipseIn: dot), with: .color((bead.light ?? .ink).opacity(bead.charge)))
     }
 
-    private var blinks: Bool {
-        if case .blinking = light { return true }
-        return false
+    private func drawBackdrop(in canvas: inout GraphicsContext, size: CGSize, weight: (Int) -> Double) {
+        let centre = size.width / 2
+        // Plate 1: the hand, drawn large, with the wrist running down under the beads.
+        let hand = weight(1)
+        if hand > 0.01 {
+            let scale = 9.2
+            let place = CGAffineTransform(translationX: centre - 13 * scale + 8, y: 52).scaledBy(x: scale, y: scale)
+            for path in Self.hand + Self.wrist {
+                canvas.stroke(path.applying(place), with: .color(.ink.opacity(hand)),
+                              style: StrokeStyle(lineWidth: 1.4, lineCap: .round, lineJoin: .round))
+            }
+            // The wrist bone, and where "just past it" is.
+            canvas.stroke(Path(ellipseIn: CGRect(x: centre - 44, y: 238, width: 9, height: 9)), with: .color(.muted.opacity(hand)), lineWidth: 1)
+        }
+        // Plate 2: a ripple under the bead that jumped.
+        let listen = weight(2)
+        if listen > 0.01, !still {
+            let into = (t / 1.5).truncatingRemainder(dividingBy: 1)
+            let reach = 30 + into * 120
+            canvas.stroke(Path(ellipseIn: CGRect(x: centre - reach, y: 196 - reach * 0.32, width: reach * 2, height: reach * 0.64)),
+                          with: .color(.ink.opacity(listen * (1 - into) * 0.4)), lineWidth: 1)
+        }
+        // Plate 4: each hold as an arc, an eighth of a turn per second.
+        let holds = weight(4)
+        if holds > 0.01 {
+            for (index, seconds) in [1.0, 2, 3, 8].enumerated() {
+                let x = centre + (Double(index) - 1.5) * 78
+                let sweep = still ? 1 : min(1, (t.truncatingRemainder(dividingBy: 6)) / (0.5 + seconds * 0.45))
+                var arc = Path()
+                arc.addArc(center: CGPoint(x: x, y: 150), radius: 29, startAngle: .degrees(-90),
+                           endAngle: .degrees(-90 + 360 * seconds / 8 * sweep), clockwise: false)
+                canvas.stroke(Path(ellipseIn: CGRect(x: x - 29, y: 121, width: 58, height: 58)), with: .color(.rule.opacity(holds)), lineWidth: 1)
+                canvas.stroke(arc, with: .color(.ink.opacity(holds)), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+            }
+        }
+    }
+
+    private func drawCaptions(in canvas: inout GraphicsContext, size: CGSize, weight: (Int) -> Double) {
+        let centre = size.width / 2
+        var layer = canvas
+        let wear = weight(1)
+        if wear > 0.01 {
+            layer.opacity = wear
+            layer.draw(Text("wrist bone").font(.caption).foregroundStyle(Color.muted), at: CGPoint(x: centre - 52, y: 242), anchor: .trailing)
+            layer.draw(Text("band").font(.caption).foregroundStyle(Color.muted), at: CGPoint(x: centre + 66, y: 262), anchor: .leading)
+        }
+        let listen = weight(2)
+        if listen > 0.01 {
+            let names = ["Tap index · select", "Tap middle · back", "Double tap index", "Hold · more"]
+            let gesture = still ? 0 : Int((t / 1.5).truncatingRemainder(dividingBy: 4))
+            layer.opacity = listen
+            layer.draw(Text(names[gesture]).font(.label), at: CGPoint(x: centre, y: 296), anchor: .center)
+        }
+        let lightWeight = weight(3)
+        if lightWeight > 0.01 {
+            layer.opacity = lightWeight
+            layer.draw(Text(lightPhase.name).font(.label), at: CGPoint(x: centre, y: 262), anchor: .center)
+        }
+        let holds = weight(4)
+        if holds > 0.01 {
+            layer.opacity = holds
+            for (index, hold) in [("1 s", "Wake"), ("2 s", "On"), ("3 s", "Pair"), ("8 s", "Off")].enumerated() {
+                let x = centre + (Double(index) - 1.5) * 78
+                layer.draw(Text(hold.1).font(.label), at: CGPoint(x: x, y: 204), anchor: .center)
+                layer.draw(Text(hold.0).font(.caption).foregroundStyle(Color.muted), at: CGPoint(x: x, y: 224), anchor: .center)
+            }
+            layer.draw(Text("Off: let go when the light goes dark and it buzzes.").font(.caption).foregroundStyle(Color.muted),
+                       at: CGPoint(x: centre, y: 270), anchor: .center)
+        }
+        let charging = weight(5)
+        if charging > 0.01 {
+            layer.opacity = charging
+            let percent = Int(chargeLevel * 100)
+            layer.draw(Text(chargeLevel > 0.8 ? "\(percent)% · green above 80%" : "\(percent)% · orange").font(.label).monospacedDigit(),
+                       at: CGPoint(x: centre, y: 214), anchor: .center)
+            layer.draw(Text("If it won’t connect: hold 8 s to turn off, then 2 s to turn on.").font(.caption).foregroundStyle(Color.muted),
+                       at: CGPoint(x: centre, y: 250), anchor: .center)
+        }
     }
 }
