@@ -157,59 +157,32 @@ private struct BeadTheatre: View {
         var depth = 0.0
         /// Strength of its floor shadow, and how far above the floor it rides.
         var shadow = 0.0, lift = 0.0
+        /// Drawn before the backdrop, so the hand can pass in front of it.
+        var behind = false
 
         func mixed(with other: Bead, by f: Double) -> Bead {
             func mix(_ a: Double, _ b: Double) -> Double { a + (b - a) * f }
             return Bead(x: mix(x, other.x), y: mix(y, other.y), radius: mix(radius, other.radius),
                         opacity: mix(opacity, other.opacity), dark: mix(dark, other.dark), charge: mix(charge, other.charge),
                         light: f < 0.5 ? light : other.light, depth: mix(depth, other.depth),
-                        shadow: mix(shadow, other.shadow), lift: mix(lift, other.lift))
+                        shadow: mix(shadow, other.shadow), lift: mix(lift, other.lift), behind: f < 0.5 ? behind : other.behind)
         }
     }
 
-    /// The wearing lesson as a short loop: the band comes up the forearm loose, stops against
-    /// the wrist bone, tightens, shows its line, and its sensors wake one after another.
-    private struct Wearing {
-        /// How far down the forearm the band is, and how loose, 0…1.
-        var offset = 0.0, loose = 0.0
-        /// The bone's label, its nudge as the band meets it, and the line, each 0…1.
-        var bone = 1.0, knock = 0.0, line = 1.0
-        /// The angle around the band of the sensor waking now.
-        var sense: Double?
-
-        init(at elapsed: Double?) {
-            guard let elapsed else { return }
-            let e = elapsed.truncatingRemainder(dividingBy: 8)
-            func ramp(_ a: Double, _ b: Double) -> Double { let x = min(1, max(0, (e - a) / (b - a))); return x * x * (3 - 2 * x) }
-            /// Eases away from 0, runs a little past 1 and settles.
-            func spring(_ x: Double) -> Double { x <= 0 ? 0 : 1 - exp(-4 * x) * (cos(5 * x) + 0.8 * sin(5 * x)) }
-            let leaving = ramp(6.8, 7.6), shown = 1 - ramp(6.4, 6.8)
-            offset = 60 * (1 - spring(e - 0.5) + leaving)
-            loose = max(1 - spring((e - 2.1) * 1.6), ramp(6.5, 7))
-            knock = exp(-pow((e - 1.13) / 0.16, 2))
-            bone = ramp(1, 1.4) * shown
-            line = ramp(3, 3.5) * shown
-            if e > 3.7, e < 4.9 { sense = -0.4 + (e - 3.7) / 1.2 * (.pi + 0.8) }
-        }
-    }
-
-    private static let hand = LucideData.hand.map(SVGPath.cached)
-    /// The forearm, in the hand's 24-unit drawing: its top, where it has faded out, and its sides.
-    private static let armTop = 21.2, armEnd = 36.0, armLeft = 8.5, armRight = 17.5
+    /// The forearm under the wrist page's hand, in that drawing's 24 units: where it starts and has faded out.
+    private static let armTop = 21.2, armEnd = 33.0, armLeft = 8.5, armRight = 17.5
     private static let forearm = [armLeft, armRight].map { SVGPath.cached("M\($0) \(armTop)V\(armEnd)") }
     private static let ringScale = 1.55
-    /// Drawn large and close on the wrist; the fingertips fade out at the top.
-    private static let handScale = 10.0
-    private static let handTop = -30.0
-    /// Where the band sits, a little below the palm.
-    private static let wristY = handTop + 24.4 * handScale
-    /// The wrist bone, on the little-finger side just above the band.
-    private static let boneY = wristY - 26
+    private static let handScale = 7.6
+    private static let handTop = 26.0
+    /// Where the band sits, and the wrist bone on the little-finger side just above it.
+    private static let wristY = handTop + 26 * handScale
+    private static let boneY = handTop + 22.6 * handScale
     private static let armHalfWidth = (armRight - armLeft) / 2 * handScale
     private static let columnWidth = 78.0
     private static let rowY = 150.0
     /// Seconds each gesture, light and lap of the loops below is shown.
-    private static let gestureBeat = 1.5, lightBeat = 2.2, chargeLoop = 6.0
+    private static let gestureBeat = 1.5, lightBeat = 2.2, wearLoop = 5.0, chargeLoop = 6.0
 
     var body: some View {
         Canvas { canvas, size in
@@ -231,9 +204,10 @@ private struct BeadTheatre: View {
                 bead.lift += hop * 26; bead.radius *= 1 + hop * 0.12
                 return bead
             }
+            for bead in stage where bead.behind { draw(bead, in: &canvas) }
             drawBackdrop(in: &canvas, centre: centre, weight: weight)
             for bead in stage { drawShadow(of: bead, in: &canvas) }
-            for bead in stage.sorted(by: { $0.depth < $1.depth }) { draw(bead, in: &canvas) }
+            for bead in stage.sorted(by: { $0.depth < $1.depth }) where !bead.behind { draw(bead, in: &canvas) }
             drawCaptions(in: &canvas, centre: centre, weight: weight)
         }
         .accessibilityHidden(true)
@@ -257,7 +231,14 @@ private struct BeadTheatre: View {
         let wave = sin(clock(.light) * 2 * .pi * blink)
         return light.colour == .white ? 0.5 + 0.5 * wave : (wave > 0 ? 1 : 0.1)
     }
-    private var wearing: Wearing { Wearing(at: still ? nil : clock(.wear)) }
+    /// How far down the forearm the band is from its place: it slides on, settles, and later slides off.
+    private var wearOffset: Double {
+        guard !still else { return 0 }
+        let into = clock(.wear).truncatingRemainder(dividingBy: Self.wearLoop)
+        let x = max(0, into - 0.3) * 1.9, leaving = min(1, max(0, (into - 4.3) / 0.5))
+        let settled = 1 - exp(-4 * x) * (cos(5 * x) + 0.8 * sin(5 * x))
+        return 28 * (1 - settled + leaving * leaving)
+    }
     /// The charging row fills, then rests full for a moment.
     private var chargeLevel: Double { still ? 1 : min(1, (clock(.charging) / Self.chargeLoop).truncatingRemainder(dividingBy: 1) * 1.2) }
 
@@ -283,14 +264,11 @@ private struct BeadTheatre: View {
                 return bead
             }
         case .wear:
-            let story = wearing
+            // The wrist page's ring around one wrist; the far beads pass behind the arm.
             return (0..<8).map { index in
-                // Three beads across the front and one at each side; the other three are behind the arm.
                 let angle = Double(index) * .pi / 4, front = sin(angle)
-                let woken = story.sense.map { 0.8 * exp(-pow(angle - $0, 2) * 5) } ?? 0
-                return Bead(x: centre + cos(angle) * (Self.armHalfWidth + 3 + 14 * story.loose),
-                            y: Self.wristY + story.offset + front * (12 + 5 * story.loose),
-                            radius: 9.5 + front * 4.5, opacity: front < -0.01 ? 0 : 1, charge: 0.2 + woken, depth: front)
+                return Bead(x: centre + cos(angle) * 51, y: Self.wristY + wearOffset + front * 15,
+                            radius: 10.5 + front * 0.8, depth: front, behind: front < -0.01)
             }
         case .gestures:
             let now = gesture, played = Plate.moves[now.index]
@@ -365,30 +343,27 @@ private struct BeadTheatre: View {
     private func drawBackdrop(in canvas: inout GraphicsContext, centre: Double, weight: (Plate) -> Double) {
         let wear = weight(.wear)
         if wear > 0.01 {
-            let story = wearing, ink = Color.ink.opacity(wear)
+            let ink = Color.ink.opacity(wear)
             let place = CGAffineTransform(translationX: centre - (Self.armLeft + Self.armRight) / 2 * Self.handScale, y: Self.handTop)
                 .scaledBy(x: Self.handScale, y: Self.handScale)
-            let stroke = StrokeStyle(lineWidth: 1.4, lineCap: .round, lineJoin: .round)
-            // Close on the wrist: the fingertips and the forearm fade out of the picture.
-            let fade = GraphicsContext.Shading.linearGradient(
-                Gradient(stops: [.init(color: ink.opacity(0), location: 0), .init(color: ink, location: 0.17),
-                                 .init(color: ink, location: 0.82), .init(color: ink.opacity(0), location: 1)]),
-                startPoint: .zero, endPoint: CGPoint(x: 0, y: Self.designHeight))
-            for path in Self.hand + Self.forearm { canvas.stroke(path.applying(place), with: fade, style: stroke) }
-            var bone = Path()
-            bone.addArc(center: CGPoint(x: centre + Self.armHalfWidth, y: Self.boneY), radius: 7 + 3 * story.knock,
-                        startAngle: .degrees(-75), endAngle: .degrees(75), clockwise: false)
-            canvas.stroke(bone, with: .color(ink), style: StrokeStyle(lineWidth: 1.4 + story.knock, lineCap: .round))
+            let stroke = StrokeStyle(lineWidth: 1.2, lineCap: .round, lineJoin: .round)
+            func fading(_ colour: Color) -> GraphicsContext.Shading {
+                .linearGradient(Gradient(stops: [.init(color: colour, location: 0.6), .init(color: colour.opacity(0), location: 1)]),
+                                startPoint: CGPoint(x: 0, y: Self.armTop).applying(place), endPoint: CGPoint(x: 0, y: Self.armEnd).applying(place))
+            }
+            // The hand and arm are solid, so the far side of the band passes behind them.
+            let arm = CGRect(x: Self.armLeft, y: Self.armTop, width: Self.armRight - Self.armLeft, height: Self.armEnd - Self.armTop)
+            canvas.fill(WristArtwork.mask.applying(place), with: .color(.paper.opacity(wear)))
+            canvas.fill(Path(arm).applying(place), with: fading(.paper.opacity(wear)))
+            for path in WristArtwork.outline { canvas.stroke(path.applying(place), with: .color(ink), style: stroke) }
+            for path in Self.forearm { canvas.stroke(path.applying(place), with: fading(ink), style: stroke) }
+            for path in WristArtwork.contours { canvas.stroke(path.applying(place), with: .color(ink.opacity(0.3)), style: StrokeStyle(lineWidth: 0.8, lineCap: .round)) }
+            var marks = Path()
+            marks.addArc(center: CGPoint(x: centre + Self.armHalfWidth, y: Self.boneY), radius: 4.5, startAngle: .degrees(-75), endAngle: .degrees(75), clockwise: false)
             // The band's line, at the front where you can see it.
-            let lineTop = Self.wristY + story.offset + 33
-            var line = Path()
-            line.move(to: CGPoint(x: centre, y: lineTop))
-            line.addLine(to: CGPoint(x: centre, y: lineTop + 12 * story.line))
-            canvas.stroke(line, with: .color(ink.opacity(story.line)), style: StrokeStyle(lineWidth: 1.8, lineCap: .round))
-            var leader = Path()
-            leader.move(to: CGPoint(x: centre - Self.armHalfWidth - 8, y: lineTop + 6))
-            leader.addLine(to: CGPoint(x: centre - 7, y: lineTop + 6))
-            canvas.stroke(leader, with: .color(.rule.opacity(wear * story.line)), lineWidth: 1)
+            marks.move(to: CGPoint(x: centre, y: Self.wristY + wearOffset + 31))
+            marks.addLine(to: CGPoint(x: centre, y: Self.wristY + wearOffset + 41))
+            canvas.stroke(marks, with: .color(ink), style: StrokeStyle(lineWidth: 1.4, lineCap: .round))
         }
         let listen = weight(.gestures)
         if listen > 0.01, !still {
@@ -426,9 +401,8 @@ private struct BeadTheatre: View {
                 if let detail = name.1 { write(detail, at: CGPoint(x: x, y: Self.rowY + 74), opacity: opacity) }
             }
         }
-        let story = wearing
-        write("wrist bone", at: CGPoint(x: centre + Self.armHalfWidth + 18, y: Self.boneY), anchor: .leading, opacity: weight(.wear) * story.bone)
-        write("line faces you", at: CGPoint(x: centre - Self.armHalfWidth - 14, y: Self.wristY + story.offset + 39), anchor: .trailing, opacity: weight(.wear) * story.line)
+        write("wrist bone", at: CGPoint(x: centre + Self.armHalfWidth + 12, y: Self.boneY - 3), anchor: .leading, opacity: weight(.wear))
+        write("line faces you", at: CGPoint(x: centre, y: Self.wristY + wearOffset + 54), opacity: weight(.wear))
         if still {
             write(Plate.moves.map(\.name).joined(separator: " · "), at: CGPoint(x: centre, y: 296), strong: true, opacity: weight(.gestures))
             row(Plate.lights.map { ($0.name, $0.blink == nil ? nil : "blinking") }, opacity: weight(.light))
