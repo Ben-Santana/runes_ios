@@ -135,6 +135,15 @@ struct OnboardingView: View {
 
     // MARK: Copy
 
+    /// The wrist to name: the one being switched to while the band confirms it, so the
+    /// title never flickers through a "checking" state.
+    private var wristInView: Handedness? {
+        switch context.handSetting.pending {
+        case .write(let hand), .verify(let hand): return hand
+        default: return context.handSetting.confirmed
+        }
+    }
+
     private var title: String {
         switch step {
         case .welcome: return "Runes"
@@ -142,10 +151,11 @@ struct OnboardingView: View {
         case .pairing: return "Put your band in pairing mode"
         case .pick: return "Choose your band"
         case .signIn: return "Sign in with Meta"
-        case .test: return context.testPassed ? "Got it" : "Tap your index finger"
+        case .test:
+            if context.testPassed { return "Got it" }
+            return context.phase == .connected ? "Tap your index finger" : "Connecting to your band"
         case .wrist:
-            if context.handSetting.busy { return "Checking your band" }
-            return context.handSetting.confirmed.map { $0 == .left ? "Left wrist" : "Right wrist" } ?? "Which wrist?"
+            return wristInView.map { $0 == .left ? "Left wrist" : "Right wrist" } ?? "Which wrist?"
         case .done: return "You’re all set"
         }
     }
@@ -166,12 +176,12 @@ struct OnboardingView: View {
             return "Signing in links this phone to your band."
         case .test:
             if context.testPassed { return "Your band is talking to your phone." }
-            if context.phase != .connected { return "Connecting to your band…" }
-            return context.heard.map { "Heard “\($0.lowercased())”. Try your index finger." } ?? "Tap your index finger to your thumb, once."
+            if context.phase != .connected { return "Keep the band on your wrist and close to your phone. This takes a few seconds." }
+            return context.heard.map { "Heard “\($0.lowercased())”. Try your index finger." }
+                ?? "Your band is connected. Tap your index finger to your thumb, once, to check it’s listening."
         case .wrist:
             if !context.canChangeHand { return "Connect your band to set which wrist it’s on. You can also do this later in Settings." }
-            if context.handSetting.busy { return "Checking your band’s setting…" }
-            if let hand = context.handSetting.confirmed {
+            if let hand = wristInView {
                 return "Your band is set for your \(hand.rawValue) wrist. Tap the other hand if that’s not where you wear it."
             }
             return "Tap the hand you wear your band on."
