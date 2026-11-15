@@ -120,6 +120,11 @@ struct SnapshotGallery: View {
             NavigationStack { CookingScreen(store: PreviewFixtures.cookSalmon(name)) }
         } else if name == "cooking-numbers" || name == "cooking-numbers-ringing" {
             NavigationStack { CookingScreen(store: PreviewFixtures.cook(step: name == "cooking-numbers" ? 2 : 1, ringing: name != "cooking-numbers", cookingLook: .numbers)) }
+        } else if name == "recipe-steps" {
+            // Few ingredients, so the steps and their spine are on the first screen.
+            let short = Recipe(id: "preview-short", title: "Garlic tomatoes", ingredients: ["4 cloves garlic, sliced", "800 g tinned whole tomatoes"],
+                               steps: Array(Recipe.starter.steps[1...3]), yield: "Serves 2", notes: ["Keeps three days in the fridge."])
+            NavigationStack { RecipeScreen(store: CookStore(preview: [short]), recipeID: short.id, path: .constant([])) }
         } else if name == "recipe-sorted" {
             // A sorted recipe whose amounts and times no longer match what was pasted.
             let pasted = "Salmon for two. You need 2 salmon fillets, 30 g butter and 3 cloves of garlic. Cook the salmon skin side down over a medium-high heat for 4 minutes until crisp, turn it, add the butter and garlic and give it 2 minutes more."

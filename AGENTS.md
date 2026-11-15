@@ -75,8 +75,10 @@ of wireless deployment. Do not uninstall the app to repair an ordinary update.
 
 - Existing checks are standalone `swiftc` executables in `Tests/`, not an XCTest
   scheme. Read each test's header and source dependencies before running it.
-- For Cook/Capture updates, run `CookTests.swift`, `CaptureTests.swift`, and the
-  mapping tests; Score checks cover shared gesture reservation behavior.
+- For Cook/Capture updates, run `CookTests.swift`, `CookImportTests.swift`,
+  `CaptureTests.swift`, and the mapping tests; Score checks cover shared gesture
+  reservation behavior. Cook's on-device recipe sorting needs Apple Intelligence
+  and is not covered by them; `Tools/RecipeImportProbe.swift` runs it on a Mac.
 - Mapping-related checks require `Models.swift`, `Wire.swift`,
   `IdentityStore.swift`, `MappingModel.swift`, `AirGesture.swift`, and generally
   `MappingEngine.swift`, plus `Shared/ProfileIcon.swift`, `Shared/SVGPath.swift`,

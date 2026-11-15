@@ -126,6 +126,9 @@ one sentence, one hairline button.
 | `Hairline`, `Heading`, `Note`, `AddRow`, `GestureChip`, `HairlineSegments`, `RoundAction`, `CapsuleAction` | WorkoutsView | Ledger parts |
 | `StepProgress`, `StepTicks`, `DurationChip` | CookView | A recipe's steps as hairline segments and ticks; a step's time as a quiet chip |
 | `TimerRing` | CookingView | A hairline circle that fills as a timer runs out |
+| `TimeLine` | CookView | A recipe as a line of time: a tick where each step begins, a hairline as long as a timed step's time; draws in once |
+| `Hob` | CookingLayouts | A fixed row of four rings for every timer still going: ink for this step's, muted for others', a second ring round the selected one, a solid disc when the time is up |
+| `TimeUpBand` | CookingLayouts | Ink across the top while a timer's time is up; draws in from the leading edge and holds still |
 | `HairlineSwitch` | CaptureView | A switch in ink and hairline (outline and open knob off, filled on); reads in both appearances |
 | `TriggerComposer` | TriggerComposer | The one way to set a gesture or build a combo: a track of step tiles (the selected one in ink, a dashed slot for the next, an ink line under steps made with a finger held) over a four-column pad of gesture keys. Inline on a page it opens the pad when a step is touched |
 | `TriggerSheet` | TriggerComposer | The composer over a draft, with Cancel and Save; `TriggerRules` says whether it takes one gesture, a combo or either |
