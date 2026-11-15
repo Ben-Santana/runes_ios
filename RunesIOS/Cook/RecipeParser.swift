@@ -58,7 +58,7 @@ struct Recipe: Codable, Identifiable, Hashable, Sendable {
         lines.append("Steps")
         lines += steps.enumerated().map { "\($0.offset + 1). \($0.element)" }
         if let notes, !notes.isEmpty {
-            lines += ["", "Notes"] + notes.map { "- \($0)" }
+            lines += ["", "Notes"] + notes.map { "- \($0.replacingOccurrences(of: "\n", with: " "))" }
         }
         if let nutrition, !nutrition.isEmpty { lines += ["", "Nutrition", nutrition] }
         return lines.joined(separator: "\n")
@@ -124,6 +124,8 @@ enum DurationFinder {
             guard ratio.count == 2, ratio[1] != 0 else { return nil }
             return (parts.count == 2 ? Double(parts[0]) ?? 0 : 0) + ratio[0] / ratio[1]
         }
+        // "1,000" is a thousand; "2,5" is two and a half.
+        if t.range(of: #"^\d{1,3}(,\d{3})+$"#, options: .regularExpression) != nil { return Double(t.replacingOccurrences(of: ",", with: "")) }
         return Double(t.replacingOccurrences(of: ",", with: "."))
     }
 
@@ -291,8 +293,9 @@ enum RecipeParser {
             if matches(otherHeader, header) { section = .other; continue }
             let item = strip(bullet, raw)
             if matches(nutritionLine, item) { nutrition.append(strip(nutritionLine, item)); continue }
-            if matches(noteLine, item) { notes.append(strip(noteLine, item)); continue }
+            // Under a Notes heading a line is kept whole, so "Tip: …" there reads back as it was written.
             if section == .notes { if !item.isEmpty { notes.append(item) }; continue }
+            if matches(noteLine, item) { notes.append(strip(noteLine, item)); continue }
             if section == .nutrition { if !item.isEmpty { nutrition.append(item) }; continue }
             if matches(meta, header) { continue }
             if matches(yieldLine, header), header.count <= 40 { if yield == nil { yield = header }; continue }

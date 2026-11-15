@@ -179,8 +179,12 @@ struct CookSession: Codable, Equatable, Sendable {
     /// Timers still going that belong to other steps, in recipe order. With the step's own
     /// times they are what up and down move between.
     var others: [CookTimer] { timers.filter { $0.isLive && $0.step != step }.sorted { ($0.step, $0.slot) < ($1.step, $1.slot) } }
-    /// Where the selection is among the step's times and the others.
-    var selection: Int { pickedTimer.flatMap { timer in others.firstIndex { $0.id == timer.id } }.map { slots + $0 } ?? slot }
+    /// Where the selection is among the step's times and the others. On a step with no
+    /// time nothing is selected until another step's timer is.
+    var selection: Int? {
+        if let timer = pickedTimer, let index = others.firstIndex(where: { $0.id == timer.id }) { return slots + index }
+        return slots == 0 ? nil : slot
+    }
 
     func timer(step: Int, slot: Int) -> CookTimer? { timers.last { $0.step == step && $0.slot == slot } }
     func running(at now: Date) -> [CookTimer] { timers.filter { $0.isRunning(at: now) }.sorted { $0.end < $1.end } }
@@ -226,10 +230,11 @@ struct CookSession: Codable, Equatable, Sendable {
             cancel(timer.id)
             return .reset
         case .timerDown, .timerUp:
-            let others = others, count = slots + others.count
-            guard !finished, count > 1 else { return nil }
-            // Round and round, so two timers swap with either swipe.
-            let next = (selection + (command == .timerDown ? 1 : -1) + count) % count
+            let others = others, count = slots + others.count, current = selection
+            guard !finished, count > (current == nil ? 0 : 1) else { return nil }
+            // Round and round, so two timers swap with either swipe. With nothing
+            // selected, down takes the first and up the last.
+            let next = current.map { ($0 + (command == .timerDown ? 1 : -1) + count) % count } ?? (command == .timerDown ? 0 : count - 1)
             if next < slots { chosen = next; picked = nil } else { picked = others[next - slots].id }
             return .selected(next)
         }

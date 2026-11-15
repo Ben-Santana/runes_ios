@@ -53,6 +53,12 @@ struct CookImportTests {
         precondition(RecipeImporter.window("Short text") == "Short text")
         precondition(RecipeImporter.window(long, limit: 200).count <= 200)
 
+        // One long paragraph, with no line to cut at, is still handed over, as much as fits.
+        let paragraph = String(repeating: "Cook the rice with 2 cups of water for 12 minutes and then rest it. ", count: 110)
+        precondition(paragraph.count > RecipeImporter.limit && RecipeImporter.window(paragraph).count > RecipeImporter.limit / 2 && RecipeImporter.window(paragraph).count <= RecipeImporter.limit)
+        let twoBig = String(paragraph.prefix(3800)) + "\n" + String(paragraph.prefix(3800))
+        precondition(RecipeImporter.window(twoBig).count > 3800 && RecipeImporter.window(twoBig).count <= RecipeImporter.limit, "\(RecipeImporter.window(twoBig).count)")
+
         // MARK: Checking a sorted recipe against what was pasted
         let pasted = """
         Honestly the best salmon. Prep time: 5 minutes.

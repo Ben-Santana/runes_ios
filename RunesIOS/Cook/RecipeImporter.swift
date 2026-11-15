@@ -92,9 +92,14 @@ enum RecipeImporter {
         for index in lines.indices where looksLikeIngredient(lines[index]) {
             if lines[index..<min(lines.count, index + 5)].filter(looksLikeIngredient).count >= 3 { start = max(0, index - 3); break }
         }
-        var kept: [String] = start > 0 ? [title, ""] : [], count = title.count
+        var kept: [String] = start > 0 ? [title] : [], count = start > 0 ? title.count + 1 : 0
         for line in lines[start...] {
-            guard count + line.count + 1 <= limit else { break }
+            // A line that doesn't fit is cut where the room ends: a recipe pasted as one
+            // paragraph has no other place to cut.
+            guard count + line.count + 1 <= limit else {
+                if limit - count > 200 { kept.append(String(line.prefix(limit - count - 1))) }
+                break
+            }
             kept.append(line); count += line.count + 1
         }
         return kept.joined(separator: "\n")

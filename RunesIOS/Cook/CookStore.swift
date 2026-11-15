@@ -41,9 +41,10 @@ final class CookStore: ObservableObject {
         var controls: CookControls?
         var sounds: Bool?
         var session: CookSession?
-        var buzz: CookBuzz?
-        var listLook: CookListLook?
-        var cookingLook: CookingLook?
+        // Kept as text, so a look that is later removed doesn't stop the recipes loading.
+        var buzz: String?
+        var listLook: String?
+        var cookingLook: String?
     }
 
     @Published private(set) var recipes: [Recipe]
@@ -124,9 +125,9 @@ final class CookStore: ObservableObject {
         recipes = saved.recipes
         controls = saved.controls ?? .standard
         sounds = saved.sounds ?? true
-        buzz = saved.buzz ?? .timers
-        listLook = saved.listLook ?? .contents
-        cookingLook = saved.cookingLook ?? .hob
+        buzz = saved.buzz.flatMap(CookBuzz.init) ?? .timers
+        listLook = saved.listLook.flatMap(CookListLook.init) ?? .contents
+        cookingLook = saved.cookingLook.flatMap(CookingLook.init) ?? .hob
         session = saved.session
         scheduled = Set((saved.session?.timers ?? []).map { Self.notificationPrefix + $0.id })
         decider.onFire = { [weak self] id in
@@ -238,9 +239,10 @@ final class CookStore: ObservableObject {
 
     func perform(_ command: CookCommand) {
         guard var current = session else { return }
+        let target = current.selectedTimer
         let event = current.apply(command)
         session = current
-        react(to: event)
+        react(to: event, about: target)
     }
 
     /// Takes a band gesture that is one of cooking's while a recipe is being cooked.
@@ -293,9 +295,9 @@ final class CookStore: ObservableObject {
         react(to: event)
     }
     func cancelTimer(_ id: String) {
-        guard var current = session, current.timers.contains(where: { $0.id == id }) else { return }
+        guard var current = session, let timer = current.timers.first(where: { $0.id == id }) else { return }
         current.cancel(id); session = current
-        react(to: .reset)
+        react(to: .reset, about: timer)
     }
     func addMinute(to id: String) {
         guard var current = session, let timer = current.addMinute(to: id) else { return }
@@ -319,7 +321,8 @@ final class CookStore: ObservableObject {
         persist()
     }
 
-    private func react(to event: CookEvent?) {
+    /// `about` is the timer a reset took away, which the session no longer has.
+    private func react(to event: CookEvent?, about gone: CookTimer? = nil) {
         guard let session else { return }
         var alert: LiveAlert?
         let cue: CookCue
@@ -336,7 +339,7 @@ final class CookStore: ObservableObject {
         case .resumed(let timer):
             cue = .start; alert = LiveAlert(title: "Timer started again", body: "\(timer.label) · \(DurationFinder.clock(timer.remaining(at: Date()))) left")
         case .reset:
-            cue = .reset; alert = LiveAlert(title: "Timer reset", body: session.durations.indices.contains(session.slot) ? session.durations[session.slot].short : session.position)
+            cue = .reset; alert = LiveAlert(title: "Timer reset", body: gone.map { "\($0.label) · step \($0.step + 1)" } ?? session.position)
         case .selected(let position):
             cue = .select
             let body: String
@@ -394,6 +397,7 @@ final class CookStore: ObservableObject {
         objectWillChange.send()
         arm(); show()
         ring()
+        liveChanged()
     }
 
     /// Rings a finished timer until it is stopped, for up to a minute: the bell, and three
@@ -459,8 +463,8 @@ final class CookStore: ObservableObject {
 
     private func persist() {
         guard !previewOnly else { return }
-        let saved = Saved(recipes: recipes, controls: controls, sounds: sounds, session: session, buzz: buzz,
-                          listLook: listLook, cookingLook: cookingLook)
+        let saved = Saved(recipes: recipes, controls: controls, sounds: sounds, session: session, buzz: buzz.rawValue,
+                          listLook: listLook.rawValue, cookingLook: cookingLook.rawValue)
         if let data = try? JSONEncoder().encode(saved) { UserDefaults.standard.set(data, forKey: Self.key) }
     }
 }

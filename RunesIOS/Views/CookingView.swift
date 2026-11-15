@@ -221,7 +221,7 @@ struct CookingView: View {
         // On a step with no time, another minute starts a timer for it.
         if ringing || !session.live(at: now).isEmpty || session.durations.isEmpty { add([.addMinute], "+1") }
         if selected != nil { add([.reset], "Reset") }
-        if session.slots + session.others.count > 1 { add([.timerUp, .timerDown], "Timer") }
+        if session.slots + session.others.count > (session.selection == nil ? 0 : 1) { add([.timerUp, .timerDown], "Timer") }
         return result
     }
 

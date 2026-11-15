@@ -602,8 +602,14 @@ struct RecipeEditor: View {
     @State private var source: String?
     @State private var fetching = false
     @State private var problem: String?
-    /// What was pasted, once the model has sorted it; the result is checked against this.
+    /// What was pasted, once the model has sorted it, to compare with.
     @State private var original: String?
+    /// The part of it the model was given, which is what its answer is checked against.
+    @State private var checked: String?
+    /// The lines of the sorted recipe that differ from that. Worked out when the text changes, not on every draw.
+    @State private var issues: [RecipeImporter.Issue] = []
+    /// The text the editor last put there itself. A change away from it is the person's.
+    @State private var placed: String?
     /// The pasted text was a whole page, which always has more words than its recipe.
     @State private var fromPage = false
     @State private var sorting: Task<Void, Never>?
@@ -618,6 +624,7 @@ struct RecipeEditor: View {
         _text = State(initialValue: text ?? recipe?.text ?? "")
         _source = State(initialValue: recipe?.source)
         _original = State(initialValue: original)
+        _checked = State(initialValue: original.map { RecipeImporter.window($0) })
     }
 
     private var link: URL? { sorting == nil && original == nil ? RecipeImporter.link(in: text) : nil }
@@ -627,14 +634,21 @@ struct RecipeEditor: View {
     private var unsorted: Bool {
         original == nil && text.trimmingCharacters(in: .whitespacesAndNewlines).count > 40 && !RecipeImporter.isClear(text, parsed: parsed)
     }
-    private var issues: [RecipeImporter.Issue] {
-        guard let original, sorting == nil else { return [] }
-        var found = RecipeImporter.check(parsed, against: original)
-        if !fromPage, RecipeImporter.coverage(of: original, in: parsed) < 0.5 {
+    private func findIssues() -> [RecipeImporter.Issue] {
+        guard let checked, sorting == nil else { return [] }
+        let recipe = parsed
+        var found = RecipeImporter.check(recipe, against: checked)
+        if !fromPage, RecipeImporter.coverage(of: checked, in: recipe) < 0.5 {
             found.append(RecipeImporter.Issue(line: "Much of what you pasted isn’t here.", reason: "Compare the two before saving."))
         }
         return found
     }
+
+    /// Puts text in the editor without it counting as the person's typing.
+    private func place(_ new: String) { placed = new; text = new }
+
+    /// Lets go of the paste a sorted recipe is compared with.
+    private func forget() { original = nil; checked = nil; fromPage = false }
 
     var body: some View {
         NavigationStack {
@@ -660,7 +674,6 @@ struct RecipeEditor: View {
                     }
                 }
                 .animation(.standard, value: text.isEmpty)
-                let issues = issues
                 if !issues.isEmpty { IssueList(issues: issues) { comparing = true } }
                 Rule(inset: 0)
                 footer.padding(.horizontal, Metric.gutter).padding(.vertical, 12)
@@ -677,11 +690,21 @@ struct RecipeEditor: View {
                     Button("Save", action: save).font(.label).disabled(link != nil || sorting != nil || !parsed.isUsable)
                 }
             }
-            .onChange(of: text) { problem = nil }
+            .onChange(of: text) { old, new in
+                defer { issues = findIssues() }
+                guard new != placed else { return }
+                problem = nil; notice = nil
+                // Typed over with a link or with something else entirely: the earlier paste no longer applies.
+                if original != nil, sorting == nil, RecipeImporter.link(in: new) != nil || abs(new.count - old.count) > max(80, old.count / 2) { forget() }
+            }
+            .onChange(of: sorting == nil) { issues = findIssues() }
             .sheet(isPresented: $comparing) { OriginalSheet(text: original ?? "") }
         }
         .tint(Color.ink)
-        .onAppear { if recipe == nil, text.isEmpty { focused = true } }
+        .onAppear {
+            issues = findIssues()
+            if recipe == nil, text.isEmpty { focused = true }
+        }
     }
 
     /// One line under the text that says what Runes makes of it, and the one thing to do next.
@@ -768,7 +791,8 @@ struct RecipeEditor: View {
 
     private func paste() {
         guard let pasted = UIPasteboard.general.string, !pasted.isEmpty else { problem = "The clipboard is empty. Copy a recipe or its link first."; return }
-        text = pasted; original = nil; notice = nil; fromPage = false
+        forget(); notice = nil; problem = nil
+        place(pasted)
         if let link = RecipeImporter.link(in: pasted) { fetch(link) }
         else if unsorted, model == .ready { sort(pasted, page: false) }
     }
@@ -781,7 +805,7 @@ struct RecipeEditor: View {
                 switch try await store.fetch(url) {
                 case .recipe(let fetched):
                     source = fetched.source
-                    text = fetched.text
+                    place(fetched.text)
                 case .page(let page):
                     // No recipe data on the page: its words, sorted by the model when
                     // there is one, by the rules when there isn't.
@@ -789,7 +813,7 @@ struct RecipeEditor: View {
                     if model == .ready { sort(page, page: true) }
                     else {
                         let rough = RecipeParser.parse(page)
-                        text = rough.isUsable ? rough.text : RecipeImporter.window(page)
+                        place(rough.isUsable ? rough.text : RecipeImporter.window(page))
                         notice = rough.isUsable ? "This page publishes no recipe data, so this is a rough sort. Check it." : nil
                         if !rough.isUsable { problem = "Runes couldn’t find the recipe on that page. Its text is here to tidy." }
                     }
@@ -807,14 +831,14 @@ struct RecipeEditor: View {
         focused = false; notice = nil; fromPage = page
         sorting = Task {
             do {
-                let sorted = try await RecipeModel.sort(pasted) { draft in text = draft.text }
+                let sorted = try await RecipeModel.sort(pasted) { draft in place(draft.text) }
                 guard sorted.isUsable else { throw CookError.noRecipe }
-                text = sorted.text
-                original = pasted
+                original = pasted; checked = RecipeImporter.window(pasted)
+                place(sorted.text)
             } catch {
                 let rough = RecipeParser.parse(pasted)
-                text = page && rough.isUsable ? rough.text : page ? RecipeImporter.window(pasted) : pasted
-                original = nil
+                forget()
+                place(page && rough.isUsable ? rough.text : page ? RecipeImporter.window(pasted) : pasted)
                 if !Task.isCancelled { notice = "The model on this phone couldn’t sort this one. Put Ingredients and Steps on lines of their own." }
             }
             sorting = nil

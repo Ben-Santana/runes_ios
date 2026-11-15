@@ -39,6 +39,14 @@ struct Hob: View {
         return result
     }
 
+    /// With more timers than burners, the ones that stay: this step's and the selected
+    /// one first, since the rings are the only way to touch them. The last burner counts the rest.
+    private func fitting(_ pots: [Pot]) -> [Pot] {
+        let needed = pots.filter { $0.step == session.step || selected($0) }.map(\.id)
+        let keep = Set((needed + pots.map(\.id).filter { !needed.contains($0) }).prefix(Self.burners - 1))
+        return pots.filter { keep.contains($0.id) }
+    }
+
     private func selected(_ pot: Pot) -> Bool {
         if let timer = pot.timer { return session.selectedTimer?.id == timer.id }
         return session.pickedTimer == nil && pot.slot == session.slot
@@ -47,7 +55,7 @@ struct Hob: View {
     var body: some View {
         TimelineView(.periodic(from: .now, by: 0.5)) { context in
             let pots = pots
-            let shown = pots.count > Self.burners ? Array(pots.prefix(Self.burners - 1)) : pots
+            let shown = pots.count > Self.burners ? fitting(pots) : pots
             VStack(spacing: 0) {
                 Rule(inset: 0)
                 HStack(alignment: .top, spacing: 0) {

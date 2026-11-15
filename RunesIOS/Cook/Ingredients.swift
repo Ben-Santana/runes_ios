@@ -21,7 +21,7 @@ struct StepUse: Hashable, Sendable {
 }
 
 enum Ingredients {
-    private static let number = #"(?:\d+\s+\d/\d|\d/\d+|\d+(?:[.,]\d+)?(?:\s*[½¼¾⅓⅔⅛])?|[½¼¾⅓⅔⅛])"#
+    private static let number = #"(?:\d+\s+\d/\d|\d/\d+|\d{1,3}(?:,\d{3})+|\d+(?:[.,]\d+)?(?:\s*[½¼¾⅓⅔⅛])?|[½¼¾⅓⅔⅛])"#
     /// Units with a size. An amount in one of these scales wherever it is written.
     private static let measures = #"tablespoons?|tbsps?|tbs|teaspoons?|tsps?|cups?|grams?|g|kilograms?|kilos?|kg|milligrams?|mg|millilit(?:re|er)s?|ml|lit(?:re|er)s?|l|fl\.? ?oz|ounces?|oz|pounds?|lbs?|pints?|quarts?"#
     /// Words that count things; part of the amount on an ingredient line.
@@ -29,7 +29,7 @@ enum Ingredients {
     private static let range = #"\s*(?:-|–|—|to)\s*"#
 
     private static let leading = try! NSRegularExpression(
-        pattern: "^(?:about\\s+|approx\\.?\\s+|~\\s*)?(\(number))(?!\\s*%)(?:\(range)(\(number)))?(?:\\s*(\(measures)|\(counts))\\b\\.?)?(?:\\s+of\\b)?\\s*",
+        pattern: "^(?:about\\s+|approx\\.?\\s+|~\\s*)?(\(number))(?![\\d.,]*\\s*%)(?:\(range)(\(number)))?(?:\\s*(\(measures)|\(counts))\\b\\.?)?(?:\\s+of\\b)?\\s*",
         options: [.caseInsensitive])
     private static let measured = try! NSRegularExpression(
         pattern: "(?<![\\w/.,])(\(number))(?:\(range)(\(number)))?\\s*(\(measures))\\b", options: [.caseInsensitive])
@@ -74,8 +74,12 @@ enum Ingredients {
 
     /// "1½", "¾", "250", "2.5": a number the way a recipe writes it.
     static func format(_ value: Double, metric: Bool) -> String {
+        // Past any amount a kitchen holds, the number is only written out, never counted.
+        guard value.isFinite, value < 1e9 else { return String(format: "%.0f", value) }
         func decimal(_ value: Double) -> String {
-            let rounded = (value * 10).rounded() / 10
+            // Too little to round to a tenth still isn't nothing.
+            let places = value > 0 && value < 0.05 ? 100.0 : 10.0
+            let rounded = (value * places).rounded() / places
             return rounded == rounded.rounded() ? String(Int(rounded)) : String(rounded)
         }
         if metric { return value >= 10 ? String(Int(value.rounded())) : decimal(value) }
@@ -191,7 +195,11 @@ enum Ingredients {
         tokens(short).filter { !$0.isNumber && $0.word.count > 2 && !descriptors.contains($0.word) }.map(\.word)
     }
 
+    /// What a number before an ingredient measures when it isn't an amount of it.
+    private static let otherUnits: Set<String> = ["minute", "min", "hour", "hr", "second", "sec", "inch", "cm", "mm", "degree", "f", "c"]
+
     private static func mentions(in step: String, of ingredients: [String]) -> [Mention] {
+        let ns = step as NSString
         let names = ingredients.map { line -> [String] in
             let parts = split(line)
             return parts.amount == nil || line.hasSuffix(":") ? [] : words(parts.short)
@@ -214,8 +222,12 @@ enum Ingredients {
                 for back in stride(from: position - 1, through: max(0, position - 4), by: -1) {
                     let earlier = found[back]
                     if earlier.isNumber {
-                        let after = found[back + 1]
-                        if !["minute", "min", "hour", "second", "sec"].contains(after.word) { stated = earlier.range }
+                        // An amount stands in the same sentence, isn't a time, a size or a
+                        // temperature, and isn't the number of a setting or a step.
+                        let after = found[back + 1], before = back > 0 ? found[back - 1].word : ""
+                        let between = ns.substring(with: NSRange(location: NSMaxRange(earlier.range), length: token.range.location - NSMaxRange(earlier.range)))
+                        if !otherUnits.contains(after.word), !["mark", "step"].contains(before),
+                           between.rangeOfCharacter(from: CharacterSet(charactersIn: ".;:!?°")) == nil { stated = earlier.range }
                         break
                     }
                     if boundaries.contains(earlier.word) { break }
@@ -308,8 +320,13 @@ extension Recipe {
         var copy = self
         copy.ingredients = ingredients.map { Ingredients.scale($0, by: factor) }
         copy.steps = steps.map { Ingredients.scale(step: $0, by: factor, ingredients: ingredients) }
-        if let yield, let servings, let found = yield.range(of: #"\d{1,3}"#, options: .regularExpression) {
-            copy.yield = yield.replacingCharacters(in: found, with: Ingredients.format(Double(servings) * factor, metric: false))
+        // "Serves 4" and both ends of "Serves 4-6".
+        if let yield, servings != nil, let found = yield.range(of: #"\d{1,3}(\s*(-|–|to)\s*\d{1,3})?"#, options: .regularExpression) {
+            var numbers = String(yield[found])
+            for match in numbers.ranges(of: #/\d{1,3}/#).reversed() {
+                numbers.replaceSubrange(match, with: Ingredients.format((Double(numbers[match]) ?? 0) * factor, metric: false))
+            }
+            copy.yield = yield.replacingCharacters(in: found, with: numbers)
         }
         return copy
     }

@@ -98,6 +98,9 @@ struct CookTests {
         precondition(Recipe.salmonPasta.steps.allSatisfy { !$0.contains("kcal") && !$0.contains("Reheat") }, "Storage and nutrition are not steps")
 
         // Tips, storage and nutrition have their own place; they are never steps or ingredients.
+        var kept = Recipe(title: "Rice", ingredients: [], steps: ["Boil for 10 minutes."], notes: ["Tip: rinse it first.", "Two lines\nof one note."])
+        kept = RecipeParser.parse(kept.text)
+        precondition(kept.notes == ["Tip: rinse it first.", "Two lines of one note."] && RecipeParser.parse(kept.text).notes == kept.notes, "\(String(describing: kept.notes))")
         let noted = RecipeParser.parse("""
         Dal
         Ingredients
@@ -194,6 +197,19 @@ struct CookTests {
         precondition(big.steps[3].contains("4 garlic cloves, 4 tbsp lemon juice"), big.steps[3])
         precondition(big.ingredients[0] == "2 lb salmon" && big.ingredients[9] == "10 cloves garlic" && big.yield == "Serves 8")
         precondition(big.notes == Recipe.salmonPasta.notes && (0..<6).map { big.durations(step: $0).map(\.seconds) } == (0..<6).map { Recipe.salmonPasta.durations(step: $0).map(\.seconds) })
+
+        // Only an amount is scaled: not a temperature, a size, a time or a setting that happens to stand before an ingredient.
+        func scaledStep(_ text: String) -> String { Ingredients.scale(step: text, by: 2, ingredients: ["1 kg potatoes", "2 onions", "4 chicken thighs"]) }
+        for fixed in ["Preheat the oven to 400°F. Toss potatoes in oil.", "In a 12-inch skillet, sauté onions until soft.", "Roast at gas mark 6 potatoes first.",
+                      "Give the 1 hr chicken thighs a turn.", "Step 2: potatoes go in."] {
+            precondition(scaledStep(fixed) == fixed, scaledStep(fixed))
+        }
+        precondition(scaledStep("Add the 2 onions and 500 g potatoes.") == "Add the 4 onions and 1000 g potatoes.", scaledStep("Add the 2 onions and 500 g potatoes."))
+        // Numbers a recipe can throw at it.
+        precondition(line("70% dark chocolate")[0] == nil && scaled("70% dark chocolate", 2) == "70% dark chocolate")
+        precondition(scaled("1,000 g flour", 2) == "2000 g flour" && scaled("¼ tsp salt", 0.125) != "0 tsp salt", scaled("¼ tsp salt", 0.125))
+        precondition(scaled("99999999999999999999 g sugar", 2).hasSuffix("g sugar"), "A number too large to count doesn't stop the app")
+        precondition(Recipe(title: "x", ingredients: ["1 egg"], steps: ["Fry."], yield: "Serves 4-6").scaled(to: 8).yield == "Serves 8-12")
 
         // MARK: Details in a step
         func heat(_ text: String) -> [String] { StepDetails.heat(in: text).map { (text as NSString).substring(with: $0) } }
@@ -363,7 +379,12 @@ struct CookTests {
         precondition(hob.apply(.timerDown, at: t0) == nil, "One timer left: nothing to move between")
         // On a step with no time, a selected timer takes the minute; without one the step gets its own.
         hob.go(to: 0)
-        precondition(hob.slots == 0 && hob.apply(.timerDown, at: t0) == nil && hob.selectedTimer == nil, "One timer, and it isn't selected")
+        precondition(hob.slots == 0 && hob.selection == nil && hob.selectedTimer == nil, "A step with no time has nothing selected")
+        precondition(hob.apply(.timerDown, at: t0) == .selected(0) && hob.selectedTimer?.id == garlicHob.id, "so the first swipe reaches the one timer there is")
+        guard case .paused? = hob.apply(.timer, at: t0.addingTimeInterval(15)), case .resumed? = hob.apply(.timer, at: t0.addingTimeInterval(15)) else { preconditionFailure("It takes the commands") }
+        hob.go(to: 0)
+        precondition(hob.apply(.timerUp, at: t0) == .selected(0) && hob.selectedTimer?.id == garlicHob.id, "Either way round")
+        hob.go(to: 0)
         guard case .started(let rest)? = hob.apply(.addMinute, at: t0.addingTimeInterval(20)) else { preconditionFailure("A minute of its own") }
         precondition(rest.step == 0 && hob.timer(step: 1, slot: 0)?.total == 120)
         precondition(hob.apply(.timerDown, at: t0) == .selected(1) && hob.selectedTimer?.id == garlicHob.id)
