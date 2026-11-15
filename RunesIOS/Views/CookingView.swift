@@ -27,6 +27,8 @@ struct CookActions {
     var select: (_ slot: Int) -> Void = { _ in }
     var stopRinging: () -> Void = {}
     var addNote: (String) -> Void = { _ in }
+    /// Clears the answer to a question.
+    var dismissAnswer: () -> Void = {}
     var go: (_ step: Int, _ slot: Int?) -> Void = { _, _ in }
     var stop: () -> Void = {}
     var done: () -> Void = {}
@@ -34,19 +36,27 @@ struct CookActions {
 
 struct CookingScreen: View {
     @ObservedObject var store: CookStore
+    @ObservedObject private var assistant: CookAssistant
     @State private var showIngredients = false
     @State private var appeared = false
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
 
+    init(store: CookStore) {
+        self.store = store
+        assistant = store.assistant
+    }
+
     var body: some View {
         Group {
             if let session = store.session {
-                CookingView(session: session, controls: store.controls, look: store.cookingLook, dial: store.dial, dialing: store.dialing, actions: CookActions(
+                CookingView(session: session, controls: store.controls, look: store.cookingLook, dial: store.dial, dialing: store.dialing,
+                            asking: assistant.phase, actions: CookActions(
                     perform: store.perform, toggle: { store.toggleTimer(slot: $0) }, reset: store.resetTimer, addMinute: store.addMinute,
                     toggleTimer: { store.toggleTimer($0) }, cancelTimer: store.cancelTimer,
                     select: store.select, stopRinging: store.stopRinging,
                     addNote: { store.addNote($0, to: session.recipe.id) },
+                    dismissAnswer: assistant.dismiss,
                     go: { store.go(to: $0, slot: $1) },
                     stop: { store.end(); dismiss() },
                     done: { store.end(); dismiss() }))
@@ -57,6 +67,12 @@ struct CookingScreen: View {
         .page()
         .navigationTitle(store.session?.recipe.title ?? "Cook").navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            if store.session != nil {
+                ToolbarItem(placement: .primaryAction) {
+                    Button { store.ask() } label: { LucideIcon(.mic, size: 20).frame(width: 36, height: 36) }
+                        .accessibilityLabel(assistant.isListening ? "Done asking" : "Ask a question")
+                }
+            }
             if let session = store.session, !session.recipe.ingredients.isEmpty {
                 ToolbarItem(placement: .primaryAction) {
                     Button { showIngredients = true } label: { LucideIcon(.listChecks, size: 20).frame(width: 36, height: 36) }
@@ -84,6 +100,8 @@ struct CookingView: View {
     /// Whether the wrist dial is on, and the time it shows while the pinch is held.
     var dial = false
     var dialing: Int? = nil
+    /// A question being asked or answered, which takes the page's place meanwhile.
+    var asking = CookAssistant.Phase.idle
     var actions = CookActions()
     @State private var drag: CGFloat = 0
     @State private var confirmStop = false
@@ -113,6 +131,7 @@ struct CookingView: View {
             ZStack {
                 if session.finished { finished.transition(.opacity.combined(with: .scale(scale: 0.96))) }
                 else { pages.transition(.opacity) }
+                if asking != .idle { AskCard(phase: asking, dismiss: actions.dismissAnswer).transition(.opacity) }
                 if let dialing {
                     let target = session.selectedTimer.flatMap { $0.isLive ? $0 : nil }
                     let named = session.pickedTimer == nil && session.durations.indices.contains(session.slot) ? session.durations[session.slot].label : nil
@@ -122,6 +141,7 @@ struct CookingView: View {
             }
             .frame(maxHeight: .infinity)
             .animation(.standard, value: dialing != nil)
+            .animation(.standard, value: asking)
             if !session.finished { NextPeek(session: session) }
             if look == .hob { Hob(session: session, actions: actions) } else { TimerShelf(session: session, actions: actions) }
             legend(ringing: ringing, now: now).padding(.top, 16).padding(.bottom, 10).padding(.horizontal, 12)
@@ -227,7 +247,7 @@ struct CookingView: View {
             let triggers = commands.compactMap(controls.trigger)
             if !triggers.isEmpty { result.append(Hint(id: commands[0].rawValue, triggers: triggers, word: word)) }
         }
-        guard !session.finished else { add([.previous], "Back"); return result }
+        guard !session.finished else { add([.previous], "Back"); add([.ask], "Ask"); return result }
         add([.next], session.isLast ? "Finish" : "Next")
         let selected = session.selectedTimer
         if ringing { add([.timer], "Stop") }
@@ -236,6 +256,7 @@ struct CookingView: View {
         if ringing || !session.live(at: now).isEmpty || session.durations.isEmpty { add([.addMinute], "+1") }
         if selected != nil { add([.reset], "Reset") }
         if session.slots + session.others.count > (session.selection == nil ? 0 : 1) { add([.timerUp, .timerDown], "Timer") }
+        add([.ask], asking == .listening ? "Listening" : "Ask")
         // Pinch and hold, then turn the wrist: shown only while no command has that hold.
         if dial, !controls.reserved.contains(.holdIndex) { result.append(Hint(id: "dial", triggers: [.gesture(.holdIndex)], word: "Dial")) }
         return result
@@ -741,7 +762,9 @@ extension PreviewFixtures {
         if name == "cooking-picked" { session.apply(.timerDown, at: now); session.apply(.timerDown, at: now) }
         if name == "cooking-salmon-done" { session.go(to: session.count - 1); session.apply(.next, at: now) }
         return CookStore(preview: Recipe.samples, session: session, cookingLook: name == "cooking-salmon-numbers" ? .numbers : .hob,
-                         dialing: name == "cooking-dial" ? 450 : nil)
+                         dialing: name == "cooking-dial" ? 450 : nil,
+                         asking: name == "cooking-ask" ? .listening : name == "cooking-answer"
+                            ? .answered(question: "How much garlic goes in now?", answer: "Three cloves, minced, with the peas and the spinach. The other two go in the sauce at the next step.") : .idle)
     }
 
     /// Recipes with nothing cooking, some cooked before.

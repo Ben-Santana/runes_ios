@@ -84,6 +84,55 @@ struct Hob: View {
     }
 }
 
+// MARK: A question
+
+/// A question and its answer, in the page's place while they last: what was heard, a
+/// hairline, and the answer in type large enough to read from the stove. A tap clears it.
+struct AskCard: View {
+    let phase: CookAssistant.Phase
+    let dismiss: () -> Void
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                switch phase {
+                case .idle:
+                    EmptyView()
+                case .listening:
+                    Text("Listening").font(.caption).foregroundStyle(Color.muted)
+                    Text("Ask about this recipe.").font(.geist(32, relativeTo: .title)).tracking(-0.5)
+                    Hairline()
+                    Text("How much, how hot, how long, what can stand in for what. Let go when you’re done.")
+                        .font(.bodyText).foregroundStyle(Color.muted)
+                case .thinking(let question):
+                    Text(question.isEmpty ? "Heard you." : question).font(.heading).foregroundStyle(Color.muted)
+                    Hairline()
+                    Text("Thinking").font(.caption).foregroundStyle(Color.muted)
+                case .answered(let question, let answer):
+                    Text(question).font(.label).foregroundStyle(Color.muted)
+                    Hairline()
+                    Text(answer).font(.geist(answer.count < 140 ? 28 : 22, relativeTo: .title)).tracking(-0.4).lineSpacing(3)
+                    Text("Answered on this phone from the recipe. It can be wrong: trust the recipe and your thermometer.")
+                        .font(.caption).foregroundStyle(Color.muted)
+                case .failed(let message):
+                    Text(message).font(.heading)
+                }
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, Metric.gutter).padding(.top, 28).padding(.bottom, 16)
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.paper)
+        .contentShape(Rectangle())
+        .onTapGesture(perform: dismiss)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityHint("Clears it.")
+    }
+}
+
 // MARK: The wrist dial
 
 /// The timer's dial, shown while the index finger is pinched and held: a ring of ticks

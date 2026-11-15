@@ -44,6 +44,7 @@ final class CookStore: ObservableObject {
         // Kept as text, so a look that is later removed doesn't stop the recipes loading.
         var buzz: String?
         var dial: Bool?
+        var spoken: Bool?
         var listLook: String?
         var cookingLook: String?
     }
@@ -57,6 +58,10 @@ final class CookStore: ObservableObject {
     /// The wrist dial: pinch the index finger and hold, turn the wrist to set the selected
     /// timer, let go. It keeps the band's motion sensors on while a recipe is being cooked.
     @Published private(set) var dial: Bool
+    /// Hears a question about the recipe and answers it.
+    let assistant: CookAssistant
+    /// Whether its answers are said aloud as well as shown.
+    @Published private(set) var spoken: Bool
     /// The time the dial shows while the pinch is held.
     @Published private(set) var dialing: Int?
     /// Told to start and stop reading the wrist's turn.
@@ -139,6 +144,8 @@ final class CookStore: ObservableObject {
         sounds = saved.sounds ?? true
         buzz = saved.buzz.flatMap(CookBuzz.init) ?? .timers
         dial = saved.dial ?? true
+        spoken = saved.spoken ?? true
+        assistant = CookAssistant()
         listLook = saved.listLook.flatMap(CookListLook.init) ?? .contents
         cookingLook = saved.cookingLook.flatMap(CookingLook.init) ?? .hob
         session = saved.session
@@ -150,6 +157,8 @@ final class CookStore: ObservableObject {
             self.perform(command)
         }
         decider.configure(controls.mappings)
+        assistant.speaks = spoken
+        assistant.recipe = { [weak self] in self?.session }
         NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.woke() }
         }
@@ -159,8 +168,10 @@ final class CookStore: ObservableObject {
 
     #if DEBUG
     /// Fixed state for screenshots and previews; never saved.
-    init(preview recipes: [Recipe], session: CookSession? = nil, listLook: CookListLook = .contents, cookingLook: CookingLook = .hob, dialing: Int? = nil) {
+    init(preview recipes: [Recipe], session: CookSession? = nil, listLook: CookListLook = .contents, cookingLook: CookingLook = .hob, dialing: Int? = nil,
+         asking: CookAssistant.Phase = .idle) {
         self.recipes = recipes; controls = .standard; sounds = true; buzz = .timers; dial = true; self.dialing = dialing
+        spoken = true; assistant = CookAssistant(preview: asking)
         self.listLook = listLook; self.cookingLook = cookingLook; self.session = session; previewOnly = true
     }
     #endif
@@ -197,6 +208,7 @@ final class CookStore: ObservableObject {
     }
     func setSounds(_ on: Bool) { sounds = on; persist() }
     func setBuzz(_ value: CookBuzz) { buzz = value; persist() }
+    func setSpoken(_ on: Bool) { spoken = on; assistant.speaks = on; persist() }
     func setDial(_ on: Bool) {
         dial = on; persist(); motionChanged()
         if !previewOnly { onReserve?(reservedNow) }
@@ -249,6 +261,7 @@ final class CookStore: ObservableObject {
         }
         ringTask?.cancel(); ringTask = nil
         if dialing != nil { dialing = nil; onDial?(false) }
+        assistant.dismiss()
         warned = []
         persist(); arm(); syncNotifications(); liveChanged()
         guard !previewOnly else { return }
@@ -258,10 +271,22 @@ final class CookStore: ObservableObject {
 
     func perform(_ command: CookCommand) {
         guard var current = session else { return }
+        if command == .ask { ask(); return }
+        // Anything else means the cook has moved on from the answer.
+        if assistant.isBusy { assistant.dismiss() }
         let target = current.selectedTimer
         let event = current.apply(command)
         session = current
         react(to: event, about: target)
+    }
+
+    /// Starts listening for a question, or ends one being asked.
+    func ask() {
+        guard session != nil, !previewOnly else { return }
+        if assistant.isListening { assistant.finish() } else {
+            assistant.listen()
+            if buzz != .off { onBuzz?(.tap) }
+        }
     }
 
     /// Takes a band gesture that is one of cooking's while a recipe is being cooked.
@@ -271,6 +296,9 @@ final class CookStore: ObservableObject {
         if dialUsable, kind == .holdIndex { beginDial(); return true }
         if dialUsable, kind == .releaseIndex { endDial(); return true }
         decider.receive(kind)
+        // Asked with a hold, the question lasts as long as the hold does.
+        if assistant.isListening, let held = controls.trigger(for: .ask)?.steps.last?.gesture,
+           (held == .holdIndex && kind == .releaseIndex) || (held == .holdMiddle && kind == .releaseMiddle) { assistant.finish() }
         return true
     }
 
@@ -533,7 +561,7 @@ final class CookStore: ObservableObject {
 
     private func persist() {
         guard !previewOnly else { return }
-        let saved = Saved(recipes: recipes, controls: controls, sounds: sounds, session: session, buzz: buzz.rawValue, dial: dial,
+        let saved = Saved(recipes: recipes, controls: controls, sounds: sounds, session: session, buzz: buzz.rawValue, dial: dial, spoken: spoken,
                           listLook: listLook.rawValue, cookingLook: cookingLook.rawValue)
         if let data = try? JSONEncoder().encode(saved) { UserDefaults.standard.set(data, forKey: Self.key) }
     }

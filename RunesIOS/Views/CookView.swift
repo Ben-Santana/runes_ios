@@ -921,6 +921,7 @@ struct CookSettingsScreen: View {
     @State private var choosing: CookCommand?
 
     private enum Sound: String, CaseIterable { case on = "On", off = "Off" }
+    private enum Voice: String, CaseIterable { case spoken = "Spoken", silent = "Silent" }
 
     var body: some View {
         NavigationStack {
@@ -953,6 +954,14 @@ struct CookSettingsScreen: View {
                         Heading("On the wrist")
                     } footer: {
                         Note("The band buzzes three times when a timer ends, until you stop it. Everything adds a light tap for each gesture it takes.")
+                    }
+                    Block {
+                        HairlineSegments(selection: Binding(get: { store.spoken ? Voice.spoken : .silent }, set: { store.setSpoken($0 == .spoken) }),
+                                         options: Voice.allCases, title: \.rawValue)
+                    } header: {
+                        Heading("Questions")
+                    } footer: {
+                        Note("Hold the Ask gesture, or tap the microphone, and ask about the recipe out loud. The answer is worked out on this phone and shown in the step’s place; Spoken also says it. It needs Apple Intelligence and Runes in front.")
                     }
                     Block {
                         HairlineSegments(selection: Binding(get: { store.dial ? Sound.on : .off }, set: { store.setDial($0 == .on) }),
