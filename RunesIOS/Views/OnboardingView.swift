@@ -97,6 +97,10 @@ struct OnboardingView: View {
         .animation(.standard, value: step)
         .animation(.standard, value: context)
         .page()
+        .onChange(of: step) { old, new in
+            OnboardingCues.shared.step(new.rawValue, of: OnboardingStep.allCases.count, forward: new.rawValue > old.rawValue)
+        }
+        .onChange(of: context.issue) { _, issue in if issue != nil { OnboardingCues.shared.trouble() } }
         .sheet(isPresented: $showingGuide) { BandGuideSheet() }
     }
 
@@ -354,6 +358,7 @@ private struct GuideDrawer: View {
             try? await Task.sleep(for: .seconds(0.3))
             withAnimation(Self.rise) { tucked = false }
             try? await Task.sleep(for: .seconds(0.2))
+            OnboardingCues.shared.card()
             for bead in 0..<3 {
                 withAnimation(Self.hop) { hopping = bead }
                 try? await Task.sleep(for: .seconds(0.1))
