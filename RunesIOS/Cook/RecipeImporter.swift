@@ -32,12 +32,13 @@ enum RecipeImporter {
     /// A page as the text a reader sees: no scripts, menus or footers, one line per
     /// paragraph, heading and list item. The page's title comes first.
     static func text(fromHTML html: String) -> String {
+        // The page's own heading names the dish; failing that its title, which is
+        // "Lemon chicken | Some Site": the dish, then where it is from.
         var title = ""
-        if let found = html.range(of: #"<title[^>]*>([\s\S]*?)</title>"#, options: [.regularExpression, .caseInsensitive]) {
+        for pattern in [#"<h1\b[^>]*>[\s\S]*?</h1>"#, #"<title[^>]*>[\s\S]*?</title>"#] where title.isEmpty {
+            guard let found = html.range(of: pattern, options: [.regularExpression, .caseInsensitive]) else { continue }
             title = RecipeParser.clean(String(html[found]))
-            // "Lemon chicken | Some Site" is the dish, then where it is from.
-            title = title.components(separatedBy: " | ").first ?? title
-            title = title.components(separatedBy: " – ").first ?? title
+            for separator in [" | ", " – ", " - "] { title = title.components(separatedBy: separator).first ?? title }
         }
         var body = html
         if let start = body.range(of: #"<body[^>]*>"#, options: [.regularExpression, .caseInsensitive]) { body = String(body[start.upperBound...]) }
@@ -59,11 +60,11 @@ enum RecipeImporter {
         var lines: [String] = []
         for raw in body.components(separatedBy: "\n") {
             let line = replace(#"[ \t\u{00A0}]+"#, " ", in: raw).trimmingCharacters(in: .whitespaces)
-            if line == "-" || (line.isEmpty && (lines.last ?? "").isEmpty) { continue }
+            if line == "-" || line.isEmpty || line == lines.last { continue }
             lines.append(line)
         }
         let text = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-        return title.isEmpty || text.hasPrefix(title) ? text : title + "\n\n" + text
+        return title.isEmpty || text.hasPrefix(title) ? text : title + "\n" + text
     }
 
     // MARK: Fitting the model

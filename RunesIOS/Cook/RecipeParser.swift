@@ -426,9 +426,10 @@ enum RecipeParser {
             let number = calories.replacingOccurrences(of: #"\s*(k?cal(ories)?)\b.*$"#, with: "", options: [.regularExpression, .caseInsensitive])
             parts.append("\(number) kcal")
         }
+        // Sites write "38 g", "38", "38 grams" and "38 grams protein"; all are grams of it.
         for (key, name) in [("proteinContent", "protein"), ("carbohydrateContent", "carbs"), ("fatContent", "fat")] {
-            guard let text = amount(key) else { continue }
-            parts.append(text.rangeOfCharacter(from: .letters) == nil ? "\(text) g \(name)" : "\(text) \(name)")
+            guard let text = amount(key), let number = text.range(of: #"\d+(?:[.,]\d+)?"#, options: .regularExpression) else { continue }
+            parts.append("\(text[number]) \(text.lowercased().contains("mg") ? "mg" : "g") \(name)")
         }
         return parts.isEmpty ? nil : parts.joined(separator: " · ") + " per serving"
     }

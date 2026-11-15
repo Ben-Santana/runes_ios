@@ -215,7 +215,7 @@ struct CookTests {
         {"@context":"https://schema.org","@graph":[{"@type":"Person","name":"A Cook"},
           {"@type":["Recipe","NewsArticle"],"name":"Lemon &amp; herb chicken","recipeYield":["4","4 servings"],
            "recipeIngredient":["1 chicken","2 lemons, <b>zested</b>"],
-           "nutrition":{"@type":"NutritionInformation","calories":"410 calories","proteinContent":"38 g","fatContent":"22 g","servingSize":"1 portion"},
+           "nutrition":{"@type":"NutritionInformation","calories":"410 calories","proteinContent":"38 grams protein","fatContent":"22","servingSize":"1 portion"},
            "recipeInstructions":[
              {"@type":"HowToSection","name":"Roast","itemListElement":[
                {"@type":"HowToStep","text":"Heat the oven to 200&deg;C."},
