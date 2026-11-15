@@ -261,6 +261,12 @@ enum RecipeParser {
         matches(numbering, line) || line.count > 60 || (line.hasSuffix(".") && line.split(separator: " ").count > 3)
     }
 
+    /// Whether the text says where its ingredients and its method begin.
+    static func hasHeadings(_ text: String) -> Bool {
+        let lines = text.components(separatedBy: .newlines).map(bare)
+        return lines.contains { matches(ingredientsHeader, $0) } && lines.contains { matches(stepsHeader, $0) }
+    }
+
     /// Sorts pasted text into a recipe. It never fails: text with nothing recognisable
     /// becomes a recipe with no steps, which the editor reports.
     static func parse(_ text: String) -> Recipe {
@@ -453,7 +459,13 @@ enum RecipeParser {
 
     /// Plain text from a schema string: no tags, entities decoded, whitespace collapsed.
     static func clean(_ text: String) -> String {
-        var result = text.replacingOccurrences(of: #"<[^>]+>"#, with: " ", options: .regularExpression)
+        decode(text.replacingOccurrences(of: #"<[^>]+>"#, with: " ", options: .regularExpression))
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression).trimmingCharacters(in: .whitespaces)
+    }
+
+    /// HTML entities as the characters they stand for.
+    static func decode(_ text: String) -> String {
+        var result = text
         for (entity, character) in entities { result = result.replacingOccurrences(of: entity, with: character) }
         if let numeric = try? NSRegularExpression(pattern: #"&#(x?)([0-9a-fA-F]+);"#) {
             let ns = result as NSString
@@ -464,7 +476,7 @@ enum RecipeParser {
                 }
             }
         }
-        return result.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression).trimmingCharacters(in: .whitespaces)
+        return result
     }
 }
 

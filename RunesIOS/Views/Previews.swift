@@ -120,6 +120,14 @@ struct SnapshotGallery: View {
             NavigationStack { CookingScreen(store: PreviewFixtures.cookSalmon(name)) }
         } else if name == "cooking-numbers" || name == "cooking-numbers-ringing" {
             NavigationStack { CookingScreen(store: PreviewFixtures.cook(step: name == "cooking-numbers" ? 2 : 1, ringing: name != "cooking-numbers", cookingLook: .numbers)) }
+        } else if name == "recipe-sorted" {
+            // A sorted recipe whose amounts and times no longer match what was pasted.
+            let pasted = "Salmon for two. You need 2 salmon fillets, 30 g butter and 3 cloves of garlic. Cook the salmon skin side down over a medium-high heat for 4 minutes until crisp, turn it, add the butter and garlic and give it 2 minutes more."
+            let sorted = Recipe(title: "Salmon for two", ingredients: ["4 salmon fillets", "30 g butter", "3 cloves garlic", "1 lemon"],
+                                steps: ["Cook the salmon skin side down over a medium-high heat for 6 minutes until crisp.", "Turn it, add the butter and garlic and give it 2 minutes more."])
+            RecipeEditor(store: PreviewFixtures.cook(), recipe: nil, text: sorted.text, original: pasted) { _ in }
+        } else if name == "recipe-prose" {
+            RecipeEditor(store: PreviewFixtures.cook(), recipe: nil, text: "Salmon for two. You need 2 salmon fillets, 30 g butter and 3 cloves of garlic. Cook the salmon skin side down over a medium-high heat for 4 minutes until crisp.") { _ in }
         } else if name == "recipe-editor" || name == "recipe-new" {
             RecipeEditor(store: PreviewFixtures.cook(), recipe: name == "recipe-editor" ? .starter : nil) { _ in }
         } else if ["cooking", "cooking-first", "cooking-ringing", "cooking-done"].contains(name) {

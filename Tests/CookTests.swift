@@ -160,6 +160,7 @@ struct CookTests {
         precondition(line("Parmesan, to serve") == [nil, "Parmesan, to serve", "Parmesan"])
         precondition(line("2% milk") == [nil, "2% milk", "2% milk"] && line("16 oz 2% cottage cheese")[0] == "16 oz")
         precondition(line("1 cup of flour") == ["1 cup", "flour", "flour"] && line("2-3 tbsp oil")[0] == "2-3 tbsp" && line("1 1/2 cups sugar")[0] == "1 1/2 cups")
+        precondition(line("1/2 cup sugar") == ["1/2 cup", "sugar", "sugar"] && Ingredients.scale("1/2 cup sugar", by: 2) == "1 cup sugar")
         precondition(line("400g tin tomatoes")[0] == "400g" && line("2 garlic cloves") == ["2", "garlic cloves", "garlic cloves"])
         func scaled(_ text: String, _ factor: Double) -> String { Ingredients.scale(text, by: factor) }
         precondition(scaled("400 g spaghetti", 2) == "800 g spaghetti" && scaled("800 g tinned whole tomatoes", 1.5) == "1200 g tinned whole tomatoes")

@@ -43,6 +43,8 @@ struct CookActivityTimer: Codable, Hashable, Identifiable {
     var ringing = false
     /// Seconds left while paused; the time then stands still.
     var remaining: Int? = nil
+    /// What it is for: "Simmer".
+    var label: String? = nil
 }
 
 /// A title and a line for a Live Activity alert, which lights the Lock Screen with a sound.

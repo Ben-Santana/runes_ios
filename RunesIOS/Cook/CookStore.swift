@@ -186,8 +186,12 @@ final class CookStore: ObservableObject {
     func setListLook(_ look: CookListLook) { listLook = look; persist() }
     func setCookingLook(_ look: CookingLook) { cookingLook = look; persist() }
 
-    /// Fetches a page and reads the recipe it publishes.
-    func fetch(_ url: URL) async throws -> Recipe {
+    /// What a link gave: the recipe its page publishes for search engines, or, when it
+    /// publishes none, the page as the text a reader sees.
+    enum Fetched { case recipe(Recipe), page(String) }
+
+    /// Fetches a page and reads its recipe, or its text.
+    func fetch(_ url: URL) async throws -> Fetched {
         var request = URLRequest(url: url, timeoutInterval: 20)
         // Recipe sites turn away clients that don't look like a browser.
         request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
@@ -198,9 +202,12 @@ final class CookStore: ObservableObject {
         let data: Data
         do { (data, _) = try await URLSession(configuration: configuration).data(for: request) }
         catch { throw CookError.unreachable }
-        guard data.count < 8_000_000, let html = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1),
-              let recipe = RecipeParser.recipe(fromHTML: html, source: url.absoluteString) else { throw CookError.noRecipe }
-        return recipe
+        guard data.count < 8_000_000, let html = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) else { throw CookError.noRecipe }
+        if let recipe = RecipeParser.recipe(fromHTML: html, source: url.absoluteString) { return .recipe(recipe) }
+        let text = RecipeImporter.text(fromHTML: html)
+        // A page that turned the request away, or one drawn entirely by scripts.
+        guard text.count > 300 else { throw CookError.noRecipe }
+        return .page(text)
     }
 
     // MARK: Cooking
@@ -378,6 +385,7 @@ final class CookStore: ObservableObject {
         objectWillChange.send()
         arm(); show()
         ring()
+        liveChanged()
     }
 
     /// Coming back to the app: timers may have ended while it was suspended.
@@ -443,7 +451,7 @@ final class CookStore: ObservableObject {
 
     func activityState(_ session: CookSession, now: Date = Date()) -> CookActivityState {
         let timers = session.live(at: now).prefix(5).map {
-            CookActivityTimer(id: $0.id, end: $0.end, total: $0.total, ringing: $0.isRinging(at: now), remaining: $0.paused)
+            CookActivityTimer(id: $0.id, end: $0.end, total: $0.total, ringing: $0.isRinging(at: now), remaining: $0.paused, label: $0.label)
         }
         return CookActivityState(position: session.position, step: session.step, count: session.count,
                                  timers: Array(timers), finished: session.finished)

@@ -21,7 +21,7 @@ struct StepUse: Hashable, Sendable {
 }
 
 enum Ingredients {
-    private static let number = #"(?:\d+(?:[.,]\d+)?(?:\s*[½¼¾⅓⅔⅛]|\s+\d/\d)?|\d/\d|[½¼¾⅓⅔⅛])"#
+    private static let number = #"(?:\d+\s+\d/\d|\d/\d+|\d+(?:[.,]\d+)?(?:\s*[½¼¾⅓⅔⅛])?|[½¼¾⅓⅔⅛])"#
     /// Units with a size. An amount in one of these scales wherever it is written.
     private static let measures = #"tablespoons?|tbsps?|tbs|teaspoons?|tsps?|cups?|grams?|g|kilograms?|kilos?|kg|milligrams?|mg|millilit(?:re|er)s?|ml|lit(?:re|er)s?|l|fl\.? ?oz|ounces?|oz|pounds?|lbs?|pints?|quarts?"#
     /// Words that count things; part of the amount on an ingredient line.
@@ -224,6 +224,26 @@ enum Ingredients {
             }
         }
         return result
+    }
+
+    /// The word that names an ingredient, as a stem: "tomato" for "800 g tinned whole tomatoes".
+    static func head(of line: String) -> String? { words(split(line).short).last }
+    /// Whether a text has a word, whatever its number: "tomato" is in "Crush the tomatoes".
+    static func mentions(_ stemmed: String, in text: String) -> Bool { tokens(text).contains { !$0.isNumber && $0.word == stemmed } }
+
+    /// Whether a text gives this amount for this thing: the number stands a few words
+    /// before the word, or just after it. "a" and "two" count as numbers.
+    static func states(_ value: Double, of stemmed: String, in text: String) -> Bool {
+        let found = tokens(text)
+        let counted: Set<String> = ["a", "an", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "twelve"]
+        func number(_ token: Token) -> Double? {
+            token.isNumber || counted.contains(token.word) ? DurationFinder.value(token.word) : nil
+        }
+        for (position, token) in found.enumerated() where !token.isNumber && token.word == stemmed {
+            let near = found[max(0, position - 6)..<min(found.count, position + 4)]
+            if near.contains(where: { number($0).map { abs($0 - value) < 0.01 } ?? false }) { return true }
+        }
+        return false
     }
 
     /// The ingredients a step uses without saying how much, in the order it names them.

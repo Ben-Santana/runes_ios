@@ -21,7 +21,7 @@ struct CookScreen: View {
                 case .ledger: ledger
                 }
                 AddRow(title: "Add a recipe") { adding = true }
-                Note("Paste a recipe or a link to one. Runes finds the steps, and the times in them become timers.")
+                Note("Paste any recipe or a link to one. Runes sorts it into ingredients and steps, and the times in them become timers.")
                     .padding(.top, 8)
             }
             .padding(.horizontal, Metric.gutter).padding(.top, 8).padding(.bottom, 40)
@@ -579,8 +579,11 @@ struct DurationChip: View {
 
 // MARK: Editor
 
-/// One page of text. Paste a recipe and it is sorted as you type; paste a link and the
-/// page is fetched and its recipe put here as text, ready to correct.
+/// One page of text. Type or paste a recipe and it is sorted as you type; paste a link
+/// and the page is fetched and its recipe put here as text, ready to correct. Text that
+/// isn't laid out as a recipe (prose, a blog page, a message from a friend) is sorted by
+/// the model on the phone, and the lines where its answer differs from what was pasted
+/// are listed to check. Nothing is saved until Save.
 struct RecipeEditor: View {
     @ObservedObject var store: CookStore
     let recipe: Recipe?
@@ -589,17 +592,39 @@ struct RecipeEditor: View {
     @State private var source: String?
     @State private var fetching = false
     @State private var problem: String?
+    /// What was pasted, once the model has sorted it; the result is checked against this.
+    @State private var original: String?
+    /// The pasted text was a whole page, which always has more words than its recipe.
+    @State private var fromPage = false
+    @State private var sorting: Task<Void, Never>?
+    /// One sentence about how the text got here, when it wasn't the usual way.
+    @State private var notice: String?
+    @State private var comparing = false
     @FocusState private var focused: Bool
     @Environment(\.dismiss) private var dismiss
 
-    init(store: CookStore, recipe: Recipe?, saved: @escaping (Recipe) -> Void) {
+    init(store: CookStore, recipe: Recipe?, text: String? = nil, original: String? = nil, saved: @escaping (Recipe) -> Void) {
         self.store = store; self.recipe = recipe; self.saved = saved
-        _text = State(initialValue: recipe?.text ?? "")
+        _text = State(initialValue: text ?? recipe?.text ?? "")
         _source = State(initialValue: recipe?.source)
+        _original = State(initialValue: original)
     }
 
-    private var link: URL? { RecipeParser.link(in: text) }
+    private var link: URL? { sorting == nil && original == nil ? RecipeImporter.link(in: text) : nil }
     private var parsed: Recipe { RecipeParser.parse(text) }
+    private var model: RecipeModel.Availability { RunesIOSApp.snapshotName == nil ? RecipeModel.availability : .unsupported }
+    /// Text the rules can't lay out, which the model can.
+    private var unsorted: Bool {
+        original == nil && text.trimmingCharacters(in: .whitespacesAndNewlines).count > 40 && !RecipeImporter.isClear(text, parsed: parsed)
+    }
+    private var issues: [RecipeImporter.Issue] {
+        guard let original, sorting == nil else { return [] }
+        var found = RecipeImporter.check(parsed, against: original)
+        if !fromPage, RecipeImporter.coverage(of: original, in: parsed) < 0.5 {
+            found.append(RecipeImporter.Issue(line: "Much of what you pasted isn’t here.", reason: "Compare the two before saving."))
+        }
+        return found
+    }
 
     var body: some View {
         NavigationStack {
@@ -610,12 +635,13 @@ struct RecipeEditor: View {
                         .scrollContentBackground(.hidden)
                         .focused($focused)
                         .autocorrectionDisabled()
+                        .disabled(sorting != nil)
                         .padding(.horizontal, Metric.gutter - 5)
                         .accessibilityLabel("Recipe text")
                     if text.isEmpty {
                         VStack(alignment: .leading, spacing: 10) {
                             Text("Paste a recipe, or a link to one.").font(.heading)
-                            Text("Start with its name. Runes sorts out the ingredients and the steps, and every time a step mentions becomes a timer.")
+                            Text("Any recipe, however it is written. Runes sorts out the ingredients, the steps and the notes, and every time a step mentions becomes a timer.")
                                 .font(.bodyText).foregroundStyle(Color.muted).fixedSize(horizontal: false, vertical: true)
                         }
                         .padding(.horizontal, Metric.gutter).padding(.top, 8)
@@ -624,23 +650,28 @@ struct RecipeEditor: View {
                     }
                 }
                 .animation(.standard, value: text.isEmpty)
+                let issues = issues
+                if !issues.isEmpty { IssueList(issues: issues) { comparing = true } }
                 Rule(inset: 0)
                 footer.padding(.horizontal, Metric.gutter).padding(.vertical, 12)
                     .frame(minHeight: 72)
                     .animation(.standard, value: fetching)
+                    .animation(.standard, value: sorting != nil)
             }
+            .animation(.standard, value: issues)
             .page()
             .navigationTitle(recipe == nil ? "New recipe" : "Edit recipe").navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.font(.label) }
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { sorting?.cancel(); dismiss() }.font(.label) }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save", action: save).font(.label).disabled(link != nil || !parsed.isUsable)
+                    Button("Save", action: save).font(.label).disabled(link != nil || sorting != nil || !parsed.isUsable)
                 }
             }
             .onChange(of: text) { problem = nil }
+            .sheet(isPresented: $comparing) { OriginalSheet(text: original ?? "") }
         }
         .tint(Color.ink)
-        .onAppear { if recipe == nil { focused = true } }
+        .onAppear { if recipe == nil, text.isEmpty { focused = true } }
     }
 
     /// One line under the text that says what Runes makes of it, and the one thing to do next.
@@ -651,14 +682,12 @@ struct RecipeEditor: View {
                 Text(problem).font(.bodyText).fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
             }
             .accessibilityElement(children: .combine)
+        } else if sorting != nil {
+            status(.listChecks, "Sorting it on this phone", "Nothing leaves it. The lines appear as they are read.") {
+                action("Stop") { sorting?.cancel() }
+            }
         } else if let link {
-            HStack(spacing: 12) {
-                LucideIcon(.link, size: 18).foregroundStyle(Color.muted)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(link.host() ?? "Link").font(.label).lineLimit(1)
-                    Text(fetching ? "Reading the page…" : "A link. Runes can read the recipe from it.").font(.caption).foregroundStyle(Color.muted)
-                }
-                Spacer(minLength: 8)
+            status(.link, link.host() ?? "Link", fetching ? "Reading the page…" : "A link. Runes can read the recipe from it.") {
                 Button { fetch(link) } label: {
                     Group { if fetching { ProgressView().tint(Color.paper) } else { Text("Get recipe") } }
                         .font(.label).foregroundStyle(Color.paper)
@@ -671,49 +700,114 @@ struct RecipeEditor: View {
             HStack {
                 Text("Nothing here yet.").font(.caption).foregroundStyle(Color.muted)
                 Spacer()
-                Button { paste() } label: {
-                    HStack(spacing: 8) { LucideIcon(.clipboardPaste, size: 16); Text("Paste") }
-                        .font(.label)
-                        .padding(.horizontal, 14).frame(minHeight: 36)
-                        .overlay(RoundedRectangle(cornerRadius: Metric.control).strokeBorder(Color.rule, lineWidth: Metric.hairline))
+                action("Paste", icon: .clipboardPaste) { paste() }
+            }
+        } else if unsorted, model == .ready {
+            status(.info, "Not laid out as a recipe yet", "Runes can sort it into ingredients, steps and notes, on this phone.") {
+                Button { sort(text, page: false) } label: {
+                    Text("Sort it").font(.label).foregroundStyle(Color.paper)
+                        .padding(.horizontal, 14).frame(minWidth: 84, minHeight: 36)
+                        .background(Color.ink, in: RoundedRectangle(cornerRadius: Metric.control))
                 }
                 .buttonStyle(PressRow())
             }
         } else {
             let recipe = parsed
-            HStack(alignment: .center, spacing: 12) {
-                LucideIcon(recipe.isUsable ? .check : .info, size: 18).foregroundStyle(recipe.isUsable ? Color.ink : Color.muted)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(recipe.isUsable ? recipe.title : "No steps found yet").font(.label).lineLimit(1)
-                    Text(recipe.isUsable ? recipe.summary : "Put each step on its own line under a line that says Steps.")
-                        .font(.caption).foregroundStyle(Color.muted).fixedSize(horizontal: false, vertical: true)
-                        .contentTransition(.numericText())
-                }
-                Spacer(minLength: 0)
+            let detail = notice ?? (recipe.isUsable ? recipe.summary : unsorted ? unsortedHint : "Put each step on its own line under a line that says Steps.")
+            status(recipe.isUsable ? .check : .info, recipe.isUsable ? recipe.title : "No steps found yet", detail) {
+                if original != nil { action("Compare") { comparing = true } }
             }
             .animation(.standard, value: recipe.summary)
-            .accessibilityElement(children: .combine)
         }
+    }
+
+    /// Why text that needs sorting isn't being offered it.
+    private var unsortedHint: String {
+        switch model {
+        case .off: "Turn on Apple Intelligence in Settings and Runes can sort text like this. Or put Ingredients and Steps on lines of their own."
+        case .downloading: "The model that sorts recipes is still downloading. Until then, put Ingredients and Steps on lines of their own."
+        default: "Put each step on its own line under a line that says Steps."
+        }
+    }
+
+    private func status<Trailing: View>(_ icon: Lucide, _ title: String, _ detail: String, @ViewBuilder trailing: () -> Trailing) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            LucideIcon(icon, size: 18).foregroundStyle(icon == .check ? Color.ink : Color.muted)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.label).lineLimit(1)
+                Text(detail).font(.caption).foregroundStyle(Color.muted).fixedSize(horizontal: false, vertical: true)
+            }
+            .accessibilityElement(children: .combine)
+            Spacer(minLength: 8)
+            trailing()
+        }
+    }
+
+    private func action(_ title: String, icon: Lucide? = nil, _ run: @escaping () -> Void) -> some View {
+        Button(action: run) {
+            HStack(spacing: 8) {
+                if let icon { LucideIcon(icon, size: 16) }
+                Text(title)
+            }
+            .font(.label)
+            .padding(.horizontal, 14).frame(minHeight: 36)
+            .overlay(RoundedRectangle(cornerRadius: Metric.control).strokeBorder(Color.rule, lineWidth: Metric.hairline))
+        }
+        .buttonStyle(PressRow())
     }
 
     private func paste() {
         guard let pasted = UIPasteboard.general.string, !pasted.isEmpty else { problem = "The clipboard is empty. Copy a recipe or its link first."; return }
-        text = pasted
-        if let link = RecipeParser.link(in: pasted) { fetch(link) }
+        text = pasted; original = nil; notice = nil; fromPage = false
+        if let link = RecipeImporter.link(in: pasted) { fetch(link) }
+        else if unsorted, model == .ready { sort(pasted, page: false) }
     }
 
     private func fetch(_ url: URL) {
         guard !fetching else { return }
-        fetching = true; problem = nil; focused = false
+        fetching = true; problem = nil; notice = nil; focused = false
         Task {
             do {
-                let fetched = try await store.fetch(url)
-                source = fetched.source
-                text = fetched.text
+                switch try await store.fetch(url) {
+                case .recipe(let fetched):
+                    source = fetched.source
+                    text = fetched.text
+                case .page(let page):
+                    // No recipe data on the page: its words, sorted by the model when
+                    // there is one, by the rules when there isn't.
+                    source = url.absoluteString
+                    if model == .ready { sort(page, page: true) }
+                    else {
+                        let rough = RecipeParser.parse(page)
+                        text = rough.isUsable ? rough.text : RecipeImporter.window(page)
+                        notice = rough.isUsable ? "This page publishes no recipe data, so this is a rough sort. Check it." : nil
+                        if !rough.isUsable { problem = "Runes couldn’t find the recipe on that page. Its text is here to tidy." }
+                    }
+                }
             } catch {
                 problem = error.localizedDescription
             }
             fetching = false
+        }
+    }
+
+    /// Hands the text to the on-device model and shows its answer as it is written. If
+    /// the model can't do it, the rules' best attempt stands, and says so.
+    private func sort(_ pasted: String, page: Bool) {
+        focused = false; notice = nil; fromPage = page
+        sorting = Task {
+            do {
+                let sorted = try await RecipeModel.sort(pasted) { draft in text = draft.text }
+                guard sorted.isUsable else { throw CookError.noRecipe }
+                text = sorted.text
+                original = pasted
+            } catch {
+                let rough = RecipeParser.parse(pasted)
+                text = page && rough.isUsable ? rough.text : page ? RecipeImporter.window(pasted) : pasted
+                original = nil
+                if !Task.isCancelled { notice = "The model on this phone couldn’t sort this one. Put Ingredients and Steps on lines of their own." }
+            }
+            sorting = nil
         }
     }
 
@@ -724,6 +818,57 @@ struct RecipeEditor: View {
         store.save(result)
         dismiss()
         saved(result)
+    }
+}
+
+/// The lines of a sorted recipe that don't match what was pasted, with the reason: the
+/// model can drop, merge or change things, and these are the ones rules can catch.
+private struct IssueList: View {
+    let issues: [RecipeImporter.Issue]
+    let compare: () -> Void
+    private static let shown = 3
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Rule(inset: 0)
+            HStack(alignment: .firstTextBaseline) {
+                Text(issues.count == 1 ? "Check this" : "Check these \(issues.count)").font(.label)
+                Spacer()
+                Button("What you pasted", action: compare).font(.caption).foregroundStyle(Color.muted).buttonStyle(PressRow())
+            }
+            .padding(.top, 12).padding(.bottom, 6)
+            ForEach(issues.prefix(Self.shown), id: \.self) { issue in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(issue.line).font(.bodyText).lineLimit(1)
+                    Text(issue.reason).font(.caption).foregroundStyle(Color.muted).lineLimit(2)
+                }
+                .padding(.vertical, 6)
+                .accessibilityElement(children: .combine)
+            }
+            if issues.count > Self.shown {
+                Text("and \(issues.count - Self.shown) more").font(.caption).foregroundStyle(Color.muted).padding(.vertical, 4)
+            }
+        }
+        .padding(.horizontal, Metric.gutter).padding(.bottom, 8)
+        .background(Color.soft)
+    }
+}
+
+/// What was pasted, to compare the sorted recipe with.
+private struct OriginalSheet: View {
+    let text: String
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                Text(text).font(.bodyText).lineSpacing(4).textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(Metric.gutter)
+            }
+            .page()
+            .navigationTitle("What you pasted").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() }.font(.label) } }
+        }
+        .tint(Color.ink)
     }
 }
 

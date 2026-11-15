@@ -154,9 +154,22 @@ private struct WorkoutLockScreen: View {
 private struct CookLockScreen: View {
     let cook: CookActivityState
 
+    /// What the timers are for, in the order they are drawn; one that is up says so.
+    private var names: String? {
+        let now = Date()
+        if let up = cook.timers.first(where: { $0.remaining == nil && ($0.ringing || $0.end <= now) }), let label = up.label {
+            return "\(label) · time’s up"
+        }
+        let labels = cook.timers.compactMap(\.label)
+        return labels.isEmpty ? nil : labels.joined(separator: " · ")
+    }
+
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
-            Text(cook.position).font(.headline)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(cook.position).font(.headline)
+                if let names { Text(names).font(.subheadline).foregroundStyle(.secondary).lineLimit(1) }
+            }
             Spacer(minLength: 12)
             CookTimers(timers: cook.timers, number: 32, circle: 30)
         }
