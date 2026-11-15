@@ -3,7 +3,7 @@ import UIKit
 /// What setting up sounds and feels like, kept to the moments that matter. The welcome
 /// ring's beads each ring their own note when a finger knocks them. The band connecting
 /// lifts from G up to D, and the first index tap answers it: a chord home on G, a success
-/// tap on the phone and a light one on the band. The wrist step has its own (`WristCues`).
+/// tap on the phone and a buzz on the band. The wrist step has its own (`WristCues`).
 @MainActor
 final class OnboardingCues {
     static let shared = OnboardingCues()
@@ -52,6 +52,12 @@ final class OnboardingCues {
     func passed() {
         notice.notificationOccurred(.success)
         ScoreAudio.shared.cue(.resolve, volume: 0.5)
-        ScoreAudio.shared.cue(.bandTap, volume: 1)
+        ScoreAudio.shared.cue(.bandBuzz, volume: 1)
+    }
+
+    /// The wrist step's pulses on the band, for the walkthrough: the real ones only
+    /// answer a real change of wrist.
+    func band(_ phase: WristFeedbackPhase) {
+        ScoreAudio.shared.cue(phase == .wrap ? .bandTap : .bandBuzz, volume: 1)
     }
 }

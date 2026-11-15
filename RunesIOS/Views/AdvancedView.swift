@@ -60,7 +60,7 @@ struct AdvancedView: View {
                     Rule()
                     BandSetupAgainAction(band: values.selectedBand, enabled: values.canSetUpBandAgain, action: actions.setUpBandAgain)
                 }
-                PanelGroup("Onboarding", caption: "Plays setup from the start with a pretend band. Your band stays connected and nothing is changed.") {
+                PanelGroup("Onboarding", caption: "Plays setup from the start with a pretend band. Your band stays connected and keeps its settings; it buzzes along if it is on.") {
                     ActionRow("Walk through setup") { walkingThrough = true }
                 }
                 PanelGroup("Raw packets", caption: "\(values.eventCount) received this session. Newest first, up to 200.") {
