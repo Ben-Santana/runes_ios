@@ -4,7 +4,8 @@ import UIKit
 /// scale with a tap, so setup climbs as it goes, and the last step lands on a chord. The
 /// welcome ring's beads ring the same notes when a finger knocks them. The band connecting
 /// lifts from G up to D, and the first index tap answers it: a chord home on G, a success
-/// tap on the phone and a buzz on the band. Waiting is silent. A connected band taps along.
+/// tap on the phone and a buzz on the band. Waiting is silent. Where a cue vibrates the
+/// band, the phone plays the same pulse (`BandEcho`), so it is felt with or without a band.
 /// The wrist step has its own cues (`WristCues`).
 @MainActor
 final class OnboardingCues {
@@ -42,11 +43,9 @@ final class OnboardingCues {
         guard forward else { return light.impactOccurred(intensity: 0.5) }
         guard Date().timeIntervalSince(lastMoment) > 0.3 else { return }
         if index == count - 1 {
-            notice.notificationOccurred(.success)
             ScoreAudio.shared.cue(.warm, pitch: 783.99, volume: 0.45)
             ScoreAudio.shared.cue(.bandDouble, volume: 1)
         } else {
-            light.impactOccurred(intensity: 0.7)
             ScoreAudio.shared.cue(.kalimba, pitch: Self.notes[index % Self.notes.count], volume: 0.2)
             ScoreAudio.shared.cue(.bandTap, volume: 1)
         }
@@ -68,7 +67,6 @@ final class OnboardingCues {
     /// The band connected and is waiting for a tap.
     func connected() {
         lastMoment = Date()
-        soft.impactOccurred()
         ScoreAudio.shared.cue(.lift, volume: 0.4)
         ScoreAudio.shared.cue(.bandTap, volume: 1)
     }
@@ -79,14 +77,13 @@ final class OnboardingCues {
     /// The index tap arrived.
     func passed() {
         lastMoment = Date()
-        notice.notificationOccurred(.success)
         ScoreAudio.shared.cue(.resolve, volume: 0.5)
         ScoreAudio.shared.cue(.bandBuzz, volume: 1)
     }
 
     /// The wrist step's pulses on the band, for the walkthrough: the real ones only
-    /// answer a real change of wrist.
+    /// answer a real change of wrist. The phone's side of them is `WristCues`.
     func band(_ phase: WristFeedbackPhase) {
-        ScoreAudio.shared.cue(phase == .wrap ? .bandTap : .bandBuzz, volume: 1)
+        BandEcho.shared.quietly { ScoreAudio.shared.cue(phase == .wrap ? .bandTap : .bandBuzz, volume: 1) }
     }
 }

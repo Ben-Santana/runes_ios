@@ -111,9 +111,17 @@ final class SessionController: ObservableObject {
         }
         WorkoutStore.shared.onActivity = { [weak self] state, alert in self?.live.show(workout: state, alert: alert) }
         WorkoutStore.shared.onReserve = { [weak self] in self?.reserve($0, for: .workouts) }
+<<<<<<< HEAD
         ScoreAudio.shared.onBandBuzz = { [core] buzz in core.transport.perform { core.buzzBand(buzz) } }
         core.onPulse = { result, latency in Task { @MainActor in VibrationLab.shared.answered(result, latency: latency) } }
         core.onPulseSent = { pulse in Task { @MainActor in BandBuzzFeed.shared.sent(pulse) } }
+=======
+        // Every vibration the app asks of the band goes out here, and the phone plays it too.
+        ScoreAudio.shared.onBandBuzz = { [core] buzz in
+            BandEcho.shared.play(buzz.pulses)
+            core.transport.perform { core.buzzBand(buzz) }
+        }
+>>>>>>> feature/band-guide
         WorkoutStore.shared.onSound = { voice, volume in ScoreAudio.shared.cue(voice, volume: volume) }
         WorkoutStore.shared.onSoundsLive = { ScoreAudio.shared.setLive($0, for: "workout") }
         ScoreStore.shared.onReserve = { [weak self] in self?.reserve($0, for: .score) }
