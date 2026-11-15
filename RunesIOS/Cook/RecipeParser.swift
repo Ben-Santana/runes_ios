@@ -12,6 +12,10 @@ struct Recipe: Codable, Identifiable, Hashable, Sendable {
     var steps: [String]
     /// "Serves 4", as the recipe says it.
     var yield: String? = nil
+    /// Tips, storage, reheating and substitutions: worth keeping, but not things to do in order.
+    var notes: [String]? = nil
+    /// "620 kcal · 55 g protein per serving", as the recipe says it.
+    var nutrition: String? = nil
     /// The link it came from, if any.
     var source: String? = nil
     var added = Date()
@@ -51,6 +55,10 @@ struct Recipe: Codable, Identifiable, Hashable, Sendable {
         }
         lines.append("Steps")
         lines += steps.enumerated().map { "\($0.offset + 1). \($0.element)" }
+        if let notes, !notes.isEmpty {
+            lines += ["", "Notes"] + notes.map { "- \($0)" }
+        }
+        if let nutrition, !nutrition.isEmpty { lines += ["", "Nutrition", nutrition] }
         return lines.joined(separator: "\n")
     }
 
@@ -214,7 +222,7 @@ enum DurationFinder {
 // MARK: Text
 
 enum RecipeParser {
-    private enum Section { case intro, ingredients, steps, other }
+    private enum Section { case intro, ingredients, steps, notes, nutrition, other }
 
     private static func matches(_ pattern: String, _ text: String) -> Bool {
         text.range(of: pattern, options: [.regularExpression, .caseInsensitive]) != nil
@@ -222,7 +230,12 @@ enum RecipeParser {
 
     private static let ingredientsHeader = #"^(ingredients?|what you(['’]ll| will)? need|you(['’]ll| will) need|shopping list)$"#
     private static let stepsHeader = #"^(method|directions?|instructions?|steps?|preparation|procedure|how to make( it| this)?|to make)$"#
-    private static let otherHeader = #"^(notes?|tips?|cook['’]?s notes?|nutrition( facts| information| info)?|equipment|variations?|storage|substitutions?|serving suggestions?|to serve|faqs?|description|about)$"#
+    private static let notesHeader = #"^((recipe |cook['’]?s )?notes?|tips?( and tricks)?|variations?|storage( and reheating)?|to store|reheating|make ahead|substitutions?|serving suggestions?)$"#
+    private static let nutritionHeader = #"^nutrition(al)?( facts| information| info)?( \(?per serving\)?)?$"#
+    private static let otherHeader = #"^(equipment|to serve|faqs?|description|about)$"#
+    /// "Tip: …" and "Nutrition: …" on one line.
+    private static let noteLine = #"^(notes?|tips?)\s*:\s*(?=\S)"#
+    private static let nutritionLine = #"^nutrition(al)?( facts| information| info)?( per serving)?\s*:\s*(?=\S)"#
     private static let groupHeader = #"^for (the )?.{1,40}$"#
     private static let meta = #"^(prep|cook|cooking|total|active|inactive|resting|rest|chill|chilling|ready in|time)( time)?\s*[:\-–]"#
     private static let yieldLine = #"^(serves|servings?|yields?|makes)\b"#
@@ -256,13 +269,22 @@ enum RecipeParser {
         var yield: String?
         var ingredients: [String] = []
         var stepLines: [String] = []
+        var notes: [String] = []
+        var nutrition: [String] = []
         var section = Section.intro
 
         for raw in lines where !raw.isEmpty {
             let header = bare(raw)
             if matches(ingredientsHeader, header) { section = .ingredients; continue }
             if matches(stepsHeader, header) { section = .steps; continue }
+            if matches(notesHeader, header) { section = .notes; continue }
+            if matches(nutritionHeader, header) { section = .nutrition; continue }
             if matches(otherHeader, header) { section = .other; continue }
+            let item = strip(bullet, raw)
+            if matches(nutritionLine, item) { nutrition.append(strip(nutritionLine, item)); continue }
+            if matches(noteLine, item) { notes.append(strip(noteLine, item)); continue }
+            if section == .notes { if !item.isEmpty { notes.append(item) }; continue }
+            if section == .nutrition { if !item.isEmpty { nutrition.append(item) }; continue }
             if matches(meta, header) { continue }
             if matches(yieldLine, header), header.count <= 40 { if yield == nil { yield = header }; continue }
 
@@ -285,7 +307,7 @@ enum RecipeParser {
             case .steps:
                 if matches(groupHeader, header), raw.count <= 44, !raw.hasSuffix(".") { continue }
                 stepLines.append(raw)
-            case .other:
+            case .notes, .nutrition, .other:
                 continue
             }
         }
@@ -306,7 +328,8 @@ enum RecipeParser {
         if steps.count == 1, steps[0].count > 200 { steps = sentences(steps[0]) }
 
         let name = String((title ?? "").prefix(Recipe.titleLimit)).trimmingCharacters(in: .whitespaces)
-        return Recipe(title: name.isEmpty ? Recipe.fallbackTitle : name, ingredients: ingredients, steps: steps, yield: yield)
+        return Recipe(title: name.isEmpty ? Recipe.fallbackTitle : name, ingredients: ingredients, steps: steps, yield: yield,
+                      notes: notes.isEmpty ? nil : notes, nutrition: nutrition.isEmpty ? nil : nutrition.joined(separator: " · "))
     }
 
     /// Splits a paragraph at sentence ends, keeping "1.5" and "approx." whole enough.
@@ -378,7 +401,27 @@ enum RecipeParser {
             yield = "Serves \(number)"
         }
         let name = String(title.prefix(Recipe.titleLimit))
-        return Recipe(title: name.isEmpty ? Recipe.fallbackTitle : name, ingredients: ingredients, steps: steps, yield: yield, source: source)
+        return Recipe(title: name.isEmpty ? Recipe.fallbackTitle : name, ingredients: ingredients, steps: steps, yield: yield,
+                      nutrition: nutrition(object["nutrition"]), source: source)
+    }
+
+    /// schema.org NutritionInformation as one line; it is per serving by definition.
+    private static func nutrition(_ value: Any?) -> String? {
+        guard let object = value as? [String: Any] else { return nil }
+        func amount(_ key: String) -> String? {
+            let text = (object[key] as? String).map(clean) ?? (object[key] as? NSNumber)?.stringValue ?? ""
+            return text.isEmpty ? nil : text
+        }
+        var parts: [String] = []
+        if let calories = amount("calories") {
+            let number = calories.replacingOccurrences(of: #"\s*(k?cal(ories)?)\b.*$"#, with: "", options: [.regularExpression, .caseInsensitive])
+            parts.append("\(number) kcal")
+        }
+        for (key, name) in [("proteinContent", "protein"), ("carbohydrateContent", "carbs"), ("fatContent", "fat")] {
+            guard let text = amount(key) else { continue }
+            parts.append(text.rangeOfCharacter(from: .letters) == nil ? "\(text) g \(name)" : "\(text) \(name)")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ") + " per serving"
     }
 
     private static func strings(_ value: Any) -> [String] {
@@ -445,13 +488,17 @@ extension Recipe {
                       "1 large lemon, zest and 2 tbsp juice", "5 cloves garlic", "½ cup low-sodium vegetable broth",
                       "1 tsp olive oil, plus cooking spray", "1 tsp smoked paprika", "1 tsp garlic powder", "1 tsp Italian seasoning",
                       "Salt, black pepper and chilli flakes"],
-        steps: ["Mix 1 tsp smoked paprika, 1 tsp garlic powder, ½ tsp salt, ½ tsp black pepper and the lemon zest with a little cooking spray, and rub it over the salmon. Air fry at 390°F for 8–12 minutes, depending on thickness, until the centre reaches 145°F.",
+        steps: ["Mix 1 tsp smoked paprika, 1 tsp garlic powder, ½ tsp salt, ½ tsp black pepper and the lemon zest with a little cooking spray, and rub it over the salmon. Air fry skin side down at 390°F for 8–12 minutes, depending on thickness, until the centre reaches 145°F.",
                 "Boil the penne in salted water, adding the broccoli for the last 3 minutes. Drain, keeping at least 1 cup of the pasta water. Leave the pasta slightly firm so it holds up when reheated.",
                 "Heat 1 tsp olive oil in a wide skillet over a medium-high heat. Cook the mushrooms for 6–8 minutes, until their water has gone and they are deeply browned. Add 3 minced garlic cloves, the peas and the spinach and cook for another 2–3 minutes. Season with the Italian seasoning and chilli flakes.",
                 "Blend the cottage cheese with the Parmesan, 2 garlic cloves, 2 tbsp lemon juice, the broth and black pepper until completely smooth. Loosen with a splash of pasta water if needed.",
                 "Turn the heat off and let the skillet cool slightly; the sauce turns grainy if it boils. Stir in the pasta, broccoli and sauce, adding pasta water a little at a time until silky and coated. Fold in the salmon in large flakes, then taste and adjust the salt, pepper and lemon.",
-                "Divide into four containers, about 620 kcal and 55 g protein each. Refrigerate and eat within 3–4 days, or freeze. Reheat with 1–2 tbsp water, loosely covered, in short bursts."],
-        yield: "Serves 4", added: Date(timeIntervalSince1970: 1_794_700_000))
+                "Divide into four containers."],
+        yield: "Serves 4",
+        notes: ["Refrigerate and eat within 3–4 days, or freeze.",
+                "Reheat with 1–2 tbsp water, loosely covered, in short bursts.",
+                "The sauce turns grainy if it boils, so add it off the heat."],
+        nutrition: "620 kcal · 55 g protein per serving", added: Date(timeIntervalSince1970: 1_794_700_000))
 
     /// The premade recipes, newest first.
     static let samples = [salmonPasta, starter]

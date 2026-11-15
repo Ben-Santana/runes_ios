@@ -82,15 +82,47 @@ struct CookTests {
         precondition(soup.steps == ["Soften the onion in oil for 5 minutes.", "Add the tomatoes and simmer for 20 minutes.", "Blend until smooth."], "\(soup.steps)")
         precondition(soup.timerCount == 2 && soup.summary == "4 ingredients · 3 steps · 2 timers")
         precondition(soup.isUsable)
+        precondition(soup.notes == ["Freezes well for 3 months."] && soup.nutrition == nil, "\(String(describing: soup.notes))")
 
         // The text a recipe shows in the editor reads back as the same recipe.
         let again = RecipeParser.parse(soup.text)
         precondition(again.title == soup.title && again.ingredients == soup.ingredients && again.steps == soup.steps && again.yield == soup.yield)
+        precondition(again.notes == soup.notes)
         let starter = RecipeParser.parse(Recipe.starter.text)
         precondition(starter.steps == Recipe.starter.steps && starter.ingredients == Recipe.starter.ingredients && starter.title == Recipe.starter.title)
         precondition(Recipe.starter.timerCount == 4)
         let salmon = RecipeParser.parse(Recipe.salmonPasta.text)
         precondition(salmon.steps == Recipe.salmonPasta.steps && salmon.ingredients == Recipe.salmonPasta.ingredients && salmon.title == Recipe.salmonPasta.title)
+        precondition(salmon.notes == Recipe.salmonPasta.notes && salmon.nutrition == Recipe.salmonPasta.nutrition, "Notes and nutrition read back")
+        precondition(Recipe.salmonPasta.notes?.count == 3 && Recipe.salmonPasta.nutrition == "620 kcal · 55 g protein per serving")
+        precondition(Recipe.salmonPasta.steps.allSatisfy { !$0.contains("kcal") && !$0.contains("Reheat") }, "Storage and nutrition are not steps")
+
+        // Tips, storage and nutrition have their own place; they are never steps or ingredients.
+        let noted = RecipeParser.parse("""
+        Dal
+        Ingredients
+        200 g red lentils
+        1 tsp turmeric
+        Method
+        1. Simmer the lentils with the turmeric for 20 minutes.
+        Tip: A squeeze of lemon lifts it.
+        2. Season and serve.
+        Storage
+        - Keeps 4 days in the fridge.
+        Makes a good freezer meal.
+        Nutrition per serving
+        Calories: 310 kcal
+        Protein: 18 g
+        """)
+        precondition(noted.steps.count == 2 && noted.ingredients.count == 2 && noted.yield == nil, "\(noted)")
+        precondition(noted.notes == ["A squeeze of lemon lifts it.", "Keeps 4 days in the fridge.", "Makes a good freezer meal."], "\(String(describing: noted.notes))")
+        precondition(noted.nutrition == "Calories: 310 kcal · Protein: 18 g", "\(String(describing: noted.nutrition))")
+        let notedAgain = RecipeParser.parse(noted.text)
+        precondition(notedAgain.notes == noted.notes && notedAgain.nutrition == noted.nutrition && notedAgain.steps == noted.steps)
+        precondition(RecipeParser.parse("Tea\nSteps\n1. Steep for 3 minutes.\nNutrition: 2 kcal").nutrition == "2 kcal")
+        // A recipe saved before notes existed still loads.
+        let old = try! JSONDecoder().decode(Recipe.self, from: Data(#"{"id":"x","title":"Old","ingredients":[],"steps":["Eat."],"added":0,"cooked":0}"#.utf8))
+        precondition(old.notes == nil && old.nutrition == nil && old.steps == ["Eat."])
         precondition((0..<6).map { Recipe.salmonPasta.durations(step: $0).map(\.phrase) } == [["8–12 minutes"], ["3 minutes"], ["6–8 minutes", "2–3 minutes"], [], [], []])
 
         // No headings at all: short lines that start like amounts are ingredients, sentences are steps.
@@ -126,6 +158,7 @@ struct CookTests {
         {"@context":"https://schema.org","@graph":[{"@type":"Person","name":"A Cook"},
           {"@type":["Recipe","NewsArticle"],"name":"Lemon &amp; herb chicken","recipeYield":["4","4 servings"],
            "recipeIngredient":["1 chicken","2 lemons, <b>zested</b>"],
+           "nutrition":{"@type":"NutritionInformation","calories":"410 calories","proteinContent":"38 g","fatContent":"22 g","servingSize":"1 portion"},
            "recipeInstructions":[
              {"@type":"HowToSection","name":"Roast","itemListElement":[
                {"@type":"HowToStep","text":"Heat the oven to 200&deg;C."},
@@ -138,6 +171,7 @@ struct CookTests {
         precondition(chicken.ingredients == ["1 chicken", "2 lemons, zested"], "\(chicken.ingredients)")
         precondition(chicken.steps == ["Heat the oven to 200°C.", "Roast for 1 hour 15 minutes.", "Rest for 10 minutes before carving."], "\(chicken.steps)")
         precondition(chicken.sourceHost == "example.com" && chicken.durations(step: 1).map(\.seconds) == [4500])
+        precondition(chicken.nutrition == "410 kcal · 38 g protein · 22 g fat per serving", "\(String(describing: chicken.nutrition))")
         let plain = RecipeParser.recipe(fromHTML: "<script type=\"application/ld+json\">{\"@type\":\"Recipe\",\"name\":\"Tea\",\"recipeInstructions\":\"1. Boil water.\\n2. Steep for 3 minutes.\"}</script>", source: nil)
         precondition(plain?.steps == ["Boil water.", "Steep for 3 minutes."], "\(String(describing: plain?.steps))")
         precondition(RecipeParser.recipe(fromHTML: "<html><body>No data here</body></html>", source: nil) == nil)
