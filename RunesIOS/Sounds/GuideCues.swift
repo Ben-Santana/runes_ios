@@ -1,9 +1,11 @@
 import UIKit
 
 /// What the band guide sounds and feels like. Each plate plays its cues once as it arrives,
-/// in time with its drawing, and then keeps quiet. A connected band joins in: it taps where
-/// the drawn band lands on the wrist, and answers each drawn gesture as the drawn band does.
-/// The phone plays those same pulses (`BandEcho`). The plate about the light is silent.
+/// in time with its drawing, and then keeps quiet. The phone and a connected band have
+/// different parts. Where the drawn band lands on the wrist, only the band taps. A drawn
+/// finger touching the thumb is a click on the phone, and the band answers a moment later,
+/// as the drawn band does when the signal reaches it. Button holds and charging are the
+/// phone's alone. The plate about the light is silent.
 @MainActor
 final class GuideCues {
     static let shared = GuideCues()
@@ -15,6 +17,8 @@ final class GuideCues {
         case press(finger: Int)
         /// A finger stays down on the thumb.
         case hold
+        /// The band hears a press, or the start of a hold.
+        case answer(held: Bool)
         /// A hold of the button, counted from 0, has run its time.
         case held(Int)
         /// A bead of the charging row fills.
@@ -25,6 +29,7 @@ final class GuideCues {
 
     private let soft = UIImpactFeedbackGenerator(style: .soft)
     private let light = UIImpactFeedbackGenerator(style: .light)
+    private let rigid = UIImpactFeedbackGenerator(style: .rigid)
     private let notice = UINotificationFeedbackGenerator()
     private var active = false
 
@@ -34,7 +39,7 @@ final class GuideCues {
     func setActive(_ on: Bool) {
         active = on
         ScoreAudio.shared.setLive(on, for: "guide")
-        if on { [soft, light].forEach { $0.prepare() } }
+        if on { [soft, light, rigid].forEach { $0.prepare() } }
     }
 
     /// Plays `score` in time: each cue falls `at` seconds after `start`. A cue whose moment
@@ -55,11 +60,13 @@ final class GuideCues {
             audio.cue(.pop, pitch: 293.66, volume: 0.3)
             audio.cue(.bandTap, volume: 1)
         case .press(let finger):
+            light.impactOccurred()
             audio.cue(.pip, pitch: finger == 0 ? 587.33 : 493.88, volume: 0.3)
-            audio.cue(.bandTap, volume: 1)
         case .hold:
+            rigid.impactOccurred(intensity: 0.8)
             audio.cue(.soft, pitch: 392, volume: 0.35)
-            audio.cue(.bandLong, volume: 1)
+        case .answer(let held):
+            audio.cue(held ? .bandLong : .bandTap, volume: 1)
         case .held(let index):
             light.impactOccurred(intensity: min(1, 0.5 + 0.15 * Double(index)))
         case .fills(let index):
