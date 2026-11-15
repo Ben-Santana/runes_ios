@@ -222,16 +222,24 @@ final class MappingStore: ObservableObject {
 
     /// Runs linked actions in order. Each waits for the previous one (an API call, a wait).
     /// `mapping` is the gesture or combo that set them off, when one did.
+    /// Once an action fails (Spotify, an API call), later notifications in the chain are skipped
+    /// so a failed motion never announces itself as if it worked.
     func run(_ actions: [MappingAction], from mapping: Mapping? = nil) {
         Task { @MainActor in
-            for action in actions { await perform(action, from: mapping) }
+            var failed = false
+            for action in actions {
+                if failed, case .notify = action { continue }
+                if await !perform(action, from: mapping) { failed = true }
+            }
         }
     }
 
     private var foreground: Bool { UIApplication.shared.applicationState == .active }
 
-    private func perform(_ action: MappingAction, from mapping: Mapping?) async {
-        if action.kind.needsForeground && !foreground { return }
+    /// Returns false when the action failed.
+    @discardableResult
+    private func perform(_ action: MappingAction, from mapping: Mapping?) async -> Bool {
+        if action.kind.needsForeground && !foreground { return true }
         switch action {
         case .openURL(let text):
             if let url = URL(string: text.trimmingCharacters(in: .whitespaces)) { _ = await UIApplication.shared.open(url) }
@@ -240,15 +248,17 @@ final class MappingStore: ObservableObject {
             components.queryItems = [URLQueryItem(name: "name", value: name)]
             if let url = components.url { _ = await UIApplication.shared.open(url) }
         case .apiCall(let method, let text, let headers, let body, let timeoutMs):
-            guard let url = URL(string: text) else { return }
+            guard let url = URL(string: text) else { return false }
             var request = URLRequest(url: url, timeoutInterval: Double(timeoutMs) / 1000)
             request.httpMethod = method.rawValue
             for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
             if method != .GET, !body.isEmpty { request.httpBody = Data(body.utf8) }
             // A locked phone may suspend Runes mid-request; ask for time to finish.
             let task = UIApplication.shared.beginBackgroundTask(withName: "Mapping API call")
-            _ = try? await session.data(for: request)
+            let response = try? await session.data(for: request).1
             if task != .invalid { UIApplication.shared.endBackgroundTask(task) }
+            guard let response else { return false }
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) { return false }
         case .notify(let title, let body):
             let content = UNMutableNotificationContent()
             content.title = title.isEmpty ? "Runes" : title
@@ -270,22 +280,19 @@ final class MappingStore: ObservableObject {
             if library.profiles.contains(where: { $0.id == id }) { selectProfile(id) }
         case .spotify(let command):
             let task = UIApplication.shared.beginBackgroundTask(withName: "Spotify")
-            do { try await SpotifyClient.shared.perform(command) } catch {
-                // Silent failures are confusing when the phone is in a pocket; say why once.
-                let content = UNMutableNotificationContent()
-                content.title = "Spotify"
-                content.body = error.localizedDescription
-                try? await UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "spotify-error", content: content, trigger: nil))
-            }
-            if task != .invalid { UIApplication.shared.endBackgroundTask(task) }
+            defer { if task != .invalid { UIApplication.shared.endBackgroundTask(task) } }
+            do { try await SpotifyClient.shared.perform(command) } catch { return false }
         case .capture:
             // A gesture that ends with a finger held records until that finger lets go.
             CaptureStore.shared.toggle(endingOn: mapping?.endingRelease)
+        case .captureInto(let set):
+            CaptureStore.shared.toggle(endingOn: mapping?.endingRelease, into: set)
         case .moveProfile(let direction):
-            guard let i = library.profiles.firstIndex(where: { $0.id == library.activeID }) else { return }
+            guard let i = library.profiles.firstIndex(where: { $0.id == library.activeID }) else { return true }
             let next = max(0, min(library.profiles.count - 1, i + (direction == .up ? -1 : 1)))
             selectProfile(library.profiles[next].id)
         }
+        return true
     }
 
     /// Notifications need permission once; asked when someone adds a notification action.

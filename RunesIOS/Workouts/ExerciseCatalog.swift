@@ -1,8 +1,10 @@
 import Foundation
 
 // The exercise catalog: every movement the Workouts app knows, the muscles it trains, and
-// whether the band can count its reps. Most can't (the band only sees the forearm's
+// whether the band can count its reps. Many can't (the band only sees the forearm's
 // orientation and gyroscope), so those log the set's target when it stops, or its time.
+// Overhead presses and squats barely turn the forearm, and the band's EMG was not reliable
+// enough to count them on recorded sets (2026-11-15).
 
 enum Equipment: String, Codable, Sendable, Hashable {
     case barbell, dumbbell, cable, machine, bodyweight, kettlebell, other
@@ -15,12 +17,19 @@ enum Measure: String, Codable, Sendable, Hashable { case reps, seconds }
 struct Exercise: Hashable, Identifiable, Sendable {
     /// How the band detects reps.
     enum Signal: Sendable, Equatable, Hashable {
-        /// A rep is the forearm swinging out and back by at least `degrees` end to end, about
+        /// A rep is the forearm swinging out and back by at least `degrees` each way, about
         /// whichever axis it keeps turning on. Measured from where the forearm has been lately,
         /// not where the set started, so any start position works.
         case swing(degrees: Double)
         /// A rep is the gyroscope's magnitude rising above `on`, after first falling below `off`.
         case burst(on: Double, off: Double)
+        /// How the band counts, for recordings.
+        var summary: String {
+            switch self {
+            case .swing(let degrees): "swing degrees=\(degrees)"
+            case .burst(let on, let off): "burst on=\(on) off=\(off)"
+            }
+        }
     }
 
     let id: String
@@ -67,10 +76,13 @@ extension Exercise {
     }
     private static let curl = Signal.swing(degrees: 30)
     private static let row = Signal.swing(degrees: 12)
+    /// The bar path turns the wrist only ~15° a rep; the threshold follows the set's typical rep.
+    private static let press = Signal.swing(degrees: 6)
+    private static let fly = Signal.swing(degrees: 20)
 
     /// Most popular first. The picker keeps this order inside every tab.
     static let all: [Exercise] = [
-        e("benchPress", "Bench press", .chest, [.chest], [.triceps, .shoulders], .barbell),
+        e("benchPress", "Bench press", .chest, [.chest], [.triceps, .shoulders], .barbell, .reps, press),
         e("backSquat", "Back squat", .legs, [.quads, .glutes], [.hamstrings, .lowerBack], .barbell),
         e("deadlift", "Deadlift", .back, [.hamstrings, .glutes, .lowerBack], [.lats, .traps, .forearms], .barbell),
         e("overheadPress", "Overhead press", .shoulders, [.shoulders], [.triceps, .traps], .barbell),
@@ -82,7 +94,7 @@ extension Exercise {
         e("legPress", "Leg press", .legs, [.quads], [.glutes, .hamstrings], .machine),
         e("lateralRaise", "Lateral raise", .shoulders, [.shoulders], [.traps], .dumbbell, .reps, .swing(degrees: 20)),
         e("plank", "Plank", .core, [.abs], [.obliques, .shoulders], .bodyweight, .seconds),
-        e("inclineBenchPress", "Incline bench press", .chest, [.chest], [.shoulders, .triceps], .barbell),
+        e("inclineBenchPress", "Incline bench press", .chest, [.chest], [.shoulders, .triceps], .barbell, .reps, press),
         e("romanianDeadlift", "Romanian deadlift", .legs, [.hamstrings, .glutes], [.lowerBack], .barbell),
         e("dumbbellBenchPress", "Dumbbell bench press", .chest, [.chest], [.triceps, .shoulders], .dumbbell),
         e("tricepPushdown", "Tricep pushdown", .arms, [.triceps], [], .cable, .reps, .swing(degrees: 20)),
@@ -100,13 +112,13 @@ extension Exercise {
         e("dumbbellRow", "One-arm dumbbell row", .back, [.lats], [.biceps, .traps], .dumbbell, .reps, row),
         e("overheadExtension", "Overhead extension", .arms, [.triceps], [], .dumbbell, .reps, .swing(degrees: 30)),
         e("skullCrusher", "Skull crusher", .arms, [.triceps], [], .barbell, .reps, .swing(degrees: 30)),
-        e("cableFly", "Cable fly", .chest, [.chest], [.shoulders], .cable),
+        e("cableFly", "Cable fly", .chest, [.chest], [.shoulders], .cable, .reps, fly),
         e("facePull", "Face pull", .shoulders, [.shoulders, .traps], [.lats], .cable, .reps, .swing(degrees: 18)),
         e("frontRaise", "Front raise", .shoulders, [.shoulders], [], .dumbbell, .reps, .swing(degrees: 25)),
         e("bulgarianSplitSquat", "Bulgarian split squat", .legs, [.quads, .glutes], [.hamstrings], .dumbbell),
         e("gobletSquat", "Goblet squat", .legs, [.quads, .glutes], [.abs], .kettlebell),
         e("inclineDumbbellPress", "Incline dumbbell press", .chest, [.chest], [.shoulders, .triceps], .dumbbell),
-        e("dumbbellFly", "Dumbbell fly", .chest, [.chest], [.shoulders], .dumbbell),
+        e("dumbbellFly", "Dumbbell fly", .chest, [.chest], [.shoulders], .dumbbell, .reps, fly),
         e("preacherCurl", "Preacher curl", .arms, [.biceps], [], .barbell, .reps, curl),
         e("hangingLegRaise", "Hanging leg raise", .core, [.abs], [.obliques, .forearms], .bodyweight),
         e("russianTwist", "Russian twist", .core, [.obliques], [.abs], .bodyweight),
@@ -123,8 +135,8 @@ extension Exercise {
         e("concentrationCurl", "Concentration curl", .arms, [.biceps], [], .dumbbell, .reps, curl),
         e("cableCurl", "Cable curl", .arms, [.biceps], [.forearms], .cable, .reps, curl),
         e("tricepKickback", "Tricep kickback", .arms, [.triceps], [], .dumbbell, .reps, .swing(degrees: 25)),
-        e("closeGripBench", "Close-grip bench press", .arms, [.triceps], [.chest, .shoulders], .barbell),
-        e("pecDeck", "Pec deck", .chest, [.chest], [], .machine),
+        e("closeGripBench", "Close-grip bench press", .arms, [.triceps], [.chest, .shoulders], .barbell, .reps, press),
+        e("pecDeck", "Pec deck", .chest, [.chest], [], .machine, .reps, fly),
         e("machineChestPress", "Machine chest press", .chest, [.chest], [.triceps], .machine),
         e("tBarRow", "T-bar row", .back, [.lats], [.traps, .biceps], .barbell),
         e("uprightRow", "Upright row", .shoulders, [.shoulders, .traps], [.biceps], .barbell, .reps, .swing(degrees: 20)),
@@ -156,7 +168,7 @@ extension Exercise {
         e("invertedRow", "Inverted row", .back, [.lats], [.biceps, .traps], .bodyweight),
         e("diamondPushUp", "Diamond push-up", .arms, [.triceps], [.chest], .bodyweight),
         e("pikePushUp", "Pike push-up", .shoulders, [.shoulders], [.triceps], .bodyweight),
-        e("declineBenchPress", "Decline bench press", .chest, [.chest], [.triceps], .barbell),
+        e("declineBenchPress", "Decline bench press", .chest, [.chest], [.triceps], .barbell, .reps, press),
         e("landminePress", "Landmine press", .shoulders, [.shoulders, .chest], [.triceps], .barbell),
         e("machineShoulderPress", "Machine shoulder press", .shoulders, [.shoulders], [.triceps], .machine),
         e("straightArmPulldown", "Straight-arm pulldown", .back, [.lats], [.triceps], .cable),

@@ -326,7 +326,7 @@ final class SessionCore: @unchecked Sendable {
     func setLocalMotion(_ on: Bool) {
         guard localMotion != on else { return }
         localMotion = on
-        record("mappings", on ? "Motion streams requested for combos." : "Combos no longer need motion streams.")
+        record("mappings", on ? "Motion streams requested for spells." : "Spells no longer need motion streams.")
         guard snapshot.state == .streaming else { return }
         do { try reconcileStreams() } catch { fail(error) }
     }
@@ -427,12 +427,18 @@ final class SessionCore: @unchecked Sendable {
     /// Vibrates the band, replacing any pattern still playing. Works with the app in the
     /// background, as long as the band is streaming.
     func buzzBand(_ buzz: BandBuzz) {
-        guard snapshot.state == .streaming, proto != nil else { return }
+        buzzBand(pulses: buzz.pulses, name: buzz.rawValue)
+    }
+
+    func buzzBand(pulses: [BandPulse], name: String) {
+        guard snapshot.state == .streaming, proto != nil, !pulses.isEmpty else { return }
         buzzGeneration += 1
-        buzzQueue = buzz.pulses; buzzResting = false
-        record("band_buzz", "\(buzz.rawValue) requested.")
+        buzzQueue = pulses; buzzResting = false
+        record("band_buzz", "\(name) requested.")
         sendNextPulse()
     }
+
+    var canBuzzBand: Bool { snapshot.state == .streaming && proto != nil }
 
     /// Sends the next pulse once the band has answered the last one and its gap has passed.
     private func sendNextPulse() {

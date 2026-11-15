@@ -19,6 +19,7 @@ enum AppRoute: Hashable {
     case capture
     case note(String)
     case scroll(String)
+    case alarm
     case reels
 }
 
@@ -27,7 +28,6 @@ enum AppRoute: Hashable {
 struct ApplicationsScreen: View {
     @ObservedObject var workouts: WorkoutStore
     var done: () -> Void = {}
-    @ObservedObject private var pins = PinStore.shared
     @ObservedObject private var scores: ScoreStore
     @ObservedObject private var cook: CookStore
     @ObservedObject private var capture: CaptureStore
@@ -71,6 +71,7 @@ struct ApplicationsScreen: View {
                 case .capture: CaptureScreen(store: capture, path: $path)
                 case .note(let id): NoteScreen(store: capture, noteID: id)
                 case .scroll(let id): CaptureScreen(store: capture, path: $path, scrollID: id)
+                case .alarm: AlarmScreen(store: .shared)
                 case .reels: ReelsScreen(store: .shared)
                 }
             }
@@ -98,6 +99,9 @@ struct ApplicationsScreen: View {
         case .capture:
             if capture.isRecording { return "Recording" }
             return capture.listening ? "Listening from your pocket" : "Make a gesture, say it, and it’s written down"
+        case .alarm:
+            if let s = AlarmStore.shared.snoozed { return "Snoozed until \(s.until.formatted(date: .omitted, time: .shortened))" }
+            return AlarmStore.shared.nextAlarm.map { "Next at \($0.at.formatted(date: .omitted, time: .shortened))" } ?? "Wake to the band’s vibration, silently"
         case .reels: return "Instagram Reels, scrolled from your band"
         }
     }
@@ -108,12 +112,13 @@ struct ApplicationsScreen: View {
         case .score: scores.game.live
         case .cook: cook.session != nil
         case .capture: capture.listening || capture.isRecording
+        case .alarm: AlarmStore.shared.ringing != nil || AlarmStore.shared.snoozed != nil
         case .reels: false
         }
     }
 
-    /// An app as a card: its icon (orbited while it runs), a pin when it is on the home screen,
-    /// its name and one line on what it does or is doing.
+    /// An app as a card: its icon (orbited while it runs), its name and one line on what
+    /// it does or is doing.
     private func appCard(_ app: RunesApp) -> some View {
         NavigationLink(value: app.route) {
             VStack(alignment: .leading, spacing: 0) {
@@ -121,15 +126,10 @@ struct ApplicationsScreen: View {
                     ZStack {
                         Circle().strokeBorder(Color.rule, lineWidth: Metric.hairline)
                         if running(app) { OrbitDot(radius: 22) }
-                        LucideIcon(app.icon, size: 18)
+                        AppIcon(app: app, size: 18)
                     }
                     .frame(width: 44, height: 44)
                     Spacer()
-                    if pins.isPinned(app) {
-                        LucideIcon(.pin, size: 16).foregroundStyle(Color.muted)
-                            .transition(.scale(scale: 0.6).combined(with: .opacity))
-                            .accessibilityLabel("Pinned")
-                    }
                 }
                 Text(app.title).font(.heading).padding(.top, 18)
                 Text(subtitle(app)).font(.caption).foregroundStyle(Color.muted)
@@ -139,22 +139,9 @@ struct ApplicationsScreen: View {
             .padding(Metric.inset)
             .frame(maxWidth: .infinity, alignment: .leading)
             .panel()
-            .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: Metric.panel))
             .contentShape(Rectangle())
-            .animation(.lively, value: pins.isPinned(app))
         }
         .buttonStyle(PressRow())
-        .contextMenu {
-            if pins.isPinned(app) {
-                Button("Unpin from home", role: .destructive) { pins.unpin(app) }
-            } else {
-                Button(pins.isFull ? "Pin to home, replacing one" : "Pin to home") {
-                    // When all three slots are taken, the home screen asks which to replace.
-                    if !pins.pin(app) { done() }
-                }
-            }
-        }
-        .accessibilityHint(pins.isPinned(app) ? "Touch and hold to unpin from the home screen." : "Touch and hold to pin to the home screen.")
     }
 }
 

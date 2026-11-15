@@ -7,7 +7,6 @@ struct HomeActions {
     var openSettings: () -> Void = {}
     var openMappings: () -> Void = {}
     var openApplications: () -> Void = {}
-    var openApp: (RunesApp) -> Void = { _ in }
     var resolve: (SessionIssue.Action) -> Void = { _ in }
 }
 
@@ -17,12 +16,10 @@ struct HomeView: View {
     var actions = HomeActions()
     @State private var confirmDisconnect = false
     @State private var appeared = false
-    @ObservedObject var pins = PinStore.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(spacing: 0) {
-          VStack(spacing: 0) {
             header
             Spacer(minLength: 12)
             Button(action: ringTapped) {
@@ -60,16 +57,8 @@ struct HomeView: View {
             }
 
             Spacer(minLength: 20)
-          }
-          .blur(radius: replacing ? 14 : 0)
-          .opacity(replacing ? 0.35 : 1)
-          .allowsHitTesting(!replacing)
-            pinnedApps
         }
-        .overlay(alignment: .bottom) { replacePrompt }
         .animation(.standard, value: status.issue)
-        .animation(.lively, value: pins.pinned)
-        .animation(.standard, value: pins.pending)
         .opacity(appeared || reduceMotion ? 1 : 0)
         .offset(y: appeared || reduceMotion ? 0 : 5)
         .onAppear { withAnimation(.entrance) { appeared = true } }
@@ -114,54 +103,6 @@ struct HomeView: View {
         .accessibilityValue(status.battery.map { "\($0) percent" } ?? "Unknown")
     }
 
-    private var replacing: Bool { pins.pending != nil }
-
-    /// Pinned applications, centred under the ring. Empty until the user holds an app
-    /// in Applications and pins it; three at most.
-    private var pinnedApps: some View {
-        HStack(spacing: 20) {
-            ForEach(Array(pins.pinned.enumerated()), id: \.element) { index, app in
-                pinTile(app, index: index)
-                    .transition(.scale(scale: 0.6).combined(with: .opacity))
-            }
-        }
-        .frame(maxWidth: .infinity, minHeight: 72)
-        .padding(.horizontal, Metric.gutter).padding(.bottom, 8)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(pins.pinned.isEmpty ? "No pinned apps" : "Pinned apps")
-    }
-
-    private func pinTile(_ app: RunesApp, index: Int) -> some View {
-        Button {
-            if replacing { pins.replace(app) } else { actions.openApp(app) }
-        } label: {
-            // The icon alone, in the same hairline circle the app wears in Applications.
-            LucideIcon(app.icon, size: 22)
-                .frame(width: 56, height: 56)
-                .background(Color.paper, in: Circle())
-                .overlay(Circle().strokeBorder(replacing ? Color.ink : Color.rule, lineWidth: Metric.hairline))
-                .contentShape(Circle())
-        }
-        .buttonStyle(RingButtonStyle())
-        .jiggle(replacing, index: index)
-        .accessibilityLabel(app.title)
-        .accessibilityHint(replacing ? "Replaces this pin with \(pins.pending?.title ?? "the new app")." : "Opens the app.")
-    }
-
-    /// While a fourth app waits, the rest of the screen blurs and the three pins shake.
-    @ViewBuilder private var replacePrompt: some View {
-        if let pending = pins.pending {
-            VStack(spacing: 14) {
-                Text("Choose a pin for \(pending.title) to replace")
-                    .font(.bodyText).foregroundStyle(Color.muted).multilineTextAlignment(.center)
-                Button("Cancel") { pins.cancelPending() }.buttonStyle(.quiet)
-            }
-            .padding(.horizontal, Metric.gutter)
-            .padding(.bottom, 104)
-            .transition(.opacity.combined(with: .move(edge: .bottom)))
-        }
-    }
-
     /// The issue card carries the sentence, so the line under the title steps aside.
     private var showsIssueCard: Bool {
         guard let issue = status.issue else { return false }
@@ -200,11 +141,25 @@ private struct RingButtonStyle: ButtonStyle {
     }
 }
 
-/// Applications that can be pinned to the home screen.
+/// The band-driven applications.
 enum RunesApp: String, CaseIterable, Identifiable {
-    case workouts, score, cook, capture, reels
+    case workouts, score, cook, capture, alarm, reels
     var id: String { rawValue }
-    var title: String { switch self { case .workouts: "Workouts"; case .score: "Score"; case .cook: "Cook"; case .capture: "Capture"; case .reels: "Reels" } }
-    var icon: Lucide { switch self { case .workouts: .dumbbell; case .score: .gamepad2; case .cook: .chefHat; case .capture: .mic; case .reels: .video } }
-    var route: AppRoute { switch self { case .workouts: .workouts; case .score: .score; case .cook: .cook; case .capture: .capture; case .reels: .reels } }
+    var title: String { switch self { case .workouts: "Workouts"; case .score: "Score"; case .cook: "Cook"; case .capture: "Scribe"; case .alarm: "Alarm"; case .reels: "Reels" } }
+    var icon: Lucide { switch self { case .workouts: .dumbbell; case .score: .gamepad2; case .cook: .chefHat; case .capture: .mic; case .alarm: .bellRing; case .reels: .video } }
+    var route: AppRoute { switch self { case .workouts: .workouts; case .score: .score; case .cook: .cook; case .capture: .capture; case .alarm: .alarm; case .reels: .reels } }
+}
+
+/// An application's icon: a Lucide glyph, or for Scribe the voice rune.
+struct AppIcon: View {
+    let app: RunesApp
+    var size: CGFloat = 22
+
+    var body: some View {
+        if app == .capture {
+            IconStroke(path: InscriptionRune.voice.path).frame(width: size, height: size).accessibilityHidden(true)
+        } else {
+            LucideIcon(app.icon, size: size)
+        }
+    }
 }

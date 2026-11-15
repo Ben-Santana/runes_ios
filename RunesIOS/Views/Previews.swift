@@ -44,6 +44,12 @@ enum PreviewFixtures {
         return MappingStore(preview: MappingLibrary(profiles: [main, work], activeID: "main"),
                             recent: [.init(id: 1, gesture: .tapIndex, ranMapping: true), .init(id: 2, step: .movement(.y)), .init(id: 3, gesture: .holdIndex, ranMapping: true), .init(id: 4, gesture: .swipeUp, ranMapping: true), .init(id: 5, gesture: .releaseIndex, ranMapping: true)])
     }
+    /// The same, with the Focus combo turned off.
+    @MainActor static var mappingsWithFocusOff: MappingStore {
+        let store = mappings
+        if var focus = store.active.mappings.first(where: { $0.id == "combo-a" }) { focus.enabled = false; store.save(focus) }
+        return store
+    }
     static let advanced = AdvancedValues(relayStatus: mac, events: events, eventCount: 14, canImportMacSetup: false)
 }
 
@@ -95,8 +101,10 @@ struct SnapshotGallery: View {
             MappingsScreen(store: PreviewFixtures.mappings)
         } else if name == "mapping-editor" {
             NavigationStack { MappingEditor(store: PreviewFixtures.mappings, mappingID: "combo-a", title: "Focus") }
+        } else if name == "mapping-off" {
+            NavigationStack { MappingEditor(store: PreviewFixtures.mappingsWithFocusOff, mappingID: "combo-a", title: "Focus") }
         } else if name == "mapping-new" {
-            NavigationStack { MappingEditor(store: PreviewFixtures.mappings, mappingID: "combo-new", title: "Combo 3") }
+            NavigationStack { MappingEditor(store: PreviewFixtures.mappings, mappingID: "combo-new", title: "Spell 3") }
         } else if name == "trigger-gesture" {
             TriggerSheet(title: "Start set", caption: "Begins the set. Reps are counted for exercises the band can follow.",
                          rules: .gesture(WorkoutControls.choices), steps: [ComboStep(.doubleTapIndex)],
@@ -144,6 +152,8 @@ struct SnapshotGallery: View {
             ScrollEditor(mode: .edit(PreviewFixtures.scrolls[1]), scribe: true) { _, _, _ in }
         } else if name == "capture-note" {
             NavigationStack { NoteScreen(store: PreviewFixtures.capture(), noteID: "note-34") }
+        } else if name == "capture-note-loose" {
+            NavigationStack { NoteScreen(store: PreviewFixtures.capture(), noteID: "note-1800") }
         } else if name == "capture-settings" {
             CaptureSettingsScreen(store: PreviewFixtures.capture())
         } else if name == "capture-trigger" {

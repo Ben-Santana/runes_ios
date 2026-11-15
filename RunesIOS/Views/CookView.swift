@@ -431,7 +431,7 @@ struct CookSettingsScreen: View {
                     } header: {
                         Heading("Gestures")
                     } footer: {
-                        Note("A gesture or a combo each. While you cook, they turn the recipe’s pages and run its timers, and mappings that use their gestures are off.")
+                        Note("A gesture or a spell each. While you cook, they turn the recipe’s pages and run its timers, and mappings that use their gestures are off.")
                     }
                     SwitchControlsBlock()
                     Block {

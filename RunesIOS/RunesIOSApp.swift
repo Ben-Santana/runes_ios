@@ -60,7 +60,9 @@ final class AppLinkRouter: ObservableObject {
     @Published var pending: RunesApp?
 
     func open(url: URL) {
-        if let link = AppLink(url: url), let app = RunesApp(rawValue: link.rawValue) { pending = app }
+        guard let link = AppLink(url: url), let app = RunesApp(rawValue: link.rawValue) else { return }
+        if link == .alarm, AppLink.isFromActivity(url) { AlarmStore.shared.openedFromActivity() }
+        pending = app
     }
 }
 

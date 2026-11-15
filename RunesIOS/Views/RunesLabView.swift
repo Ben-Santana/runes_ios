@@ -1,13 +1,13 @@
 import SwiftUI
 
-/// Settings → Developer → Runes lab. A stand-in for the Mappings page with the beads where
-/// its strip of recent gestures is, to judge them in place. The band drives them as it would
-/// there; without one, touching a mapping performs its gestures.
+/// Settings → Developer → Runes lab. The beads over the active profile's combos and gestures,
+/// to judge them in place. The band drives them as it would in Mappings; without one, touching
+/// a row performs its gestures. Each row is written in the runes the beads carry, and inks in
+/// step by step as it is made.
 struct RunesLabScreen: View {
     @ObservedObject var store: MappingStore
     @StateObject private var feed = BeadsFeed()
     @State private var flashed: String?
-    @State private var heardThrough = 0
     @State private var performing: Task<Void, Never>?
 
     @MainActor init(store: MappingStore? = nil) {
@@ -16,98 +16,146 @@ struct RunesLabScreen: View {
 
     /// The pause between a performed combo's gestures.
     private static let pace = Duration.milliseconds(420)
-    private static let nothing: [ComboStep] = [.swipeDown, .tapMiddle, .swipeLeft].steps
+
+    private var combos: [Mapping] { store.active.combos.filter { $0.steps?.isEmpty == false } }
+    /// The first combo without its last gesture: a combo started and left.
+    private var unfinished: [ComboStep] {
+        combos.first { $0.isLive && ($0.steps?.count ?? 0) > 1 }?.steps.map { Array($0.dropLast()) } ?? []
+    }
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 28) {
-                MappingGroup("Gestures") {
-                    ForEach(Array(store.active.gestures.enumerated()), id: \.element.id) { index, mapping in
-                        if index > 0 { Rule() }
-                        row(mapping, title: nil)
-                    }
-                }
-                MappingGroup("Combos", caption: "A mapping that is off or not set comes to nothing, as it would on the band.") {
-                    ForEach(Array(store.active.combos.filter { $0.steps?.isEmpty == false }.enumerated()), id: \.element.id) { index, mapping in
-                        row(mapping, title: mapping.name.flatMap { $0.isEmpty ? nil : $0 } ?? "Combo \(index + 1)")
-                        Rule()
-                    }
-                    Button { perform(Self.nothing, matching: nil) } label: {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("Gestures that match nothing").font(.bodyText)
-                            StepChips(steps: Self.nothing, compact: true)
+            VStack(alignment: .leading, spacing: 36) {
+                VStack(alignment: .leading, spacing: 0) {
+                    Heading("Spells", count: combos.count)
+                    ForEach(Array(combos.enumerated()), id: \.element.id) { index, mapping in
+                        if index > 0 { Rule(inset: 0) }
+                        row(mapping) {
+                            ComboLine(title: title(mapping), steps: mapping.steps ?? [], detail: detail(mapping), made: made(mapping.steps ?? []))
                         }
-                        .padding(.horizontal, Metric.inset).padding(.vertical, 10)
-                        .frame(maxWidth: .infinity, minHeight: Metric.rowTall, alignment: .leading)
-                        .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    if !unfinished.isEmpty {
+                        Rule(inset: 0)
+                        Button { perform(unfinished, matching: nil) } label: {
+                            Text("Start one and leave it").font(.label).foregroundStyle(Color.muted)
+                                .frame(maxWidth: .infinity, minHeight: Metric.tap, alignment: .leading).contentShape(Rectangle())
+                        }
+                        .buttonStyle(PressRow())
+                    }
+                    Note("Gestures stack round the ring only while they could still become one of these.")
+                }
+                VStack(alignment: .leading, spacing: 0) {
+                    Heading("Gestures", count: store.active.gestures.count)
+                    ForEach(Array(store.active.gestures.enumerated()), id: \.element.id) { index, mapping in
+                        if index > 0 { Rule(inset: 0) }
+                        row(mapping) {
+                            HStack(spacing: 12) {
+                                // One gesture is an instruction, not a sequence: it keeps the hand.
+                                if let kind = mapping.motion { GestureIcon(gesture: kind, size: 22).frame(width: 28) }
+                                Text(title(mapping)).font(.bodyText)
+                                Spacer(minLength: 8)
+                                Text(detail(mapping)).font(.caption).foregroundStyle(Color.muted).lineLimit(1)
+                            }
+                            .frame(minHeight: Metric.row)
+                        }
+                    }
+                    Note("A gesture that starts no spell stands alone: it shows, then runs its mapping or fades.")
                 }
             }
-            .padding(Metric.gutter)
+            .padding(.horizontal, Metric.gutter).padding(.top, 24).padding(.bottom, 40)
         }
         // In Mappings the beads would scroll with the page; here they stay put, to be watched
-        // while a mapping further down is touched.
+        // while a row further down is touched.
         .safeAreaInset(edge: .top, spacing: 0) {
-            VStack(alignment: .leading, spacing: 8) {
-                GestureBeads(feed: feed).panel()
-                Text("Where Mappings shows your recent gestures. Use your band, or touch a mapping to perform it.")
-                    .font(.caption).foregroundStyle(Color.muted).padding(.horizontal, 2)
+            VStack(spacing: 0) {
+                BeadsStage(feed: feed, store: store, idle: "Touch a spell to cast it, or make it on the band.")
+                    .padding(.horizontal, Metric.gutter).padding(.bottom, 14)
+                Rule(inset: 0)
             }
-            .padding(.horizontal, Metric.gutter).padding(.top, 8).padding(.bottom, 12)
             .background(Color.paper)
         }
         .page()
         .navigationTitle("Runes lab").navigationBarTitleDisplayMode(.inline)
-        .sensoryFeedback(.impact(weight: .light), trigger: feed.steps.count) { _, count in count > 0 }
-        .sensoryFeedback(.success, trigger: feed.matches)
-        .onAppear { heardThrough = store.recent.last?.id ?? 0 }
-        .onChange(of: store.recent) { _, recent in
-            // The band: every new gesture goes to the beads.
-            for gesture in recent where gesture.id > heardThrough { feed.gesture(gesture.step) }
-            heardThrough = recent.last?.id ?? heardThrough
-        }
-        .onChange(of: store.lastFired?.at) { _, _ in
-            if let fired = store.lastFired { feed.matched(tint: tint(for: fired.id)) }
-        }
         .onDisappear { performing?.cancel() }
     }
 
-    private func row(_ mapping: Mapping, title: String?) -> some View {
+    // MARK: Rows
+
+    private func row<Label: View>(_ mapping: Mapping, @ViewBuilder label: () -> Label) -> some View {
         Button {
             perform(mapping.steps ?? mapping.motion.map { [ComboStep($0)] } ?? [], matching: mapping.isLive ? mapping.id : nil)
         } label: {
-            MappingRow(mapping: mapping, title: title, profiles: store.library.profiles, flashed: flashed == mapping.id)
+            label()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, Metric.gutter)
+                .background(flashed == mapping.id ? Color.soft : Color.clear)
+                .padding(.horizontal, -Metric.gutter)
+                .contentShape(Rectangle())
+                .animation(.standard, value: flashed)
+                .accessibilityElement(children: .combine)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressRow())
     }
 
-    /// A mapping's colour. Mappings have none of their own yet, so each takes one by its place in the profile.
-    private func tint(for id: String) -> Int {
-        store.active.mappings.firstIndex { $0.id == id } ?? 0
+    private func title(_ mapping: Mapping) -> String { BeadsStage.title(mapping, in: store) }
+
+    private func detail(_ mapping: Mapping) -> String {
+        guard let first = mapping.actions.first else { return "Not set" }
+        let text = first.label(profiles: store.library.profiles)
+        return mapping.isLive ? text : "Off · \(text)"
     }
 
-    /// Makes the gestures one after another, as a hand would. The match lands with the last one.
+    /// How many of a combo's steps are on the beads now; nil when the beads are on some other path.
+    private func made(_ steps: [ComboStep]) -> Int? {
+        let shown = feed.steps
+        guard !shown.isEmpty, shown.count <= steps.count, zip(steps, shown).allSatisfy({ $0.matches($1) }) else { return nil }
+        return shown.count
+    }
+
+    /// Makes the gestures one after another, as a hand would. A mapping that is live runs
+    /// with the last one; anything else is left for the beads to give up on.
     private func perform(_ steps: [ComboStep], matching id: String?) {
         performing?.cancel()
         performing = Task { @MainActor in
             for (index, step) in steps.enumerated() {
                 feed.gesture(step)
-                guard index == steps.count - 1 else {
+                if index < steps.count - 1 {
                     try? await Task.sleep(for: Self.pace)
                     if Task.isCancelled { return }
-                    continue
-                }
-                if let id {
-                    feed.matched(tint: tint(for: id))
+                } else if let id {
+                    feed.matched(id, tint: BeadsStage.tint(for: id, in: store))
                     flashed = id
                     try? await Task.sleep(for: .milliseconds(600))
                     if flashed == id { flashed = nil }
-                } else {
-                    try? await Task.sleep(for: .milliseconds(900))
-                    if !Task.isCancelled { feed.missed() }
                 }
             }
         }
+    }
+}
+
+/// A combo written in runes. While it is being made, the steps still to come wait in faint.
+private struct ComboLine: View {
+    let title: String
+    let steps: [ComboStep]
+    let detail: String
+    let made: Int?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(title).font(.bodyText)
+                Spacer(minLength: 8)
+                Text(detail).font(.caption).foregroundStyle(Color.muted).lineLimit(1)
+            }
+            HStack(spacing: 10) {
+                ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
+                    RuneStep(step: step, size: 24)
+                        .foregroundStyle(made.map { index < $0 ? Color.ink : Color.faint } ?? Color.ink)
+                }
+            }
+            .animation(.standard, value: made)
+            .accessibilityElement().accessibilityLabel(steps.map(\.name).joined(separator: ", then "))
+        }
+        .padding(.vertical, 14)
     }
 }

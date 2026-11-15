@@ -81,7 +81,7 @@ struct SwitchControlsBlock: View {
         } header: {
             Heading("Regular controls")
         } footer: {
-            Note("One combo for Workouts, Score and Cook, whichever profile is active. Make it while one of them runs and your mappings work again; make it again to go back. The app keeps running either way.")
+            Note("One spell for Workouts, Score and Cook, whichever profile is active. Make it while one of them runs and your mappings work again; make it again to go back. The app keeps running either way.")
         }
     }
 }
@@ -93,7 +93,7 @@ struct SwitchControlsSheet: View {
     var body: some View {
         let current = mappings.library.switchControls
         TriggerSheet(title: "Switch controls",
-                     caption: "While Workouts, Score or Cook is running, this combo hands the band to your regular mappings, and back to the app. It is the same in every profile.",
+                     caption: "While Workouts, Score or Cook is running, this spell hands the band to your regular mappings, and back to the app. It is the same in every profile.",
                      rules: SwitchControls.rules, steps: current?.steps ?? [], intervalMs: current?.intervalMs ?? ComboRules.defaultTime,
                      feed: RunesIOSApp.snapshotName == nil ? .shared : nil,
                      blocked: { ControlSwitch.shared.taken($0) }, checksSwitch: false,

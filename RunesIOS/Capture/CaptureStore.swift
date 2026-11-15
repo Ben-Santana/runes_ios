@@ -17,7 +17,7 @@ final class CaptureMeter: ObservableObject {
 /// Voice notes taken from the band. A chosen gesture or combo (`CaptureTrigger`) starts a
 /// recording and making it again saves it; when it ends with a finger held, letting go
 /// saves it instead. The note is then put into words on the phone. A mapping can do the
-/// same from anywhere with the "Record a Capture note" action (`toggle`).
+/// same from anywhere with the "Record a Scribe note" action (`toggle`).
 ///
 /// The trigger reaches Capture in two situations. With Capture on screen, the
 /// microphone opens when it arrives. With the phone locked or Runes in the
@@ -50,12 +50,17 @@ final class CaptureStore: ObservableObject {
     }
 
     @Published private(set) var notes: [CaptureNote]
-    @Published private(set) var scrolls: [CaptureScroll]
+    @Published private(set) var scrolls: [CaptureScroll] { didSet { Self.name(scrolls) } }
     /// Inscriptions the scribe is reading now.
     @Published private(set) var naming: Set<String> = []
     @Published private(set) var controls: CaptureControls
     /// When the recording under way began; nil when none is.
     @Published private(set) var recordingSince: Date?
+    /// What the screen shows: set the moment a recording is asked for, before the microphone
+    /// has opened, and cleared the moment it is asked to stop, so nothing waits on the hardware.
+    @Published private(set) var shownSince: Date?
+    /// How many steps of the combo that records have been made so far.
+    @Published private(set) var comboReached = 0
     /// Pocket mode: the microphone stays open so a hold records with the phone locked.
     @Published private(set) var listening = false
     @Published private(set) var problem: Problem?
@@ -82,6 +87,12 @@ final class CaptureStore: ObservableObject {
     /// Decides when the trigger was made, combos and double-tap waits included.
     private var engine = MappingEngine()
     private var ticker: Timer?
+    /// The microphone is opening for a recording asked for.
+    private var starting = false
+    /// It was asked to stop before it had started.
+    private var stopAsked = false
+    /// The set the recording under way is kept in, when what began it named one.
+    private var recordingInto: String?
 
     private let recorder = CaptureRecorder()
     private let folder: URL
@@ -101,6 +112,7 @@ final class CaptureStore: ObservableObject {
         controls = UserDefaults.standard.data(forKey: Self.key).flatMap { try? JSONDecoder().decode(CaptureControls.self, from: $0) } ?? CaptureControls()
         notes = (try? Data(contentsOf: folder.appendingPathComponent("notes.json"))).flatMap { try? JSONDecoder().decode([CaptureNote].self, from: $0) } ?? []
         scrolls = (try? Data(contentsOf: folder.appendingPathComponent("scrolls.json"))).flatMap { try? JSONDecoder().decode([CaptureScroll].self, from: $0) } ?? []
+        Self.name(scrolls)
         // A note that was mid-transcription when Runes was closed is tried again, and so
         // is one that couldn't be put into words last time.
         let recent = Date().addingTimeInterval(-7 * 86_400)
@@ -140,7 +152,7 @@ final class CaptureStore: ObservableObject {
     /// Fixed state for screenshots and previews; never saved, and the microphone is never opened.
     init(preview notes: [CaptureNote], scrolls: [CaptureScroll] = [], naming: Set<String> = [], recording: Date? = nil, listening: Bool = false, problem: Problem? = nil, level: Double = 0) {
         folder = FileManager.default.temporaryDirectory
-        self.notes = notes; self.scrolls = scrolls; self.naming = naming; controls = CaptureControls(); recordingSince = recording; self.listening = listening; self.problem = problem
+        self.notes = notes; self.scrolls = scrolls; self.naming = naming; controls = CaptureControls(); recordingSince = recording; shownSince = recording; self.listening = listening; self.problem = problem
         meter.level = level
         previewOnly = true
     }
@@ -165,26 +177,38 @@ final class CaptureStore: ObservableObject {
 
     /// Starts keeping sound. With pocket mode on, the microphone is already open and the
     /// last moment before the gesture is kept too.
-    func begin() {
-        guard !previewOnly, !isRecording, permitted() else { return }
-        endRelease = nil
+    func begin() { Task { await start() } }
+
+    /// Shows the recording at once, then opens the microphone without holding up the screen.
+    /// Returns false when it couldn't start.
+    @discardableResult
+    private func start(endingOn release: GestureKind? = nil, into set: String? = nil) async -> Bool {
+        guard !previewOnly, !isRecording, !starting else { return false }
+        guard permitted() else { shownSince = nil; return false }
+        starting = true; stopAsked = false; recordingInto = set
+        shownSince = Date()
+        endRelease = release
+        defer { starting = false }
         do {
-            try open()
+            try await openSoon()
             let id = UUID().uuidString.lowercased()
             try recorder.begin(to: folder.appendingPathComponent("\(id).m4a"), preroll: listening ? CaptureRules.preroll : 0)
         } catch {
             closeIfIdle()
+            shownSince = nil; endRelease = nil
             problem = UIApplication.shared.applicationState == .active ? .unavailable : problem
-            return
+            return false
         }
         problem = nil
         recordingSince = Date()
+        if stopAsked { finish(); return true }
         cue(.start)
         limit?.cancel()
         limit = Task { [weak self] in
             try? await Task.sleep(for: .seconds(CaptureRules.maximum))
             if !Task.isCancelled { self?.finish() }
         }
+        return true
     }
 
     /// Stops and saves the recording. One too short to be a note is thrown away.
@@ -193,6 +217,7 @@ final class CaptureStore: ObservableObject {
         limit?.cancel(); limit = nil
         let clip = recorder.end()
         recordingSince = nil
+        shownSince = nil
         endRelease = nil
         meter.level = 0
         closeIfIdle()
@@ -203,7 +228,9 @@ final class CaptureStore: ObservableObject {
         }
         var note = CaptureNote(id: clip.url.deletingPathExtension().lastPathComponent, at: Date().addingTimeInterval(-clip.duration),
                                duration: clip.duration, file: clip.url.lastPathComponent, peaks: CaptureRules.waveform(clip.peaks, bars: CaptureRules.bars * 2))
-        if let filing, scrolls.contains(where: { $0.id == filing }) { note.scroll = filing; note.filed = .hand }
+        let keptIn = recordingInto ?? filing
+        recordingInto = nil
+        if let keptIn, scrolls.contains(where: { $0.id == keptIn }) { note.scroll = keptIn; note.filed = .hand }
         notes.insert(note, at: 0)
         arrived = note.id
         persist()
@@ -220,6 +247,7 @@ final class CaptureStore: ObservableObject {
         let mine = reservedNow.contains(kind)
         if mine {
             handle(engine.receive(kind, at: ProcessInfo.processInfo.systemUptime))
+            comboReached = engine.reached(controls.trigger.mapping.id)
             if !engine.isIdle, ticker == nil {
                 let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
                     Task { @MainActor in self?.tick() }
@@ -230,12 +258,15 @@ final class CaptureStore: ObservableObject {
         }
         // Letting go saves it. When a mapping began the recording, the release is still
         // the mappings' to see.
-        if ends { finish() }
+        if ends { stop() }
+        // A hold let go of while the microphone was still opening ends what it began.
+        else if starting, kind == endRelease { stop() }
         return mine
     }
 
     private func tick() {
         handle(engine.tick(at: ProcessInfo.processInfo.systemUptime))
+        comboReached = engine.reached(controls.trigger.mapping.id)
         if engine.isIdle { ticker?.invalidate(); ticker = nil }
     }
 
@@ -248,19 +279,30 @@ final class CaptureStore: ObservableObject {
 
     /// Starts a recording, or saves the one under way. `release` is the finger whose
     /// letting go should save it, when the gesture that asked ends with that finger held.
-    /// Also what the "Record a Capture note" mapping action runs.
-    func toggle(endingOn release: GestureKind? = nil) {
+    /// Also what the "Record a Scribe note" mapping action runs.
+    func toggle(endingOn release: GestureKind? = nil, into set: String? = nil) {
         guard !previewOnly else { return }
-        if isRecording { finish(); return }
-        begin()
-        if isRecording {
-            endRelease = release
-        } else if UIApplication.shared.applicationState != .active {
+        if isRecording || starting { stop(); return }
+        let background = UIApplication.shared.applicationState != .active
+        shownSince = Date()
+        Task {
+            let started = await start(endingOn: release, into: set)
+            guard !started, background else { return }
             // iOS won't open the microphone now; say how to make this work next time.
             let content = UNMutableNotificationContent()
-            content.title = "Capture couldn’t start"
-            content.body = "Turn on pocket mode in Capture to record while your phone is locked."
-            UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "capture.background", content: content, trigger: nil))
+            content.title = "Scribe couldn’t start"
+            content.body = "Turn on pocket mode in Scribe to record while your phone is locked."
+            try? await UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "capture.background", content: content, trigger: nil))
+        }
+    }
+
+    /// Saves the recording under way: the screen lets go of it at once, and the microphone a frame later.
+    private func stop() {
+        shownSince = nil
+        if starting { stopAsked = true; return }
+        Task {
+            try? await Task.sleep(for: .milliseconds(16))
+            finish()
         }
     }
 
@@ -301,7 +343,7 @@ final class CaptureStore: ObservableObject {
         }
         let content = UNMutableNotificationContent()
         switch cue {
-        case .start: content.title = "Recording"; content.body = "Capture is keeping what you say."
+        case .start: content.title = "Recording"; content.body = "Scribe is keeping what you say."
         case .saved: content.title = "Note saved"; content.body = CaptureRules.clock(duration)
         case .discarded: content.title = "Too short to keep"; content.body = "Nothing was saved."
         }
@@ -321,6 +363,14 @@ final class CaptureStore: ObservableObject {
     private var microphone: AudioHub.Microphone { controls.headset ? .headset : .phone }
 
     /// Opens the microphone if it isn't already. Refused in the background.
+    private func openSoon() async throws {
+        guard !recorder.isRunning else { return }
+        AudioHub.setMicrophone(microphone)
+        try await AudioHub.activateSoon(Self.holder)
+        try recorder.start()
+        if UIApplication.shared.applicationState == .background { AudioHub.setLongBuffers(true) }
+    }
+
     private func open() throws {
         guard !recorder.isRunning else { return }
         AudioHub.setMicrophone(microphone)
@@ -392,7 +442,7 @@ final class CaptureStore: ObservableObject {
             guard !broken else { return }
             broken = true
             let content = UNMutableNotificationContent()
-            content.title = "Capture stopped listening"
+            content.title = "Scribe stopped listening"
             content.body = "Something else used the microphone. Open Runes to listen from your pocket again."
             UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "capture.interrupted", content: content, trigger: nil))
         }
@@ -516,12 +566,35 @@ final class CaptureStore: ObservableObject {
 
     // MARK: Scrolls
 
+    /// Lets mapping labels name the set an action records into.
+    private static func name(_ sets: [CaptureScroll]) {
+        MappingAction.setNames = Dictionary(sets.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
+    }
+
     func scroll(_ id: String) -> CaptureScroll? { scrolls.first { $0.id == id } }
-    func inscriptions(in scroll: String?) -> [CaptureNote] { scroll.map { id in notes.filter { $0.scroll == id } } ?? notes }
+    /// A set's inscriptions in the order they were put in, else oldest first, so a new one joins
+    /// the bottom of its string.
+    func inscriptions(in scroll: String?) -> [CaptureNote] {
+        guard let scroll else { return notes }
+        let order = self.scroll(scroll)?.order ?? []
+        let rank = Dictionary(order.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
+        return notes.filter { $0.scroll == scroll }.sorted { a, b in
+            let ra = rank[a.id] ?? Int.max, rb = rank[b.id] ?? Int.max
+            return ra != rb ? ra < rb : a.at < b.at
+        }
+    }
+
+    /// Hangs a set's inscriptions in this order.
+    func reorder(_ ids: [String], in scroll: String) {
+        guard let index = scrolls.firstIndex(where: { $0.id == scroll }), scrolls[index].order != ids else { return }
+        scrolls[index].order = ids
+        persistScrolls()
+    }
 
     @discardableResult
-    func addScroll(name: String, rune: Rune, purpose: String) -> CaptureScroll {
-        let scroll = CaptureScroll(name: name.trimmingCharacters(in: .whitespacesAndNewlines), rune: rune, purpose: purpose.trimmingCharacters(in: .whitespacesAndNewlines))
+    func addScroll(name: String, glyph: InscriptionRune, purpose: String) -> CaptureScroll {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let scroll = CaptureScroll(name: name, rune: Rune.fallback(for: name), purpose: purpose.trimmingCharacters(in: .whitespacesAndNewlines), glyph: glyph)
         scrolls.append(scroll)
         persistScrolls()
         gather()
@@ -549,6 +622,12 @@ final class CaptureStore: ObservableObject {
         guard let index = notes.firstIndex(where: { $0.id == id }) else { return }
         notes[index].scroll = scroll
         notes[index].filed = .hand
+        persist()
+    }
+
+    func setGlyph(_ glyph: InscriptionRune, for id: String) {
+        guard let index = notes.firstIndex(where: { $0.id == id }), notes[index].glyph != glyph else { return }
+        notes[index].glyph = glyph
         persist()
     }
 

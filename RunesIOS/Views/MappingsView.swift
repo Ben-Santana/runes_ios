@@ -10,6 +10,7 @@ struct MappingsScreen: View {
     @ObservedObject var store: MappingStore
     var done: () -> Void = {}
     @State private var path: [String] = []
+    @StateObject private var beads = BeadsFeed()
     @State private var editingProfile: ProfileEdit?
     @State private var deleting: MappingProfile?
     private enum ProfileEdit: Identifiable {
@@ -21,18 +22,9 @@ struct MappingsScreen: View {
         NavigationStack(path: $path) {
             ScrollView {
                 VStack(spacing: 28) {
-                    LiveStrip(recent: store.recent)
+                    BeadsStage(feed: beads, store: store).padding(.top, -8)
                     profileBar
-                    MappingGroup("Gestures") {
-                        ForEach(Array(store.active.gestures.enumerated()), id: \.element.id) { index, mapping in
-                            if index > 0 { RowDivider() }
-                            NavigationLink(value: mapping.id) {
-                                MappingRow(mapping: mapping, profiles: store.library.profiles, flashed: flashed(mapping.id), suspended: store.isSuspended(mapping))
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    MappingGroup("Combos", caption: "Several gestures in a row. A combo owns its gestures, so their own mappings don’t also run.") {
+                    MappingGroup("Spells", caption: "Several gestures in a row. A spell owns its gestures, so their own mappings don’t also run.") {
                         ForEach(Array(store.active.combos.enumerated()), id: \.element.id) { index, mapping in
                             NavigationLink(value: mapping.id) {
                                 MappingRow(mapping: mapping, title: comboTitle(mapping, index), profiles: store.library.profiles, flashed: flashed(mapping.id), suspended: store.isSuspended(mapping))
@@ -47,15 +39,24 @@ struct MappingsScreen: View {
                         } label: {
                             HStack(spacing: 12) {
                                 LucideIcon(.plus, size: 18).frame(width: 32)
-                                Text("Add combo").font(.bodyText)
+                                Text("Add spell").font(.bodyText)
                                 Spacer()
                             }
                             .panelRow(height: Metric.rowTall)
                         }
                         .buttonStyle(.plain)
                     }
-                    // Not part of any profile: the same combo whichever one is active.
-                    MappingGroup("While an app runs", caption: "One combo for Workouts, Score and Cook, the same in every profile. Make it while one of them runs and these mappings work again; make it again to go back.") {
+                    MappingGroup("Gestures") {
+                        ForEach(Array(store.active.gestures.enumerated()), id: \.element.id) { index, mapping in
+                            if index > 0 { RowDivider() }
+                            NavigationLink(value: mapping.id) {
+                                MappingRow(mapping: mapping, profiles: store.library.profiles, flashed: flashed(mapping.id), suspended: store.isSuspended(mapping))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    // Not part of any profile: the same steps whichever one is active.
+                    MappingGroup("While an app runs", caption: "One spell for Workouts, Score and Cook, the same in every profile. Make it while one of them runs and these mappings work again; make it again to go back.") {
                         SwitchControlsRow().padding(.horizontal, Metric.inset)
                     }
                 }
@@ -83,19 +84,19 @@ struct MappingsScreen: View {
             }
             .confirmationDialog(deleting.map { "Delete \($0.name)?" } ?? "", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible, presenting: deleting) { p in
                 Button("Delete profile", role: .destructive) { store.deleteProfile(p.id) }
-            } message: { _ in Text("Its gesture mappings and combos are removed from this phone.") }
+            } message: { _ in Text("Its gesture mappings and spells are removed from this phone.") }
         }
         .tint(Color.ink)
     }
 
     private func flashed(_ id: String) -> Bool { store.lastFired?.id == id }
     private func comboTitle(_ mapping: Mapping, _ index: Int) -> String {
-        mapping.name.flatMap { $0.isEmpty ? nil : $0 } ?? "Combo \(index + 1)"
+        mapping.name.flatMap { $0.isEmpty ? nil : $0 } ?? "Spell \(index + 1)"
     }
     private func title(for id: String) -> String {
         if let kind = GestureKind(rawValue: id) { return kind.name }
         let combos = store.active.combos
-        guard let index = combos.firstIndex(where: { $0.id == id }) else { return "Combo" }
+        guard let index = combos.firstIndex(where: { $0.id == id }) else { return "Spell" }
         return comboTitle(combos[index], index)
     }
 
@@ -139,8 +140,6 @@ struct MappingsScreen: View {
                 }
                 .padding(.vertical, 1)
             }
-            Text("Touch and hold a profile to edit, duplicate or delete it.")
-                .font(.caption).foregroundStyle(Color.muted).padding(.leading, 2)
         }
     }
 }
@@ -160,8 +159,8 @@ struct MappingRow: View {
         HStack(spacing: 12) {
             if let steps = mapping.steps {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(title ?? "Combo").font(.bodyText)
-                    StepChips(steps: steps, compact: true)
+                    Text(title ?? "Spell").font(.bodyText)
+                    SpellBeads(steps: steps, solid: !mapping.enabled)
                     Text(summary).font(.caption).foregroundStyle(Color.muted).lineLimit(1)
                 }
             } else if let kind = mapping.motion {
@@ -213,6 +212,43 @@ struct StepIcon: View {
     }
 }
 
+/// A spell written small: its beads in a row on their string, each carrying its step's rune.
+/// The string is heavier where a finger stays down, and the beads are solid when the spell is off.
+struct SpellBeads: View {
+    let steps: [ComboStep]
+    var solid = false
+    private static let bead: CGFloat = 24
+
+    var body: some View {
+        if steps.isEmpty {
+            Text("No beads yet").font(.caption).foregroundStyle(Color.muted)
+        } else {
+            let held = TriggerRules.held(steps).bridges
+            HStack(spacing: 0) {
+                ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
+                    if index > 0 {
+                        Rectangle().fill(Color.ink.opacity(held[index - 1] ? 1 : 0.55))
+                            .frame(width: 7, height: held[index - 1] ? 2.5 : 1.25)
+                    }
+                    RuneIcon(gesture: step.gesture, size: 15)
+                        .foregroundStyle(solid ? Color.paper : Color.ink)
+                        .frame(width: Self.bead, height: Self.bead)
+                        .background(solid ? Color.ink : Color.paper, in: Circle())
+                        .overlay(Circle().strokeBorder(Color.ink, lineWidth: 1.25))
+                    if let axis = step.axis {
+                        // On the string, as the bead's tag.
+                        Text(axis.rawValue.uppercased() + (step.gesture == .rotation ? (step.direction ?? .any).arrow : ""))
+                            .font(.geist(10, .medium, relativeTo: .caption2)).foregroundStyle(Color.muted)
+                            .padding(.leading, 3)
+                    }
+                }
+            }
+            .animation(.standard, value: solid)
+            .accessibilityElement().accessibilityLabel(steps.map(\.name).joined(separator: ", then "))
+        }
+    }
+}
+
 struct StepChips: View {
     let steps: [ComboStep]
     var compact = false
@@ -235,42 +271,6 @@ struct StepChips: View {
     }
 }
 
-/// The last five gestures; the ones that ran a mapping are filled. No words: until a gesture
-/// arrives it shows the empty places they will take.
-private struct LiveStrip: View {
-    let recent: [MappingStore.RecentGesture]
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                if recent.isEmpty {
-                    ForEach(0..<5, id: \.self) { _ in
-                        RoundedRectangle(cornerRadius: Metric.control)
-                            .strokeBorder(Color.faint, style: StrokeStyle(lineWidth: Metric.hairline, dash: [3, 3]))
-                            .frame(width: 34, height: 30)
-                            .transition(.opacity)
-                    }
-                    .accessibilityHidden(true)
-                }
-                ForEach(recent) { item in
-                    StepIcon(step: item.step, size: 18)
-                        .foregroundStyle(item.ranMapping ? Color.paper : Color.ink)
-                        .padding(.horizontal, 8).frame(minHeight: 30)
-                        .background(item.ranMapping ? Color.ink : Color.paper, in: RoundedRectangle(cornerRadius: Metric.control))
-                        .overlay(RoundedRectangle(cornerRadius: Metric.control).strokeBorder(Color.rule, lineWidth: Metric.hairline))
-                        .transition(.opacity.combined(with: .move(edge: .trailing)))
-                        .accessibilityLabel(item.step.name + (item.ranMapping ? ", ran a mapping" : ""))
-                }
-                Spacer(minLength: 0)
-            }
-            .animation(.standard, value: recent)
-            .padding(.horizontal, Metric.inset).frame(minHeight: Metric.rowTall)
-            .panel()
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel("Recent gestures")
-        }
-    }
-}
-
 // MARK: Editor
 
 struct MappingEditor: View {
@@ -280,6 +280,8 @@ struct MappingEditor: View {
     @Environment(\.dismiss) private var dismiss
     @State private var editingAction: Int?
     @State private var confirmDelete = false
+    @State private var renaming = false
+    @State private var draftName = ""
     /// A change that reuses a gesture a paired Mac already uses, waiting for the person's OK.
     @State private var pendingOverlap: Mapping?
     @ObservedObject private var links = MacLinks.shared
@@ -289,37 +291,18 @@ struct MappingEditor: View {
     var body: some View {
         Group {
             if let mapping {
+                GeometryReader { page in
                 ScrollView {
                     VStack(spacing: 28) {
-                        if mapping.isCombo { stepsSection(mapping) }
-                        actionsSection(mapping)
-                        MappingGroup(nil) {
-                            Toggle(isOn: Binding(get: { mapping.enabled }, set: { on in edit { $0.enabled = on } })) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("On").font(.bodyText)
-                                    Text(liveText(mapping)).font(.caption).foregroundStyle(Color.muted)
-                                }
-                            }
-                            .padding(.horizontal, Metric.inset).padding(.vertical, 10)
-                            RowDivider()
-                            Button { store.run(mapping.actions) } label: {
-                                Label { Text("Run now") } icon: { LucideIcon(.play, size: 18) }.font(.bodyText)
-                                    .frame(maxWidth: .infinity, minHeight: Metric.row, alignment: .leading)
-                                    .padding(.horizontal, Metric.inset).contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(mapping.actions.isEmpty || mapping.actions.contains { $0.problem != nil })
-                            RowDivider()
-                            Button(role: .destructive) { confirmDelete = true } label: {
-                                Text(mapping.isCombo ? "Delete combo" : "Clear mapping").font(.bodyText)
-                                    .frame(maxWidth: .infinity, minHeight: Metric.row, alignment: .leading)
-                                    .padding(.horizontal, Metric.inset).contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(!mapping.isCombo && mapping.actions.isEmpty)
+                        if mapping.isCombo {
+                            stepsSection(mapping, pageHeight: page.size.height)
+                        } else {
+                            actionsSection(mapping)
+                            settingsSection(mapping)
                         }
                     }
                     .padding(Metric.gutter)
+                }
                 }
                 .sheet(item: Binding(get: { editingAction.map(EditingIndex.init) }, set: { editingAction = $0?.id })) { item in
                     if item.id < mapping.actions.count {
@@ -335,8 +318,8 @@ struct MappingEditor: View {
                 } message: {
                     Text(overlapText(pendingOverlap))
                 }
-                .confirmationDialog(mapping.isCombo ? "Delete this combo?" : "Clear this mapping?", isPresented: $confirmDelete, titleVisibility: .visible) {
-                    Button(mapping.isCombo ? "Delete combo" : "Clear mapping", role: .destructive) {
+                .confirmationDialog(mapping.isCombo ? "Delete this spell?" : "Clear this mapping?", isPresented: $confirmDelete, titleVisibility: .visible) {
+                    Button(mapping.isCombo ? "Delete spell" : "Clear mapping", role: .destructive) {
                         store.remove(mappingID: mappingID); dismiss()
                     }
                 }
@@ -345,7 +328,29 @@ struct MappingEditor: View {
             }
         }
         .page()
-        .navigationTitle(title).navigationBarTitleDisplayMode(.inline)
+        .navigationTitle(mapping?.name ?? title).navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if let mapping, mapping.isCombo {
+                ToolbarItem(placement: .primaryAction) {
+                    Menu {
+                        menuItem(mapping.name == nil ? "Name spell" : "Rename spell", .pencil) {
+                            draftName = mapping.name ?? ""; renaming = true
+                        }
+                    } label: {
+                        LucideIcon(.ellipsis, size: 20).frame(width: 36, height: 36).contentShape(Rectangle())
+                    }
+                    .accessibilityLabel("More")
+                }
+            }
+        }
+        .alert("Name this spell", isPresented: $renaming) {
+            TextField("Name", text: $draftName)
+            Button("Save") {
+                let name = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
+                edit { $0.name = name.isEmpty ? nil : String(name.prefix(40)) }
+            }
+            Button("Cancel", role: .cancel) {}
+        }
         .onDisappear {
             // An untouched new combo leaves no empty row behind.
             if let mapping, mapping.isCombo, mapping.steps?.isEmpty ?? true, mapping.actions.isEmpty { store.remove(mappingID: mappingID) }
@@ -391,7 +396,7 @@ struct MappingEditor: View {
 
     private func overlapText(_ m: Mapping?) -> String {
         guard let m else { return "" }
-        let name = m.steps.map { _ in "This combo" } ?? (m.motion?.name ?? "This gesture")
+        let name = m.steps.map { _ in "This spell" } ?? (m.motion?.name ?? "This gesture")
         let lines = links.macUses(m.trigger).map { "On \($0.mac), it’s set to “\($0.binding.action)” in the \($0.binding.profile) profile." }
         return "\(name) is already used on your Mac. " + Set(lines).sorted().joined(separator: " ") + " Both will run when you make it."
     }
@@ -399,7 +404,7 @@ struct MappingEditor: View {
     private func liveText(_ m: Mapping) -> String {
         if m.isLive {
             if m.actions.contains(where: { $0.kind.needsForeground }) { return "Runs when you make it. Opening apps needs Runes on screen." }
-            if m.actions.contains(.capture) { return "Runs when you make it. Recording with your phone locked needs Capture’s pocket mode." }
+            if m.actions.contains(where: { $0.kind == .capture || $0.kind == .captureInto }) { return "Runs when you make it. Recording with your phone locked needs Scribe’s pocket mode." }
             return "Runs when you make it, also while your phone is locked."
         }
         if m.actions.isEmpty { return "Add an action first." }
@@ -410,20 +415,50 @@ struct MappingEditor: View {
 
     // MARK: Steps
 
-    /// The combo's name and its steps, built with the same composer every app's gestures use.
-    private func stepsSection(_ mapping: Mapping) -> some View {
-        MappingGroup("Steps") {
-            TextField("Combo name (optional)", text: Binding(get: { mapping.name ?? "" }, set: { text in edit { $0.name = text.isEmpty ? nil : String(text.prefix(40)) } }))
-                .font(.bodyText).padding(.horizontal, Metric.inset).frame(minHeight: Metric.row)
-            RowDivider()
-            TriggerComposer(steps: Binding(get: { mapping.steps ?? [] }, set: { steps in edit { $0.steps = steps } }),
-                            interval: Binding(get: { mapping.intervalMs ?? ComboRules.defaultTime }, set: { ms in edit { $0.intervalMs = ms } }),
-                            rules: .combo,
-                            note: ControlSwitch.shared.combo?.steps == mapping.steps ? "Switch controls uses these steps, so this combo is off while an app runs. Change one of them."
-                                : mapping.usesMotion ? "Rotation, movement and air gestures turn on the band’s motion sensors while this combo is on, which uses more battery."
-                                                     : "Touch a step to change, move or remove it.",
-                            feed: store, collapses: true)
-                .padding(Metric.inset)
+    /// The spell's steps as beads on a string, with what it does and its settings in tabs below.
+    @ViewBuilder private func stepsSection(_ mapping: Mapping, pageHeight: CGFloat) -> some View {
+        ComboCreator(steps: Binding(get: { mapping.steps ?? [] }, set: { steps in edit { $0.steps = steps } }),
+                     interval: Binding(get: { mapping.intervalMs ?? ComboRules.defaultTime }, set: { ms in edit { $0.intervalMs = ms } }),
+                     enabled: mapping.enabled,
+                     note: ControlSwitch.shared.combo?.steps == mapping.steps ? "Switch controls uses these steps, so this spell is off while an app runs. Change one of them."
+                         : nil,
+                     feed: store, actionTab: AnyView(actionsSection(mapping)), settingsTab: AnyView(settingsSection(mapping)),
+                     pageHeight: pageHeight)
+    }
+
+    /// Timing, on and off, a test run, and removal.
+    @ViewBuilder private func settingsSection(_ mapping: Mapping) -> some View {
+        VStack(spacing: 28) {
+            if mapping.isCombo {
+                IntervalSlider(value: Binding(get: { mapping.intervalMs ?? ComboRules.defaultTime }, set: { ms in edit { $0.intervalMs = ms } }))
+            }
+            MappingGroup(nil) {
+                Toggle(isOn: Binding(get: { mapping.enabled }, set: { on in edit { $0.enabled = on } })) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("On").font(.bodyText)
+                        Text(liveText(mapping)).font(.caption).foregroundStyle(Color.muted)
+                    }
+                }
+                .padding(.horizontal, Metric.inset).padding(.vertical, 10)
+                RowDivider()
+                Button { store.run(mapping.actions) } label: {
+                    Label { Text("Run now") } icon: { LucideIcon(.play, size: 18) }.font(.bodyText)
+                        .frame(maxWidth: .infinity, minHeight: Metric.row, alignment: .leading)
+                        .padding(.horizontal, Metric.inset).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(mapping.actions.isEmpty || mapping.actions.contains { $0.problem != nil })
+                RowDivider()
+                Button(role: .destructive) { confirmDelete = true } label: {
+                    Text(mapping.isCombo ? "Delete spell" : "Clear mapping").font(.bodyText)
+                        .foregroundStyle(Color.destructive)
+                        .opacity(!mapping.isCombo && mapping.actions.isEmpty ? 0.4 : 1)
+                        .frame(maxWidth: .infinity, minHeight: Metric.row, alignment: .leading)
+                        .padding(.horizontal, Metric.inset).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(!mapping.isCombo && mapping.actions.isEmpty)
+            }
         }
     }
 
@@ -445,7 +480,7 @@ struct MappingEditor: View {
                                     Text(problem).font(.caption).foregroundStyle(Color.ink).underline()
                                 } else if action.kind.needsForeground {
                                     Text("Needs Runes on screen").font(.caption).foregroundStyle(Color.muted)
-                                } else if action == .capture {
+                                } else if action.kind == .capture || action.kind == .captureInto {
                                     Text(mapping.endingRelease == nil ? "Make it again to save" : "Let go to save").font(.caption).foregroundStyle(Color.muted)
                                 }
                             }
@@ -657,11 +692,28 @@ private struct ActionEditor: View {
             SpotifyAccountSection(client: spotify)
         case .capture:
             VStack(alignment: .leading, spacing: 10) {
-                Text("Starts a voice note in Capture. Make the gesture again and the note is saved and written down.").font(.bodyText)
+                Text("Starts a voice note in Scribe. Make the gesture again and the note is saved and written down.").font(.bodyText)
                     .fixedSize(horizontal: false, vertical: true)
-                Text("If the gesture or combo ends with a finger held, the note records for as long as you hold and saves when you let go.")
+                Text("If the gesture or spell ends with a finger held, the note records for as long as you hold and saves when you let go.")
                     .font(.caption).foregroundStyle(Color.muted).fixedSize(horizontal: false, vertical: true)
-                Text("With your phone locked or Runes in the background, turn on pocket mode in Capture first: iPhone doesn’t let apps start recording from the background.")
+                Text("With your phone locked or Runes in the background, turn on pocket mode in Scribe first: iPhone doesn’t let apps start recording from the background.")
+                    .font(.caption).foregroundStyle(Color.muted).fixedSize(horizontal: false, vertical: true)
+            }
+        case .captureInto(let id):
+            VStack(alignment: .leading, spacing: 8) {
+                SectionLabel("Set")
+                if CaptureStore.shared.scrolls.isEmpty {
+                    Text("Make a set in Scribe first.").font(.bodyText).foregroundStyle(Color.muted)
+                } else {
+                    ChoiceList(options: CaptureStore.shared.scrolls.map(\.id), selected: id, label: { sid in
+                        let set = CaptureStore.shared.scroll(sid)
+                        HStack(spacing: 12) {
+                            RuneBallView(rune: set?.mark ?? .home, size: 22)
+                            Text(set?.name ?? "Set").font(.bodyText)
+                        }
+                    }, choose: { action = .captureInto($0) })
+                }
+                Text("Starts a voice note kept in this set. Make the gesture again, or let go if it ends with a hold, and it is saved and written down.")
                     .font(.caption).foregroundStyle(Color.muted).fixedSize(horizontal: false, vertical: true)
             }
         case .moveProfile(let direction):
@@ -812,6 +864,7 @@ extension MappingAction.Kind {
         case .moveProfile: .arrowDown
         case .spotify: .music
         case .capture: .mic
+        case .captureInto: .mic
         }
     }
 }

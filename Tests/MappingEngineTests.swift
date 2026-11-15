@@ -48,6 +48,11 @@ struct MappingEngineTests {
         precondition(roundTrip.profiles == [profile], "Library round-trips through JSON")
         precondition(!Mapping(id: "tap-index", enabled: true, actions: [.openURL("")]).isLive, "Incomplete actions don't run")
         precondition(Mapping(id: "tap-index", enabled: true, actions: [.openURL("https://a.b"), .wait(ms: 200), .haptic(.light)]).isLive, "Linked actions run")
+        precondition(combo("off", [.tapIndex, .tapMiddle], ComboRules.noLimit).isLive, "A combo may have no time limit")
+        precondition(!combo("odd", [.tapIndex, .tapMiddle], 123).isLive, "Only the timing choices, or no limit")
+        precondition(run([combo("off", [.swipeUp, .swipeDown], ComboRules.noLimit)], [(.swipeUp, 0), (.swipeDown, 8)]) == ["combo-off"],
+                     "With no limit the next step can come any time later")
+        precondition(run([combo("on", [.swipeUp, .swipeDown], 500)], [(.swipeUp, 0), (.swipeDown, 8)]).isEmpty, "With a limit it can't")
 
         // 2. Band gestures map to the Mac's gesture ids.
         let at = Date()

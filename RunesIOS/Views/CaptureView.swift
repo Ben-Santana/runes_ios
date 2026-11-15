@@ -2,13 +2,12 @@ import AVFoundation
 import SwiftUI
 import UIKit
 
-// Capture: make a gesture, say it, and it is written down as an inscription. The screen is
-// a shelf of scrolls over an inbox of inscriptions by day, over one control, the circle: hold
-// it to record, or tap it to record until the next tap. The band's gesture (a hold by
-// default; any gesture or combo in settings) does the same. A scroll's page is the same
-// screen narrowed to that scroll, and what is recorded there is kept in it. Apple
-// Intelligence names each inscription and files loose ones (CaptureScribe). Pocket mode, in
-// settings, keeps the microphone open so the band can record with the phone locked.
+// Scribe (Capture in code): make the combo, say it, and it is written down as an inscription.
+// The screen is the sets, as rune balls, over the loose inscriptions by day; the combo waits
+// at the bottom, and a rune rises there while recording. Drag a loose inscription onto a set to
+// keep it there. A set's page (SetPage) records into that set. Apple Intelligence names each
+// inscription and files loose ones (CaptureScribe). Pocket mode, in settings, keeps the
+// microphone open so the band can record with the phone locked.
 
 struct CaptureScreen: View {
     @ObservedObject var store: CaptureStore
@@ -18,6 +17,8 @@ struct CaptureScreen: View {
     @State private var showSettings = false
     @State private var editing: ScrollEditor.Mode?
     @State private var confirmUnroll = false
+    /// A set's page is reading one of its inscriptions, whose own menu takes the set's place.
+    @State private var setReading = false
     @State private var appeared = false
     @State private var token = UUID().uuidString
     @Environment(\.scenePhase) private var scenePhase
@@ -26,43 +27,59 @@ struct CaptureScreen: View {
     private var scroll: CaptureScroll? { scrollID.flatMap(store.scroll) }
 
     var body: some View {
-        CaptureView(notes: store.inscriptions(in: scrollID), scrolls: store.scrolls, scroll: scroll, naming: store.naming,
-                    controls: store.controls, recordingSince: store.recordingSince, listening: store.listening,
-                    releaseEnds: store.endRelease != nil, problem: store.problem, arrived: store.arrived, meter: store.meter,
-                    actions: CaptureActions(begin: store.begin, finish: store.finish,
-                                            open: { path.append(.note($0)) }, delete: store.delete, resolve: resolve,
-                                            openScroll: { path.append(.scroll($0)) }, newScroll: { editing = .new },
-                                            move: store.move))
+        Group {
+            if let scrollID {
+                SetPage(store: store, setID: scrollID, reading: $setReading)
+            } else {
+                CaptureView(notes: store.notes.filter { $0.scroll == nil }, scrolls: store.scrolls, naming: store.naming,
+                            controls: store.controls, recordingSince: store.shownSince, listening: store.listening, comboReached: store.comboReached,
+                            problem: store.problem, arrived: store.arrived, meter: store.meter,
+                            actions: CaptureActions(toggle: { store.toggle() },
+                                                    open: { path.append(.note($0)) }, delete: store.delete, resolve: resolve,
+                                                    openScroll: { path.append(.scroll($0)) },
+                                                    move: store.move))
+            }
+        }
             .page()
-            .navigationTitle(scrollID == nil ? "Capture" : "").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle(scrollID == nil ? "Scribe" : scroll?.name ?? "").navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    if let scroll {
+                if scrollID == nil {
+                    ToolbarItemGroup(placement: .primaryAction) {
                         Menu {
-                            Button { editing = .edit(scroll) } label: { Label { Text("Edit scroll") } icon: { Lucide.pencil.image(size: 18) } }
-                            Button(role: .destructive) { confirmUnroll = true } label: { Label { Text("Unroll scroll") } icon: { Lucide.trash2.image(size: 18) } }
-                        } label: { LucideIcon(.ellipsis, size: 20).frame(width: 36, height: 36).contentShape(Rectangle()) }
-                            .accessibilityLabel("Scroll options")
-                    } else {
+                            Button { store.toggle() } label: {
+                                Label { Text(store.shownSince != nil ? "Save inscription" : "Record an inscription") } icon: { Lucide.mic.image(size: 18) }
+                            }
+                            Button { editing = .new } label: { Label { Text("New set") } icon: { Lucide.plus.image(size: 18) } }
+                        } label: { LucideIcon(.plus, size: 20).frame(width: 36, height: 36).contentShape(Rectangle()) }
+                            .accessibilityLabel("New")
                         Button { showSettings = true } label: { LucideIcon(.settings, size: 19).frame(width: 36, height: 36) }
-                            .accessibilityLabel("Capture settings")
+                            .accessibilityLabel("Scribe settings")
+                    }
+                }
+                if let scroll, !setReading {
+                    ToolbarItem(placement: .primaryAction) {
+                        Menu {
+                            Button { editing = .edit(scroll) } label: { Label { Text("Edit set") } icon: { Lucide.pencil.image(size: 18) } }
+                            Button(role: .destructive) { confirmUnroll = true } label: { Label { Text("Delete set") } icon: { Lucide.trash2.image(size: 18) } }
+                        } label: { LucideIcon(.ellipsis, size: 20).frame(width: 36, height: 36).contentShape(Rectangle()) }
+                            .accessibilityLabel("Set options")
                     }
                 }
             }
             .sheet(isPresented: $showSettings) { CaptureSettingsScreen(store: store) }
             .sheet(item: $editing) { mode in
-                ScrollEditor(mode: mode, scribe: store.controls.scribe && store.scribeStatus == .ready) { name, rune, purpose in
+                ScrollEditor(mode: mode, scribe: store.controls.scribe && store.scribeStatus == .ready) { name, glyph, purpose in
                     switch mode {
-                    case .new: store.addScroll(name: name, rune: rune, purpose: purpose)
+                    case .new: store.addScroll(name: name, glyph: glyph, purpose: purpose)
                     case .edit(var scroll):
-                        scroll.name = name; scroll.rune = rune; scroll.purpose = purpose
+                        scroll.name = name; scroll.glyph = glyph; scroll.purpose = purpose
                         store.updateScroll(scroll)
                     }
                 }
             }
-            .confirmationDialog("Unroll \(scroll?.name ?? "this scroll")?", isPresented: $confirmUnroll, titleVisibility: .visible) {
-                Button("Unroll scroll", role: .destructive) { if let scrollID { store.deleteScroll(scrollID); dismiss() } }
-            } message: { Text("Its inscriptions are kept, loose in Capture.") }
+            .confirmationDialog("Delete \(scroll?.name ?? "this set")?", isPresented: $confirmUnroll, titleVisibility: .visible) {
+                Button("Delete set", role: .destructive) { if let scrollID { store.deleteScroll(scrollID); dismiss() } }
+            } message: { Text("Its inscriptions are kept, loose in Scribe.") }
             // The band's gesture belongs to Capture while one of its screens can be seen.
             .onAppear { appeared = true; shown(scenePhase == .active); store.filing = scrollID; store.prepare() }
             .onDisappear {
@@ -82,13 +99,11 @@ struct CaptureScreen: View {
 }
 
 struct CaptureActions {
-    var begin: () -> Void = {}
-    var finish: () -> Void = {}
+    var toggle: () -> Void = {}
     var open: (String) -> Void = { _ in }
     var delete: (String) -> Void = { _ in }
     var resolve: (CaptureStore.Problem) -> Void = { _ in }
     var openScroll: (String) -> Void = { _ in }
-    var newScroll: () -> Void = {}
     var move: (String, String?) -> Void = { _, _ in }
 }
 
@@ -96,56 +111,38 @@ struct CaptureActions {
 struct CaptureView: View {
     let notes: [CaptureNote]
     var scrolls: [CaptureScroll] = []
-    /// The scroll whose page this is; nil for the inbox.
-    var scroll: CaptureScroll? = nil
     var naming: Set<String> = []
     let controls: CaptureControls
     let recordingSince: Date?
     let listening: Bool
-    /// True while a recording under way ends when a held finger lets go.
-    var releaseEnds = false
+    var comboReached = 0
     var problem: CaptureStore.Problem? = nil
     var arrived: String? = nil
     @ObservedObject var meter: CaptureMeter
     var actions = CaptureActions()
 
     var body: some View {
-        VStack(spacing: 0) {
+        ZStack(alignment: .bottom) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    if listening {
-                        PocketStatus(trigger: controls.trigger)
-                        Hairline()
-                    }
                     if let problem {
                         NoticeCard(sentence: problem.sentence, actionTitle: problem == .denied ? "Open Settings" : "OK") { actions.resolve(problem) }
                             .padding(.top, 16).transition(.opacity)
                     }
-                    if let scroll {
-                        ScrollHeader(scroll: scroll, count: notes.count).padding(.top, 20)
-                        if notes.isEmpty { scrollEmpty(scroll) } else { inbox }
-                    } else {
-                        if !notes.isEmpty || !scrolls.isEmpty {
-                            ScrollShelf(scrolls: scrolls, counts: counts, open: actions.openScroll, new: actions.newScroll)
-                                .padding(.top, 24)
-                        }
-                        if notes.isEmpty { empty } else { inbox }
+                    if !scrolls.isEmpty {
+                        SetShelf(sets: scrolls, open: actions.openScroll, drop: { actions.move($0, $1) })
+                            .padding(.top, 20)
                     }
+                    if !notes.isEmpty { inbox } else if scrolls.isEmpty { empty }
                 }
-                .padding(.horizontal, Metric.gutter).padding(.bottom, 24)
+                .padding(.horizontal, Metric.gutter).padding(.bottom, 120)
                 .animation(.spring(duration: 0.45, bounce: 0.12), value: notes.map(\.id))
                 .animation(.spring(duration: 0.45, bounce: 0.12), value: notes.map(\.scroll))
                 .animation(.standard, value: problem)
             }
             .scrollBounceBehavior(.basedOnSize)
-            Rule(inset: 0)
-            RecordDock(recordingSince: recordingSince, trigger: controls.trigger, releaseEnds: releaseEnds, into: scroll?.name, meter: meter,
-                       begin: actions.begin, finish: actions.finish)
+            ScribeDock(trigger: controls.trigger, recordingSince: recordingSince, meter: meter, reached: comboReached, toggle: actions.toggle)
         }
-    }
-
-    private var counts: [String: Int] {
-        notes.reduce(into: [:]) { counts, note in if let scroll = note.scroll { counts[scroll, default: 0] += 1 } }
     }
 
     private var empty: some View {
@@ -158,59 +155,31 @@ struct CaptureView: View {
         .accessibilityElement(children: .combine)
     }
 
-    private func scrollEmpty(_ scroll: CaptureScroll) -> some View {
-        Text("Nothing is kept in \(scroll.name) yet. Record on this page and it’s kept here; inscriptions that belong here are filed as you make them.")
-            .font(.bodyText).foregroundStyle(Color.muted).lineSpacing(3).fixedSize(horizontal: false, vertical: true)
-            .padding(.top, 28)
-    }
-
     private var inbox: some View {
         ForEach(Array(CaptureDay.group(notes).enumerated()), id: \.element.id) { section, day in
             Heading(day.title, count: day.notes.count).padding(.top, section == 0 ? 28 : 36)
             ForEach(Array(day.notes.enumerated()), id: \.element.id) { index, note in
                 if index > 0 { Hairline(delay: 0.03 * Double(index)) }
                 Button { actions.open(note.id) } label: {
-                    NoteRow(note: note, scroll: scroll == nil ? note.scroll.flatMap { id in scrolls.first { $0.id == id } } : nil,
+                    NoteRow(note: note, scroll: note.scroll.flatMap { id in scrolls.first { $0.id == id } },
                             naming: naming.contains(note.id))
                 }
                     .buttonStyle(PressRow())
-                    .contextMenu { moveMenu(note) }
+                    // Lifted, the row keeps rounded corners rather than a square backing.
+                    .contentShape(.dragPreview, RoundedRectangle(cornerRadius: Metric.panel))
+                    .draggable(note.id) {
+                        HStack(spacing: 8) {
+                            RuneBallView(rune: note.mark, size: 26)
+                            Text(note.heading).font(.label).lineLimit(1)
+                        }
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .background(Color.paper, in: Capsule())
+                        .contentShape(.dragPreview, Capsule())
+                    }
                     .swipeToDelete { actions.delete(note.id) }
                     .transition(.asymmetric(insertion: .move(edge: .top).combined(with: .opacity), removal: .opacity))
             }
         }
-    }
-
-    @ViewBuilder private func moveMenu(_ note: CaptureNote) -> some View {
-        if !scrolls.isEmpty {
-            Section("Keep in") {
-                ForEach(scrolls) { scroll in
-                    Button { actions.move(note.id, scroll.id) } label: {
-                        Label { Text(scroll.name) } icon: { if note.scroll == scroll.id { Lucide.check.image(size: 18) } }
-                    }
-                }
-                if note.scroll != nil { Button("Take out of scroll") { actions.move(note.id, nil) } }
-            }
-        }
-        Button(role: .destructive) { actions.delete(note.id) } label: { Label { Text("Delete") } icon: { Lucide.trash2.image(size: 18) } }
-    }
-}
-
-/// Shown over the inscriptions while pocket mode is on, since the microphone is.
-private struct PocketStatus: View {
-    let trigger: CaptureTrigger
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
-                PulseDot()
-                Text("Pocket mode is listening").font(.label)
-            }
-            Text("\(trigger.start) anywhere to record, also with your phone locked. Turn it off in settings.")
-                .font(.caption).foregroundStyle(Color.muted).fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(.vertical, 14)
-        .accessibilityElement(children: .combine)
     }
 }
 
@@ -272,7 +241,7 @@ private struct NoteRow: View {
                     Spacer(minLength: 8)
                     if let scroll {
                         HStack(spacing: 5) {
-                            RuneGlyph(rune: scroll.rune, size: 13)
+                            RuneBallView(rune: scroll.mark, size: 15)
                             Text(scroll.name).font(.caption).lineLimit(1)
                         }
                         .foregroundStyle(Color.muted)
@@ -319,106 +288,142 @@ struct Waveform: View {
 
 // MARK: Recording
 
-/// The circle and what it is doing. Hold it to record and let go to save; a tap starts a
-/// recording that the next tap saves. The band's gesture does the same from anywhere on
-/// this screen, and the circle shows it.
-private struct RecordDock: View {
-    let recordingSince: Date?
+/// The bottom of Scribe: the combo that records, as its runes, and while recording, a rune that
+/// pops up and swells with the voice. Touching either does what the combo does.
+struct ScribeDock: View {
     let trigger: CaptureTrigger
-    /// The recording under way was begun by a hold on the band and ends when it lets go.
-    let releaseEnds: Bool
-    /// The scroll what is recorded here is kept in.
-    var into: String? = nil
+    let recordingSince: Date?
     @ObservedObject var meter: CaptureMeter
-    let begin: () -> Void
-    let finish: () -> Void
-
-    @State private var pressedAt: Date?
-    /// True when this press started the recording, rather than landing on one under way.
-    @State private var startedHere = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    private var recording: Bool { recordingSince != nil }
+    /// Whether the combo shows while nothing is recording.
+    var showsCombo = true
+    /// How many of the combo's steps have been made: those beads turn over to ink.
+    var reached = 0
+    let toggle: () -> Void
 
     var body: some View {
-        VStack(spacing: 8) {
-            status.frame(height: 44)
-            ZStack {
-                if recording, !reduceMotion {
-                    // The voice, as rings: louder speech pushes them further out.
-                    ForEach(0..<3, id: \.self) { ring in
-                        Circle().stroke(Color.ink, lineWidth: Metric.hairline)
-                            .frame(width: 84, height: 84)
-                            .scaleEffect(1 + meter.level * (0.1 + 0.1 * Double(ring)) + 0.05 * Double(ring + 1))
-                            .opacity(0.5 - 0.14 * Double(ring))
+        ZStack(alignment: .bottom) {
+            if let since = recordingSince {
+                RecordingRune(since: since, meter: meter)
+                    .onTapGesture(perform: toggle)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Recording. Save it")
+                    .accessibilityAddTraits(.isButton)
+                    .transition(.scale(scale: 0.3, anchor: .bottom).combined(with: .opacity))
+            } else if showsCombo {
+                HStack(spacing: 0) {
+                    ForEach(Array(trigger.steps.enumerated()), id: \.offset) { index, step in
+                        if index > 0 { Rectangle().fill(Color.ink.opacity(0.55)).frame(width: 12, height: 1.25) }
+                        let made = index < reached
+                        LivingBall(rune: InscriptionRune(rawValue: step.gesture.rawValue) ?? .tapIndex, size: 32, seed: Double(index), inverted: made)
+                            .scaleEffect(made ? 1.12 : 1)
+                            .animation(.spring(duration: 0.3, bounce: 0.45), value: made)
                     }
-                    .animation(.spring(duration: 0.18, bounce: 0), value: meter.level)
-                    .transition(.opacity)
                 }
-                Circle().fill(recording ? Color.ink : Color.paper)
-                Circle().strokeBorder(Color.ink, lineWidth: Metric.hairline)
-                LucideIcon(.mic, size: 28).foregroundStyle(recording ? Color.paper : Color.ink)
+                .padding(.horizontal, 10).padding(.vertical, 8)
+                .background(Color.paper, in: Capsule())
+                .overlay(Capsule().strokeBorder(Color.rule, lineWidth: Metric.hairline))
+                .contentShape(Capsule())
+                .onTapGesture(perform: toggle)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Record an inscription: \(trigger.name)")
+                .accessibilityAddTraits(.isButton)
+                .transition(.opacity.combined(with: .scale(scale: 0.9)))
             }
-            .frame(width: 84, height: 84)
-            .scaleEffect(pressedAt != nil && !reduceMotion ? 0.94 : 1)
-            .animation(.lively, value: pressedAt != nil)
-            .animation(.standard, value: recording)
-            .frame(width: 160, height: 128)
-            .contentShape(Rectangle())
-            .gesture(DragGesture(minimumDistance: 0)
-                .onChanged { _ in
-                    guard pressedAt == nil else { return }
-                    pressedAt = Date()
-                    startedHere = !recording
-                    if !recording { begin() }
-                }
-                .onEnded { _ in
-                    let held = Date().timeIntervalSince(pressedAt ?? Date())
-                    pressedAt = nil
-                    // A press on a recording under way saves it. A quick tap that started
-                    // one leaves it running; a hold saves on release.
-                    if !startedHere || held >= 0.35 { finish() }
-                })
-            .sensoryFeedback(trigger: recording) { _, now in now ? .impact(weight: .medium) : .success }
-            .accessibilityElement()
-            .accessibilityLabel(recording ? "Save recording" : "Record an inscription")
-            .accessibilityAddTraits(.isButton)
-            .accessibilityAction { if recording { finish() } else { begin() } }
         }
-        .padding(.top, 14).padding(.bottom, 6)
         .frame(maxWidth: .infinity)
+        .padding(.bottom, 14)
+        // Paper rises behind it, so what scrolls underneath doesn't cross the rune.
+        .background(alignment: .bottom) {
+            if recordingSince != nil || showsCombo {
+                LinearGradient(colors: [Color.paper.opacity(0), Color.paper.opacity(0.92), Color.paper], startPoint: .top, endPoint: .bottom)
+                    .frame(height: recordingSince != nil ? 330 : 90)
+                    .padding(.bottom, -40)
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.spring(duration: 0.5, bounce: 0.35), value: recordingSince != nil)
+        .sensoryFeedback(trigger: recordingSince != nil) { _, now in now ? .impact(weight: .medium) : .success }
+    }
+}
+
+/// A large ball that rises while a recording is under way. Ripples leave it in time with the
+/// voice, and the runes circle it like words being gathered.
+private struct RecordingRune: View {
+    let since: Date
+    @ObservedObject var meter: CaptureMeter
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private static let radius = 58.0
+    private static let orbit: [InscriptionRune] = [.tapIndex, .music, .swipeUp, .light, .holdMiddle, .time, .rotation, .home, .doubleTapIndex, .air]
+
+    var body: some View {
+        VStack(spacing: 6) {
+            TimelineView(.animation(paused: reduceMotion)) { timeline in
+                Canvas { context, size in draw(&context, size: size, at: timeline.date) }
+            }
+            .frame(width: 400, height: 300)
+            TimelineView(.periodic(from: since, by: 0.25)) { context in
+                Text(CaptureRules.clock(max(0, context.date.timeIntervalSince(since))))
+                    .font(.geist(17, .medium, relativeTo: .headline)).monospacedDigit().contentTransition(.numericText())
+            }
+            .padding(.horizontal, 14).padding(.vertical, 6)
+            .background(Color.paper, in: Capsule())
+            .overlay(Capsule().strokeBorder(Color.rule, lineWidth: Metric.hairline))
+        }
+        .contentShape(Rectangle())
     }
 
-    @ViewBuilder private var status: some View {
-        if let since = recordingSince {
-            VStack(spacing: 2) {
-                TimelineView(.periodic(from: since, by: 0.25)) { context in
-                    Text(CaptureRules.clock(max(0, context.date.timeIntervalSince(since))))
-                        .font(.geist(24, .medium, relativeTo: .title2)).monospacedDigit().contentTransition(.numericText())
-                }
-                Text((pressedAt != nil && startedHere) || releaseEnds ? "Let go to save" : trigger.holds ? "Tap to save" : "Tap, or make the gesture again, to save")
-                    .font(.caption).foregroundStyle(Color.muted).contentTransition(.opacity)
+    private func draw(_ context: inout GraphicsContext, size: CGSize, at date: Date) {
+        let ink = Color.ink, level = reduceMotion ? 0 : meter.level
+        let age = date.timeIntervalSince(since), t = date.timeIntervalSinceReferenceDate
+        let centre = CGPoint(x: size.width / 2, y: size.height / 2)
+        let r = Self.radius * (1 + 0.07 * level)
+        func circle(_ radius: Double) -> Path { Path(ellipseIn: CGRect(x: centre.x - radius, y: centre.y - radius, width: 2 * radius, height: 2 * radius)) }
+
+        if !reduceMotion {
+            // Ripples, one every 0.55 s and a burst as it starts; louder speech sends them further and darker.
+            let period = 0.55, life = 1.7
+            let newest = Int(floor(age / period))
+            for born in max(0, newest - Int(life / period) - 1)...max(0, newest) {
+                let u = (age - Double(born) * period) / life
+                guard u >= 0, u < 1 else { continue }
+                let eased = 1 - pow(1 - u, 3)
+                context.stroke(circle(r + 6 + eased * (55 + 25 * level)), with: .color(ink.opacity((1 - u) * (0.22 + 0.45 * level))), lineWidth: 1.25)
             }
-            .transition(.opacity.combined(with: .scale(scale: 0.94)))
-            .accessibilityElement(children: .combine)
-        } else {
-            VStack(spacing: 4) {
-                HStack(spacing: 8) {
-                    HStack(spacing: 3) {
-                        ForEach(Array(trigger.steps.enumerated()), id: \.offset) { index, step in
-                            if index > 0 { LucideIcon(.chevronRight, size: 9).foregroundStyle(Color.faint) }
-                            StepIcon(step: step, size: 16)
-                        }
-                    }
-                    Text(trigger.holds ? "or hold the circle" : "or tap the circle").font(.caption)
-                }
-                if let into { Text("Kept in \(into)").font(.caption).lineLimit(1) }
+            if age < 0.6 {
+                let u = age / 0.6
+                context.stroke(circle(r + 80 * (1 - pow(1 - u, 3))), with: .color(ink.opacity(0.6 * (1 - u))), lineWidth: 2)
             }
-            .foregroundStyle(Color.muted)
-            .transition(.opacity)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("\(trigger.start), \(trigger.holds ? "or hold the circle" : "or tap the circle")\(into.map { ". Kept in \($0)" } ?? "")")
         }
+
+        // The other runes circle it on a tilted ring, drawn in closer as the voice rises: those
+        // on the far side pass behind it.
+        func orbiters(front: Bool, _ context: inout GraphicsContext) {
+            guard !reduceMotion else { return }
+            let count = Self.orbit.count
+            let reach = r + 70 - 12 * level + 4 * sin(t * 1.3)
+            let arrive = 1 - pow(1 - min(1, age / 0.8), 3)
+            for (index, rune) in Self.orbit.enumerated() {
+                let angle = t * 0.45 + Double(index) / Double(count) * 2 * .pi
+                let depth = sin(angle)
+                guard (depth >= 0) == front else { continue }
+                let at = CGPoint(x: centre.x + cos(angle) * reach * arrive, y: centre.y + depth * reach * 0.38 * arrive)
+                let k = (0.8 + 0.2 * depth) * (0.9 + 0.3 * level)
+                let placed = rune.path.applying(CGAffineTransform(translationX: at.x, y: at.y)
+                    .rotated(by: sin(t * 0.9 + Double(index)) * 0.4).scaledBy(x: k, y: k).translatedBy(x: -12, y: -12))
+                let alpha = (front ? 0.55 + 0.35 * depth + 0.1 * level : 0.15 + 0.15 * (1 + depth)) * arrive
+                context.stroke(placed, with: .color(ink.opacity(alpha)), style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
+            }
+        }
+        orbiters(front: false, &context)
+
+        // The ball itself, plain, swelling with the voice.
+        let pop = reduceMotion ? 1 : 1 + 2.4 * pow(min(1, age / 0.45) - 1, 3) + 1.4 * pow(min(1, age / 0.45) - 1, 2)
+        let ball = circle(r * max(0.01, pop))
+        context.fill(ball, with: .color(Color.paper))
+        context.stroke(ball, with: .color(ink), lineWidth: 1.25)
+        orbiters(front: true, &context)
     }
 }
 
@@ -431,6 +436,7 @@ struct NoteScreen: View {
     @State private var title = ""
     @State private var loaded = false
     @State private var confirmDelete = false
+    @State private var makingSet = false
     @StateObject private var player = NotePlayer()
     @FocusState private var editing: Field?
     @Environment(\.dismiss) private var dismiss
@@ -456,6 +462,12 @@ struct NoteScreen: View {
                             if store.controls.scribe, store.scribeStatus == .ready { menuItem("Name it again", .penTool) { store.nameAgain(noteID) } }
                         }
                         if note.state != .transcribing { menuItem("Inscribe it again", .rotateCcw) { store.transcribeAgain(noteID) } }
+                        // A loose inscription is put in a set from here; one in a set shows its set on the page.
+                        if note.scroll.flatMap(store.scroll) == nil {
+                            Menu {
+                                SetChoices(store: store, note: note, making: $makingSet)
+                            } label: { Label { Text("Add to set") } icon: { Lucide.plus.image(size: 18) } }
+                        }
                         menuItem("Delete", .trash2, role: .destructive) { confirmDelete = true }
                     } label: {
                         LucideIcon(.ellipsis, size: 20).frame(width: 36, height: 36).contentShape(Rectangle())
@@ -467,6 +479,12 @@ struct NoteScreen: View {
         .confirmationDialog("Delete this inscription?", isPresented: $confirmDelete, titleVisibility: .visible) {
             Button("Delete inscription", role: .destructive) { player.stop(); store.delete(noteID); dismiss() }
         } message: { Text("Its recording is deleted too.") }
+        .sheet(isPresented: $makingSet) {
+            ScrollEditor(mode: .new, scribe: store.controls.scribe && store.scribeStatus == .ready) { name, glyph, purpose in
+                let scroll = store.addScroll(name: name, glyph: glyph, purpose: purpose)
+                store.move(noteID, to: scroll.id)
+            }
+        }
         .onAppear { if !loaded, let note = store.note(noteID) { text = note.text; title = note.title ?? ""; loaded = true } }
         .onDisappear { player.stop(); save() }
         .onChange(of: editing) { _, now in if now == nil { save() } }
@@ -498,7 +516,7 @@ struct NoteScreen: View {
                     Text(note.at.formatted(.dateTime.weekday(.wide).day().month(.wide).hour().minute()))
                         .font(.caption).foregroundStyle(Color.muted)
                 }
-                ScrollPicker(store: store, note: note)
+                if note.scroll.flatMap(store.scroll) != nil { ScrollPicker(store: store, note: note, making: $makingSet) }
                 VStack(alignment: .leading, spacing: 10) {
                     TextField(note.state == .transcribing ? "Inscribing…" : "No words yet. Type them here.", text: $text, axis: .vertical)
                         .font(.geist(19, relativeTo: .title3)).lineSpacing(6)
@@ -519,28 +537,39 @@ struct NoteScreen: View {
     }
 }
 
+/// The sets an inscription can be put in, a way out of its set, and a new one.
+private struct SetChoices: View {
+    @ObservedObject var store: CaptureStore
+    let note: CaptureNote
+    @Binding var making: Bool
+
+    var body: some View {
+        ForEach(store.scrolls) { scroll in
+            Button { store.move(note.id, to: scroll.id) } label: {
+                Label { Text(scroll.name) } icon: { if scroll.id == note.scroll { Lucide.check.image(size: 18) } }
+            }
+        }
+        if note.scroll.flatMap(store.scroll) != nil { Button("Take out of set") { store.move(note.id, to: nil) } }
+        Divider()
+        Button { making = true } label: { Label { Text("New set…") } icon: { Lucide.plus.image(size: 18) } }
+    }
+}
+
 /// Which scroll an inscription is kept in, and who put it there. Opens a menu of the scrolls.
 private struct ScrollPicker: View {
     @ObservedObject var store: CaptureStore
     let note: CaptureNote
-    @State private var making = false
+    @Binding var making: Bool
 
     var body: some View {
         let current = note.scroll.flatMap(store.scroll)
         Menu {
-            ForEach(store.scrolls) { scroll in
-                Button { store.move(note.id, to: scroll.id) } label: {
-                    Label { Text(scroll.name) } icon: { if scroll.id == note.scroll { Lucide.check.image(size: 18) } }
-                }
-            }
-            if current != nil { Button("Take out of scroll") { store.move(note.id, to: nil) } }
-            Divider()
-            Button { making = true } label: { Label { Text("New scroll…") } icon: { Lucide.plus.image(size: 18) } }
+            SetChoices(store: store, note: note, making: $making)
         } label: {
             HStack(spacing: 10) {
                 ZStack {
                     if let current {
-                        RuneGlyph(rune: current.rune, size: 18).transition(.scale(scale: 0.6).combined(with: .opacity))
+                        RuneBallView(rune: current.mark, size: 20).transition(.scale(scale: 0.6).combined(with: .opacity))
                     } else {
                         Circle().strokeBorder(Color.muted, style: StrokeStyle(lineWidth: Metric.hairline, dash: [2, 3])).frame(width: 18, height: 18)
                     }
@@ -559,26 +588,20 @@ private struct ScrollPicker: View {
             .animation(.spring(duration: 0.4, bounce: 0.2), value: note.scroll)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(current.map { "Kept in \($0.name)" } ?? "Loose, in no scroll")
-        .accessibilityHint("Chooses a scroll.")
+        .accessibilityLabel(current.map { "Kept in \($0.name)" } ?? "Loose, in no set")
+        .accessibilityHint("Chooses a set.")
         .sensoryFeedback(.selection, trigger: note.scroll)
-        .sheet(isPresented: $making) {
-            ScrollEditor(mode: .new, scribe: store.controls.scribe && store.scribeStatus == .ready) { name, rune, purpose in
-                let scroll = store.addScroll(name: name, rune: rune, purpose: purpose)
-                store.move(note.id, to: scroll.id)
-            }
-        }
     }
 
     private func detail(_ scroll: CaptureScroll?) -> String {
-        guard scroll != nil else { return store.scrolls.isEmpty ? "Make a scroll to keep inscriptions together" : "In no scroll yet" }
+        guard scroll != nil else { return store.scrolls.isEmpty ? "Make a set to keep inscriptions together" : "In no set yet" }
         return note.filed == .scribe ? "Filed by Apple Intelligence" : "Filed by you"
     }
 }
 
 /// Play and pause, the recording's shape filling with ink as it plays, and the time.
 /// Drag across the shape to move through it.
-private struct PlayerBar: View {
+struct PlayerBar: View {
     @ObservedObject var player: NotePlayer
     let note: CaptureNote
     let url: URL
@@ -709,13 +732,13 @@ struct CaptureSettingsScreen: View {
                     } header: {
                         Heading("Band gesture")
                     } footer: {
-                        Note("Any gesture or a combo. While Capture is open or pocket mode is on, it belongs to Capture and mappings that use it are off. To record from every screen without reserving a gesture, give a mapping the “Record a Capture note” action instead.")
+                        Note("Any gesture or a spell. While Scribe is open or pocket mode is on, it belongs to Scribe and mappings that use it are off. To record from every screen without reserving a gesture, give a mapping the “Record a Scribe note” action instead.")
                     }
                     Block {
                         Toggle(isOn: Binding(get: { store.controls.scribe }, set: store.setScribe)) {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text("Name and file inscriptions").font(.label)
-                                Text("Titles each inscription and keeps loose ones in the scroll they belong to. Ones you place yourself stay where you put them.")
+                                Text("Titles each inscription and keeps loose ones in the set they belong to. Ones you place yourself stay where you put them.")
                                     .font(.caption).foregroundStyle(Color.muted).fixedSize(horizontal: false, vertical: true)
                             }
                         }
@@ -750,13 +773,13 @@ struct CaptureSettingsScreen: View {
                         Button("Delete all inscriptions") { clearing = true }.buttonStyle(.quiet)
                             .confirmationDialog("Delete all inscriptions?", isPresented: $clearing, titleVisibility: .visible) {
                                 Button("Delete \(store.notes.count == 1 ? "1 inscription" : "\(store.notes.count) inscriptions")", role: .destructive, action: store.deleteAll)
-                            } message: { Text("Every inscription and its recording is deleted. Scrolls are kept.") }
+                            } message: { Text("Every inscription and its recording is deleted. Sets are kept.") }
                     }
                 }
                 .padding(.horizontal, Metric.gutter).padding(.top, 8).padding(.bottom, 40)
             }
             .page()
-            .navigationTitle("Capture settings").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("Scribe settings").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() }.font(.label) } }
             .sheet(isPresented: $choosingTrigger) { CaptureTriggerSheet(store: store) }
         }
@@ -791,10 +814,10 @@ extension PreviewFixtures {
         }
     }
     static var scrolls: [CaptureScroll] {
-        [CaptureScroll(id: "scroll-relay", name: "Relay", rune: .raidho, purpose: "The band relay: tests, numbers, who to ask."),
-         CaptureScroll(id: "scroll-ideas", name: "Ideas", rune: .kenaz, purpose: "Design ideas for the ring and the app."),
-         CaptureScroll(id: "scroll-home", name: "Home", rune: .othala, purpose: "The flat, groceries, bills."),
-         CaptureScroll(id: "scroll-body", name: "Training", rune: .uruz)]
+        [CaptureScroll(id: "scroll-relay", name: "Relay", rune: .raidho, purpose: "The band relay: tests, numbers, who to ask.", glyph: .voice),
+         CaptureScroll(id: "scroll-ideas", name: "Ideas", rune: .kenaz, purpose: "Design ideas for the ring and the app.", glyph: .light),
+         CaptureScroll(id: "scroll-home", name: "Home", rune: .othala, purpose: "The flat, groceries, bills.", glyph: .home),
+         CaptureScroll(id: "scroll-body", name: "Training", rune: .uruz, glyph: .movement)]
     }
     static var notes: [CaptureNote] {
         let now = Date()
@@ -824,8 +847,8 @@ extension PreviewFixtures {
 #Preview("Capture") { NavigationStack { CaptureScreen(store: PreviewFixtures.capture(), path: .constant([])) } }
 #Preview("Capture · recording") { NavigationStack { CaptureScreen(store: PreviewFixtures.capture(recording: true, listening: true), path: .constant([])) } }
 #Preview("Capture · empty") { NavigationStack { CaptureScreen(store: PreviewFixtures.capture(empty: true), path: .constant([])) } }
-#Preview("Scroll") { NavigationStack { CaptureScreen(store: PreviewFixtures.capture(), path: .constant([]), scrollID: "scroll-home") } }
-#Preview("New scroll") { ScrollEditor(mode: .new, scribe: true) { _, _, _ in } }
+#Preview("Set") { NavigationStack { CaptureScreen(store: PreviewFixtures.capture(), path: .constant([]), scrollID: "scroll-home") } }
+#Preview("New set") { ScrollEditor(mode: .new, scribe: true) { _, _, _ in } }
 #Preview("Note") { NavigationStack { NoteScreen(store: PreviewFixtures.capture(), noteID: PreviewFixtures.notes[1].id) } }
 #endif
 

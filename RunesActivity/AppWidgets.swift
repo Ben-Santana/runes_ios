@@ -12,7 +12,8 @@ extension AppLink: AppEnum {
         .workouts: "Workouts",
         .score: "Score",
         .cook: "Cook",
-        .capture: "Capture",
+        .capture: "Scribe",
+        .alarm: "Alarm",
         .reels: "Reels",
     ]
 }

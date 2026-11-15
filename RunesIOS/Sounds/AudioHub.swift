@@ -9,6 +9,8 @@ enum AudioHub {
     enum Microphone: Sendable { case phone, headset }
 
     private static var holders: Set<String> = []
+    /// Switching the session on or off can take a moment; it happens here, in order, off the main thread.
+    private static let switching = DispatchQueue(label: "runes.audio-session")
     /// Non-nil while something records.
     private(set) static var microphone: Microphone?
 
@@ -22,7 +24,18 @@ enum AudioHub {
     /// Makes the session active for `holder`. Can be refused in the background; callers retry.
     static func activate(_ holder: String) throws {
         try configure()
-        try AVAudioSession.sharedInstance().setActive(true)
+        try switching.sync { try AVAudioSession.sharedInstance().setActive(true) }
+        holders.insert(holder)
+    }
+
+    /// `activate`, without holding up the main thread while the session switches on.
+    static func activateSoon(_ holder: String) async throws {
+        try configure()
+        try await withCheckedThrowingContinuation { (done: CheckedContinuation<Void, Error>) in
+            switching.async {
+                do { try AVAudioSession.sharedInstance().setActive(true); done.resume() } catch { done.resume(throwing: error) }
+            }
+        }
         holders.insert(holder)
     }
 
@@ -49,7 +62,7 @@ enum AudioHub {
 
     static func release(_ holder: String) {
         guard holders.remove(holder) != nil, holders.isEmpty else { return }
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        switching.async { try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation) }
     }
 
     /// Playback that mixes with music, audible with the silent switch on. With a

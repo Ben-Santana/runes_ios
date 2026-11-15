@@ -248,14 +248,14 @@ struct StyleGuideGallery: View {
             VStack(alignment: .leading, spacing: 0) {
                 TriggerRow(title: "Add a point", detail: "To the selected player.", steps: steps) {}
                 Hairline()
-                TriggerComposer(steps: $steps, interval: $interval,
-                                rules: .gestureOrCombo(GestureKind.motions, next: ScoreTrigger.comboChoices, allowsNone: true))
+                ComboCreator(steps: $steps, interval: $interval,
+                             rules: .gestureOrCombo(GestureKind.motions, next: ScoreTrigger.comboChoices, allowsNone: true), pageHeight: 560)
                     .padding(.top, 16)
             }
         } header: {
-            Heading("Gestures and combos")
+            Heading("Gestures and spells")
         } footer: {
-            Note("One composer everywhere: touch a step to change it on the pad, the dashed slot to add one. The line marks steps made with a finger held.")
+            Note("One creator everywhere: touch a bead to change it on the pad, the ring at the end of the string to add one.")
         }
     }
 

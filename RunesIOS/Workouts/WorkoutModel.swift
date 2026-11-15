@@ -4,9 +4,8 @@ import Foundation
 // state machine for a running workout. Reps come from the band's motion for the exercises it
 // can count (ExerciseCatalog.swift); the rest log their target, or their time.
 // Everything here is a pure value type so it is tested without a band.
-// Everything here is a pure value type so it is tested without a band.
 
-/// Scales every exercise's thresholds. Detection is not yet tuned on a real band.
+/// Scales every exercise's thresholds.
 enum RepSensitivity: String, Codable, CaseIterable, Sendable {
     case low, normal, high
     var title: String { rawValue.capitalized }
@@ -268,6 +267,8 @@ struct WorkoutRun: Codable, Hashable, Sendable {
 
     /// A rep from the counter; ignored unless a set is being counted.
     mutating func rep() { if phase == .counting { reps += 1 } }
+    /// Replaces the live count with the counter's settled one, just before the set logs.
+    mutating func settle(_ count: Int) { if phase == .counting { reps = max(0, count) } }
 
     private mutating func advance() {
         index += 1; reps = 0; setStarted = nil
@@ -277,40 +278,58 @@ struct WorkoutRun: Codable, Hashable, Sendable {
 
 /// Counts reps from orientation (w, x, y, z) and gyroscope (x, y, z) samples.
 ///
-/// Swings never refer to where the set started: the user may tap start from anywhere. The
-/// forearm's orientation is taken relative to a slowly moving centre, projected on the axis it
-/// keeps turning about, and a rep is that angle passing h on one side and then back past h on
-/// the other, where h follows the recent swing size. Tuned on recorded rows, pulldowns and curls
-/// (2026-11-13).
+/// Nothing refers to where the set started: the user may tap start from anywhere. The
+/// forearm's orientation, taken relative to a slowly moving centre, becomes an angle about the
+/// axis it keeps turning on; a rep is that angle going out and back (`Cycle`), each leg at least
+/// a fraction of the set's typical rep. Reps are counted live as they complete; `settled` is the
+/// count the set logs, which drops the warm-up wobble and a lone movement at either end.
+/// Tuned on recorded back, chest and arm sessions (2026-11-13, 2026-11-15).
 struct RepCounter: Sendable {
     let exercise: Exercise
     let scale: Double
     private var armed = true
     private var lastRep: TimeInterval = -.infinity
+    /// Time and size of every rep counted live.
+    private(set) var reps: [(time: TimeInterval, size: Double)] = []
 
     // Swing filters step once per sample: receipt times arrive in bursts, so they can't drive them.
     private static let rate = 100.0          // orientation samples per second, roughly
-    private static let centreTime = 1.0      // s; how fast the start pose is forgotten
+    private static let centreTime = 2.5      // s; how fast the start pose is forgotten
     private static let axisTime = 2.0        // s; memory for the swing axis
-    private static let smoothing = 1 / (0.12 * rate)
-    private static let peakDecay = exp(-1 / (5.0 * rate))
-    private static let fraction = 0.6        // of the recent peak swing, each side of centre
+    private static let smoothing = 1 / (0.25 * rate)
     private var samples = 0.0
     private var centre: [Double]?
     private var spread = [Double](repeating: 0, count: 9)
     private var axis = [1.0, 1.0, 1.0].map { $0 / 3.0.squareRoot() }
     private var along = 0.0
-    private var peak = 0.0
-    private var out = 0.0
-    private var away = false
+    private var cycle: Cycle?
+    private var effort = Effort()
 
     init(exercise: Exercise, sensitivity: RepSensitivity = .normal) {
         self.exercise = exercise; scale = sensitivity.scale
+        if case .swing(let degrees)? = exercise.signal { cycle = Cycle(minimum: degrees * scale) }
+    }
+
+    /// The count the set logs: live reps without the ones that don't look like the rest.
+    var settled: Int { Self.settle(reps, effort: effort.trace) }
+
+    static func settle(_ reps: [(time: TimeInterval, size: Double)], effort: [(time: TimeInterval, level: Double)] = []) -> Int {
+        guard reps.count >= 4 else { return reps.count }
+        let sizes = reps.map(\.size).sorted(), typical = sizes[sizes.count / 2]
+        // Counted before the threshold knew how big a rep is.
+        var kept = reps.filter { $0.size >= 0.3 * typical }
+        guard kept.count >= 4 else { return kept.count }
+        let gaps = zip(kept.dropFirst(), kept).map { $0.time - $1.time }.sorted()
+        let pace = gaps[gaps.count / 2]
+        // Reaching for the handle before the first rep, or putting it back after the last.
+        if kept[kept.count - 1].time - kept[kept.count - 2].time > 2.5 * pace { kept.removeLast() }
+        if kept[1].time - kept[0].time > 2.5 * pace { kept.removeFirst() }
+        return Effort.confirm(kept.map(\.time), pace: pace, trace: effort)
     }
 
     /// Returns true when this sample completes a rep.
     mutating func orientation(_ q: [Double], at now: TimeInterval) -> Bool {
-        guard case .swing(let degrees)? = exercise.signal, q.count == 4, q.allSatisfy(\.isFinite) else { return false }
+        guard case .swing? = exercise.signal, q.count == 4, q.allSatisfy(\.isFinite) else { return false }
         let norm = sqrt(q.reduce(0) { $0 + $1 * $1 })
         guard norm > 1e-8 else { return false }
         var current = q.map { $0 / norm }
@@ -337,18 +356,7 @@ struct RepCounter: Sendable {
             axis = zip(a, axis).reduce(0, { $0 + $1.0 * $1.1 }) < 0 ? a.map { -$0 } : a
         }
         along += Self.smoothing * (zip(r, axis).reduce(0) { $0 + $1.0 * $1.1 } - along)
-        peak = max(abs(along), peak * Self.peakDecay)
-        let h = max(degrees * scale / 2, Self.fraction * scale * peak)
-        let side: Double = along > h ? 1 : along < -h ? -1 : 0
-        guard side != 0 else { return false }
-        // The first side the forearm swings to is "out"; a rep completes on the way back.
-        if out == 0 { out = side }
-        if side == out { away = true; return false }
-        guard away else { return false }
-        away = false
-        guard now - lastRep >= exercise.minimumRepInterval else { return false }
-        lastRep = now
-        return true
+        return step(along, at: now)
     }
 
     /// The rotation from `a` to `b` (unit quaternions) as a rotation vector in degrees, in `a`'s frame.
@@ -363,6 +371,18 @@ struct RepCounter: Sendable {
         return v.map { $0 / s * degrees }
     }
 
+    /// One EMG packet (16 samples × 8 channels): how hard the forearm is working, for `settled`.
+    mutating func emg(_ values: [UInt16], at now: TimeInterval) {
+        if exercise.signal != nil { effort.add(values, at: now) }
+    }
+
+    private mutating func step(_ value: Double, at now: TimeInterval) -> Bool {
+        guard let size = cycle?.add(value), now - lastRep >= exercise.minimumRepInterval else { return false }
+        lastRep = now
+        reps.append((now, size))
+        return true
+    }
+
     mutating func gyroscope(_ values: [Double], at now: TimeInterval) -> Bool {
         guard case .burst(let on, let off)? = exercise.signal, values.count == 3, values.allSatisfy(\.isFinite) else { return false }
         let magnitude = sqrt(values.reduce(0) { $0 + $1 * $1 })
@@ -373,7 +393,105 @@ struct RepCounter: Sendable {
         if value < off { armed = true; return false }
         guard armed, value > on, now - lastRep >= exercise.minimumRepInterval else { return false }
         armed = false; lastRep = now
+        reps.append((now, 1))
         return true
+    }
+}
+
+/// Forearm muscle effort from the band's EMG: each channel's sample-to-sample change (which
+/// drops slow drift and movement), rectified, summed over channels, kept 16 times a second.
+/// A rep moved without load, such as reaching for the handle or putting it back, shows little
+/// effort next to the set's real reps.
+struct Effort: Sendable {
+    private static let channels = 8, packetsPerPoint = 8, limit = 16 * 600
+    static let floor = 0.05    // quantile of the set's effort taken as resting
+    static let share = 0.15    // of the typical rep's effort above rest
+    static let edges = 1       // reps at each end that may be dropped
+    private(set) var trace: [(time: TimeInterval, level: Double)] = []
+    private var previous: [Double]?
+    private var sum = 0.0, packets = 0
+
+    mutating func add(_ values: [UInt16], at now: TimeInterval) {
+        guard values.count == 16 * Self.channels, trace.count < Self.limit else { return }
+        var last = previous ?? (0..<Self.channels).map { Double(values[$0]) }
+        for sample in 0..<16 {
+            for ch in 0..<Self.channels {
+                let v = Double(values[sample * Self.channels + ch])
+                sum += abs(v - last[ch]); last[ch] = v
+            }
+        }
+        previous = last; packets += 1
+        if packets == Self.packetsPerPoint { trace.append((now, sum)); sum = 0; packets = 0 }
+    }
+
+    /// The reps at `times` that show effort; all of them when there is too little EMG to judge.
+    static func confirm(_ times: [TimeInterval], pace: TimeInterval, trace: [(time: TimeInterval, level: Double)]) -> Int {
+        guard times.count >= 4, let start = times.first, let end = times.last,
+              trace.filter({ $0.time >= start - pace && $0.time <= end }).count >= Int((end - start + pace) * 8 * 0.8) else { return times.count }
+        let levels = trace.map(\.level).sorted()
+        let rest = levels[Int(Double(levels.count - 1) * floor)]
+        let efforts = times.map { t -> Double in
+            let window = trace.filter { $0.time > t - pace && $0.time <= t }.map(\.level)
+            return window.isEmpty ? 0 : window.reduce(0, +) / Double(window.count) - rest
+        }
+        let typical = efforts.sorted()[efforts.count / 2]
+        guard typical > 0 else { return times.count }
+        let weak = efforts.indices.filter { efforts[$0] < share * typical && ($0 < edges || $0 >= efforts.count - edges) }
+        return times.count - weak.count
+    }
+}
+
+/// Finds turns in a 1-D signal and pairs them into reps. A turn is the signal coming back from
+/// its latest extreme by `delta`: the larger of `minimum` and a fraction of the typical rep, so
+/// wobble inside a rep isn't a turn. The first leg's direction is "out"; a rep counts once the
+/// way back has covered most of the way out, so the last rep needs no movement after it.
+struct Cycle: Sendable {
+    let minimum: Double
+    private static let fraction = 0.5
+    private static let back = 0.8
+    private static let memory = 5
+    private var direction = 0           // 1 rising, -1 falling, 0 not yet known
+    private var low = Double.infinity, high = -Double.infinity
+    private var turn = 0.0, extreme = 0.0
+    private var out = 0
+    /// The out leg waiting for its way back.
+    private var pending: Double?
+    private var legs: [Double] = []
+    private var sizes: [Double] = []
+
+    init(minimum: Double) { self.minimum = minimum }
+
+    private var delta: Double {
+        let recent = sizes.isEmpty ? legs.suffix(Self.memory) : sizes.suffix(Self.memory)
+        guard !recent.isEmpty else { return minimum }
+        let sorted = recent.sorted()
+        return max(minimum, Self.fraction * sorted[sorted.count / 2])
+    }
+
+    /// Returns the rep's size when this value completes one.
+    mutating func add(_ x: Double) -> Double? {
+        let d = delta
+        if direction == 0 {
+            low = min(low, x); high = max(high, x)
+            if x - low >= d { direction = 1; turn = low; extreme = x }
+            else if high - x >= d { direction = -1; turn = high; extreme = x }
+            return nil
+        }
+        if (x - extreme) * Double(direction) > 0 { extreme = x }
+        let travelled = abs(extreme - turn)
+        if direction != out, let first = pending, travelled >= max(d, Self.back * first) {
+            pending = nil
+            sizes.append(first); if sizes.count > Self.memory { sizes.removeFirst() }
+            return first
+        }
+        guard (extreme - x) * Double(direction) >= d else { return nil }
+        let way = direction
+        turn = extreme; extreme = x; direction = -direction
+        legs.append(travelled); if legs.count > 2 * Self.memory { legs.removeFirst() }
+        if out == 0 { out = way }
+        // An out leg replaces one that never came back: that was a change of position.
+        if way == out { pending = travelled }
+        return nil
     }
 }
 
@@ -388,6 +506,14 @@ final class RepFeed: @unchecked Sendable {
         lock.withLock { counter = exercise.flatMap { $0.detectsReps ? RepCounter(exercise: $0, sensitivity: sensitivity) : nil } }
     }
     var isCounting: Bool { lock.withLock { counter != nil } }
+
+    /// One EMG packet (16 samples × 8 channels).
+    func ingest(emg values: [UInt16], at now: TimeInterval) {
+        lock.withLock { counter?.emg(values, at: now) }
+    }
+
+    /// The count the set should log; nil when nothing is being counted.
+    var settled: Int? { lock.withLock { counter?.settled } }
 
     /// `orientation` true for a quaternion, false for a gyroscope sample. True when a rep completed.
     func ingest(orientation: Bool, _ values: [Double], at now: TimeInterval) -> Bool {

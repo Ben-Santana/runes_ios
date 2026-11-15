@@ -32,6 +32,8 @@ struct TriggerRulesTests {
         precondition(either.problem([ComboStep(.swipeUp)]) != nil && !either.isValid([ComboStep(.swipeUp)]), "but it can't stand alone")
         precondition(either.isValid([ComboStep(.swipeUp), ComboStep(.tapIndex)]))
         precondition(either.isValid([ComboStep(.holdIndex)]) && either.isValid([]))
+        precondition(either.problem([ComboStep(.tapIndex)]) == nil && one.problem([ComboStep(.tapMiddle)]) == nil,
+                     "One allowed gesture is complete: nothing asks for a second step")
         precondition(!either.canAppend(.releaseIndex, to: [ComboStep(.tapIndex)]), "Nothing is held to release")
         precondition(either.canAppend(.releaseIndex, to: [ComboStep(.holdIndex), ComboStep(.tapMiddle)]))
         precondition(!either.canAppend(.holdIndex, to: [ComboStep(.holdIndex)]), "A finger can't be held twice")
@@ -47,7 +49,7 @@ struct TriggerRulesTests {
         let combo = TriggerRules.combo
         precondition(combo.comboOnly && combo.offered == Set(GestureKind.allCases))
         precondition(!combo.isValid([]) && !combo.isValid([ComboStep(.tapIndex)]))
-        precondition(combo.problem([ComboStep(.tapIndex)]) == "A combo needs at least two steps.")
+        precondition(combo.problem([ComboStep(.tapIndex)]) == "A spell needs at least two steps.")
         precondition(!combo.canAppend(.air, to: []), "An air shape needs a gesture before it")
         precondition(combo.canAppend(.air, to: [ComboStep(.tapIndex)]))
         precondition(!combo.canReplace(0, with: .air, in: [ComboStep(.tapIndex), ComboStep(.swipeUp)]))

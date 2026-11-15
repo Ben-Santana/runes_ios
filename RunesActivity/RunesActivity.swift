@@ -14,7 +14,11 @@ struct RunesActivityBundle: WidgetBundle {
 struct BandSessionActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: BandActivityAttributes.self) { context in
-            if let workout = context.state.workout {
+            if let alarm = context.state.alarm {
+                AlarmLockScreen(alarm: alarm)
+                    .padding().activityBackgroundTint(Color(.secondarySystemBackground))
+                    .widgetURL(alarm.url)
+            } else if let workout = context.state.workout {
                 WorkoutLockScreen(workout: workout, connected: context.state.isConnected)
                     .padding().activityBackgroundTint(Color(.secondarySystemBackground))
             } else if let score = context.state.score {
@@ -35,6 +39,18 @@ struct BandSessionActivity: Widget {
                 }.padding().activityBackgroundTint(Color(.secondarySystemBackground))
             }
         } dynamicIsland: { context in
+            if let alarm = context.state.alarm {
+                return DynamicIsland {
+                    DynamicIslandExpandedRegion(.bottom) { AlarmLockScreen(alarm: alarm) }
+                } compactLeading: {
+                    AlarmBell(ringing: alarm.phase == .ringing, size: 16)
+                } compactTrailing: {
+                    AlarmTime(alarm: alarm).frame(maxWidth: 56)
+                } minimal: {
+                    AlarmBell(ringing: alarm.phase == .ringing, size: 16)
+                }
+                .widgetURL(alarm.url)
+            }
             if let workout = context.state.workout {
                 return DynamicIsland {
                     DynamicIslandExpandedRegion(.leading) {
@@ -113,6 +129,64 @@ struct BandSessionActivity: Widget {
             }
         }
     }
+}
+
+/// The alarm: ringing, snoozed with its countdown, or set for a time.
+private struct AlarmLockScreen: View {
+    let alarm: AlarmActivityState
+    var connected = true
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            AlarmBell(ringing: alarm.phase == .ringing, size: 28)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(alarm.title).font(.headline).lineLimit(1)
+                Text(line).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            AlarmTime(alarm: alarm).font(.system(size: 28, weight: .medium).monospacedDigit())
+        }
+    }
+
+    private var line: String {
+        switch alarm.phase {
+        case .ringing: alarm.canSnooze ? "Tap here to snooze or stop" : "Tap here to stop"
+        case .snoozed: "Snoozed"
+        case .set: connected ? "Alarm set · band connected" : "Alarm set · band not connected"
+        }
+    }
+}
+
+private struct AlarmTime: View {
+    let alarm: AlarmActivityState
+    var body: some View {
+        switch alarm.phase {
+        case .ringing: Text("Now")
+        case .snoozed:
+            if let at = alarm.at, at > .now { Text(timerInterval: Date.now...at, countsDown: true).multilineTextAlignment(.trailing) }
+            else { Text("Now") }
+        case .set:
+            if let at = alarm.at { Text(at, style: .time) }
+        }
+    }
+}
+
+private struct AlarmBell: View {
+    let ringing: Bool
+    let size: CGFloat
+    var body: some View {
+        GeometryReader { geo in
+            let k = min(geo.size.width, geo.size.height) / 24
+            (ringing ? LucideData.bellRing : LucideData.bell).reduce(into: Path()) { $0.addPath(SVGPath.cached($1)) }
+                .applying(CGAffineTransform(scaleX: k, y: k))
+                .stroke(style: StrokeStyle(lineWidth: 2 * k, lineCap: .round, lineJoin: .round))
+        }
+        .frame(width: size, height: size).foregroundStyle(Color.white).accessibilityHidden(true)
+    }
+}
+
+private extension AlarmActivityState {
+    var url: URL { phase == .ringing ? AppLink.alarmFromActivity : AppLink.alarm.url }
 }
 
 /// Current set, its live count, the last logged set and what comes next.

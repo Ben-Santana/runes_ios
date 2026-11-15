@@ -14,6 +14,7 @@ struct RootView: View {
     @State private var showSetup = false
     @State private var restartBandSetup: UUID?
     @ObservedObject private var links = AppLinkRouter.shared
+    @ObservedObject private var alarms = AlarmStore.shared
 
     private var status: BandStatus {
         BandStatus(controller.snapshot, setupComplete: controller.setupComplete, relayStatus: controller.relayStatus)
@@ -29,7 +30,6 @@ struct RootView: View {
                     openSettings: { showSettings = true },
                     openMappings: { showMappings = true },
                     openApplications: { showApplications = true },
-                    openApp: { openedApp = $0; showApp = true },
                     resolve: resolve))
             } else {
                 OnboardingFlow(controller: controller, finished: { showSetup = false })
@@ -37,6 +37,7 @@ struct RootView: View {
             }
         }
         .animation(.entrance, value: controller.setupComplete)
+        .overlay { if alarms.ringing != nil { AlarmRingingView(store: alarms).transition(.opacity) } }
         .fullScreenCover(isPresented: $showSettings, onDismiss: {
             if let band = restartBandSetup {
                 restartBandSetup = nil; queuedApp = nil

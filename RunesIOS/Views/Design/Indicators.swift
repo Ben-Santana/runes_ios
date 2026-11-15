@@ -23,16 +23,19 @@ struct GestureChip: View {
 }
 
 struct PulseDot: View {
+    var tint: Color = .ink
     @State private var pulse = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         ZStack {
-            Circle().stroke(Color.ink, lineWidth: Metric.hairline)
+            Circle().stroke(tint, lineWidth: Metric.hairline)
                 .scaleEffect(pulse ? 2.6 : 1).opacity(pulse ? 0 : 0.8)
-            Circle().fill(Color.ink)
+                // Only the ring repeats; a repeating animation on the whole dot would carry any move it makes.
+                .animation(reduceMotion ? nil : .easeOut(duration: 1.6).repeatForever(autoreverses: false), value: pulse)
+            Circle().fill(tint)
         }
         .frame(width: 7, height: 7)
-        .onAppear { if !reduceMotion { withAnimation(.easeOut(duration: 1.6).repeatForever(autoreverses: false)) { pulse = true } } }
+        .onAppear { if !reduceMotion { pulse = true } }
         .accessibilityHidden(true)
     }
 }

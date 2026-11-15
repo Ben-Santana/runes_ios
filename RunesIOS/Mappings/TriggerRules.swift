@@ -2,7 +2,7 @@ import Foundation
 
 /// What a trigger may be made of, wherever one is chosen: a mapping's combo, a Score action,
 /// Capture's gesture, a Workouts or Cook command. One gesture, a combo, or either; the
-/// composer (`Views/Design/TriggerComposer.swift`) only offers what these allow.
+/// creator (`Views/ComboCreator.swift`) only offers what these allow.
 struct TriggerRules {
     /// Gestures that may stand alone. Empty when only combos are built.
     var singles: [GestureKind] = []
@@ -63,7 +63,7 @@ struct TriggerRules {
         if steps.count == 1 {
             if singles.contains(first.gesture) { return nil }
             if comboOnly { return ComboRules.problem(steps) }
-            return buildsCombos ? "\(first.gesture.name) only works here inside a combo. Add a step after it."
+            return buildsCombos ? "\(first.gesture.name) only works here inside a spell. Add a step after it."
                                 : "\(first.gesture.name) can’t be used here."
         }
         guard let next else { return "Choose one gesture." }
@@ -97,8 +97,9 @@ struct TriggerRules {
 }
 
 extension ComboRules {
-    /// "750 ms", "1 s", "1.5 s".
+    /// "750 ms", "1 s", "1.5 s"; "No limit" for none.
     static func timeLabel(_ ms: Int) -> String {
-        ms < 1000 ? "\(ms) ms" : String(format: ms % 1000 == 0 ? "%.0f s" : "%.1f s", Double(ms) / 1000)
+        if ms == noLimit { return "No limit" }
+        return ms < 1000 ? "\(ms) ms" : String(format: ms % 1000 == 0 ? "%.0f s" : "%.1f s", Double(ms) / 1000)
     }
 }

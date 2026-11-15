@@ -189,7 +189,7 @@ struct ReelsSettingsScreen: View {
                     } header: {
                         Heading("Gestures")
                     } footer: {
-                        Note("A gesture or a combo each. While Reels is on screen they move through reels, and mappings that use their gestures are off. With the phone locked or Reels closed, your mappings have them again.")
+                        Note("A gesture or a spell each. While Reels is on screen they move through reels, and mappings that use their gestures are off. With the phone locked or Reels closed, your mappings have them again.")
                     }
                     Note("Reels is Instagram’s own website, signed in inside Runes. Runes sees nothing of your account; the gestures only scroll and press its buttons. If Instagram changes its page, a gesture may stop finding the reel until Runes is updated.")
                     Button("Sign out of Instagram") { signingOut = true }.buttonStyle(.quiet)

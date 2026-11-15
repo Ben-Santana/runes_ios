@@ -67,7 +67,10 @@ struct MappingEngine: Sendable {
     mutating func configure(_ mappings: [Mapping]) {
         singles = [:]; combos = [:]
         for mapping in mappings where mapping.isLive {
-            if let steps = mapping.steps { combos[mapping.id] = (steps, Double(mapping.intervalMs ?? ComboRules.defaultTime) / 1000) }
+            if let steps = mapping.steps {
+                let ms = mapping.intervalMs ?? ComboRules.defaultTime
+                combos[mapping.id] = (steps, ms == ComboRules.noLimit ? .infinity : Double(ms) / 1000)
+            }
             else if let motion = mapping.motion { singles[motion] = mapping.id }
         }
         comboGestures = Set(combos.values.flatMap { $0.steps.map(\.gesture) })
@@ -77,6 +80,9 @@ struct MappingEngine: Sendable {
     }
 
     mutating func reset() { progress = [:]; deferred = []; pendingTaps = [:]; captures = [:] }
+
+    /// How many steps of a combo have been made so far, by its furthest attempt under way.
+    func reached(_ mappingID: String) -> Int { progress[mappingID]?.map(\.next).max() ?? 0 }
 
     var isIdle: Bool { pendingTaps.isEmpty && deferred.isEmpty && progress.values.allSatisfy(\.isEmpty) }
     /// Whether any live combo has a rotation or movement step.
@@ -226,7 +232,7 @@ struct MappingEngine: Sendable {
             for (id, candidates) in progress {
                 progress[id] = candidates.filter { c in
                     if action.inputs.isDisjoint(with: c.inputs) { return true }
-                    events.append(.comboFailed(mappingID: id, reason: "Gestures used by another combo"))
+                    events.append(.comboFailed(mappingID: id, reason: "Gestures used by another spell"))
                     return false
                 }
             }

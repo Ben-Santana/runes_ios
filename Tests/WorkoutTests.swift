@@ -117,9 +117,29 @@ struct WorkoutTests {
         var hurried = RepCounter(exercise: .bicepCurl)
         precondition(swings(&hurried, count: 20, degrees: 100, period: 0.5, axis: [1, 0, 0], after: turn(0)) <= 10, "Too soon after a rep")
         var normal = RepCounter(exercise: Exercise.byID["seatedCableRow"]!), gentle = RepCounter(exercise: Exercise.byID["seatedCableRow"]!, sensitivity: .high)
-        precondition(swings(&normal, count: 10, degrees: 11.5, period: 2.5, axis: [0, 0, 1], after: turn(0)) == 0
-                     && swings(&gentle, count: 10, degrees: 11.5, period: 2.5, axis: [0, 0, 1], after: turn(0)) >= 9,
+        precondition(swings(&normal, count: 10, degrees: 13, period: 2.5, axis: [0, 0, 1], after: turn(0)) == 0
+                     && swings(&gentle, count: 10, degrees: 13, period: 2.5, axis: [0, 0, 1], after: turn(0)) >= 9,
                      "High sensitivity needs less movement")
+
+        // The settled count drops warm-up wobble and a lone movement at either end of the set.
+        let steady = (0..<10).map { (time: 3 + 2.5 * Double($0), size: 40.0) }
+        precondition(RepCounter.settle(steady) == 10, "Steady reps all stay")
+        precondition(RepCounter.settle([(time: 1, size: 8)] + steady) == 10, "A small wobble before the first rep goes")
+        precondition(RepCounter.settle(steady + [(time: 34, size: 45)]) == 10, "Putting the handle back after a pause goes")
+        precondition(RepCounter.settle([(time: -6, size: 40)] + steady) == 10, "Reaching for the handle well before the set goes")
+        precondition(RepCounter.settle(steady + [(time: 28.5, size: 40)]) == 11, "A slow last rep stays")
+        // EMG effort drops an end rep moved without load, and changes nothing without EMG.
+        let loaded = (0..<240).map { i -> (time: TimeInterval, level: Double) in
+            let t = Double(i) / 8
+            return (t, t > 26 ? 10 : 10 + 100 * abs(sin(.pi * (t - 3) / 2.5)))
+        }
+        let reps = (0..<10).map { 3 + 2.5 * Double($0) } + [28.4]
+        precondition(Effort.confirm(reps, pace: 2.5, trace: loaded) == 10, "Putting the handle back shows no effort")
+        precondition(Effort.confirm(reps, pace: 2.5, trace: []) == 11, "Without EMG every rep stays")
+        var settling = WorkoutRun(plan: WorkoutPlan(name: "Arms", items: [WorkoutItem(exercise: .bicepCurl, sets: 1, reps: 10)]))
+        settling.apply(.start); for _ in 0..<11 { settling.rep() }
+        settling.settle(10)
+        precondition(settling.apply(.stop)?.reps == 10, "The set logs the settled count")
 
         // Burst counting for punches, from the gyroscope.
         var punches = RepCounter(exercise: .punches)
@@ -142,16 +162,17 @@ struct WorkoutTests {
 
         // Exercises the band can't count log their target; timed ones log how long the set ran.
         let start = Date(timeIntervalSince1970: 1000)
-        var mixed = WorkoutRun(plan: WorkoutPlan(name: "Mixed", items: [WorkoutItem(exercise: .benchPress, sets: 1, reps: 8, weight: 60),
+        let press = Exercise.byID["overheadPress"]!
+        var mixed = WorkoutRun(plan: WorkoutPlan(name: "Mixed", items: [WorkoutItem(exercise: press, sets: 1, reps: 8, weight: 60),
                                                                          WorkoutItem(exercise: .plank, sets: 1, reps: 45)]), at: start)
         mixed.apply(.start, at: start); mixed.rep()
         let bench = mixed.apply(.stop, at: start.addingTimeInterval(30))
-        precondition(bench?.reps == 8 && bench?.weight == 60, "Bench logs its target and weight, got \(String(describing: bench?.reps))")
+        precondition(bench?.reps == 8 && bench?.weight == 60, "Overhead press logs its target and weight, got \(String(describing: bench?.reps))")
         mixed.apply(.start, at: start.addingTimeInterval(60))
         let plank = mixed.apply(.stop, at: start.addingTimeInterval(112))
         precondition(plank?.reps == 52, "Plank logs 52 s, got \(String(describing: plank?.reps))")
         precondition(!RepFeed().isCounting)
-        let feed2 = RepFeed(); feed2.count(.benchPress, sensitivity: .normal)
+        let feed2 = RepFeed(); feed2.count(press, sensitivity: .normal)
         precondition(!feed2.isCounting, "No counter for an exercise the band can't follow")
 
         // The catalog: unique ids, every exercise trains something, ids survive a round trip, unknown ids still decode.

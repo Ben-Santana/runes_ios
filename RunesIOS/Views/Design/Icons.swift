@@ -13,7 +13,7 @@ enum Lucide: String, CaseIterable, Sendable {
     case dumbbell, layoutGrid, skipForward, rotateCcw, square
     case settings, audioWaveform, calendarDays, bookOpen, search, timer, flame, trendingUp, activity
     case chevronLeft, chevronUp, qrCode, share, minus, info
-    case mic, chefHat, pause, link, clipboardPaste, bellRing, listChecks, ear, trophy, video, pin
+    case mic, chefHat, pause, link, clipboardPaste, bellRing, listChecks, ear, trophy, video
 
     var paths: [String] {
         switch self {
@@ -89,7 +89,6 @@ enum Lucide: String, CaseIterable, Sendable {
         case .ear: LucideData.ear
         case .trophy: LucideData.trophy
         case .video: LucideData.video
-        case .pin: LucideData.pin
         }
     }
     /// Each Lucide element is its own SVG path, so a leading relative "m" starts from the origin.
@@ -141,12 +140,14 @@ struct IconStroke: View {
 
 // MARK: Finger icon (Mac FingerIcon)
 
-/// The brand hand with the index or middle finger raised. Hold fills it; a double tap
-/// adds a second outline behind; a tap or release shows the knuckle ticks.
+/// The brand hand with the index or middle finger raised. Hold fills it; a release keeps the
+/// fill in the palm only, the hold draining away; a double tap adds a second outline behind;
+/// a tap shows the knuckle ticks.
 struct FingerIcon: View {
     enum Finger { case index, middle }
     let finger: Finger
     var hold = false
+    var release = false
     var double = false
     var size: CGFloat = 20
 
@@ -175,23 +176,31 @@ struct FingerIcon: View {
                 }
             }
             if hold { context.fill(front, with: .foreground) }
+            if release {
+                var palm = context
+                palm.clip(to: Path(CGRect(x: 0, y: 14.5 * scale, width: size.width, height: size.height)))
+                palm.fill(front, with: .foreground)
+            }
             context.stroke(front, with: .foreground, style: style)
-            if !hold { context.stroke(ticks.applying(t), with: .foreground, style: style) }
+            if !hold, !release { context.stroke(ticks.applying(t), with: .foreground, style: style) }
         }
         .frame(width: double ? size * 28 / 24 : size, height: size)
         .accessibilityHidden(true)
     }
 }
 
-/// The Mac's GestureIcon: fingers for taps, holds and releases; arrows for swipes;
-/// Rotate3D and Move3D for motion.
+/// The hand: what a gesture asks of you. Fingers for taps, holds and releases; arrows for
+/// swipes; Rotate3D and Move3D for motion. Shown where a gesture is taught or chosen; where
+/// one is recorded or written into a sequence, its rune (`RuneIcon`) stands for it.
 struct GestureIcon: View {
     let gesture: GestureKind
     var size: CGFloat = 20
     var body: some View {
         switch gesture {
-        case .tapIndex, .releaseIndex: FingerIcon(finger: .index, size: size)
-        case .tapMiddle, .releaseMiddle: FingerIcon(finger: .middle, size: size)
+        case .tapIndex: FingerIcon(finger: .index, size: size)
+        case .tapMiddle: FingerIcon(finger: .middle, size: size)
+        case .releaseIndex: FingerIcon(finger: .index, release: true, size: size)
+        case .releaseMiddle: FingerIcon(finger: .middle, release: true, size: size)
         case .doubleTapIndex: FingerIcon(finger: .index, double: true, size: size)
         case .doubleTapMiddle: FingerIcon(finger: .middle, double: true, size: size)
         case .holdIndex: FingerIcon(finger: .index, hold: true, size: size)
@@ -209,6 +218,71 @@ struct GestureIcon: View {
         Image(uiImage: IconImages.render(key: "gesture-\(gesture.rawValue)-\(size)", size: CGSize(width: size * 28 / 24, height: size)) {
             GestureIcon(gesture: gesture, size: size)
         })
+    }
+}
+
+// MARK: Gesture runes
+
+/// The Runes glyphs for gestures (Documentation/rune-icons), in the icons' 24-unit box at their
+/// 1.5 stroke. A stave is a finger, with a shorter one beside it for the middle finger; a bead
+/// is a touch; a ring is a touch that lasts; an arc is anything that moves.
+enum GestureRune {
+    /// `fall` runs a release from the hold's ring at the head of the stave (0) to its foot (1).
+    static func path(_ gesture: GestureKind, fall: CGFloat = 1) -> Path {
+        let middle = gesture.finger == "middle", x: CGFloat = middle ? 15.5 : 12
+        var path = Path()
+        func line(_ x: CGFloat, _ from: CGFloat, _ to: CGFloat) {
+            path.move(to: CGPoint(x: x, y: from)); path.addLine(to: CGPoint(x: x, y: to))
+        }
+        func bead(_ y: CGFloat) {
+            // Two stroked circles make a solid dot, so every rune stays stroke-only.
+            for r in [1.25, 0.5] as [CGFloat] { path.addEllipse(in: CGRect(x: x - r, y: y - r, width: 2 * r, height: 2 * r)) }
+        }
+        func ringed(at y: CGFloat) {
+            if y - 3 > 4 { line(x, 4, y - 3) }
+            path.addEllipse(in: CGRect(x: x - 3, y: y - 3, width: 6, height: 6))
+            if y + 3 < 20 { line(x, y + 3, 20) }
+        }
+        if middle { line(8.5, 9, 20) }
+        switch gesture {
+        case .tapIndex, .tapMiddle: line(x, 4, 20); bead(12)
+        case .doubleTapIndex, .doubleTapMiddle: line(x, 4, 20); bead(8.5); bead(15.5)
+        case .holdIndex, .holdMiddle: ringed(at: 7)
+        case .releaseIndex, .releaseMiddle: ringed(at: 7 + 10 * min(1, max(0, fall)))
+        case .swipeUp: return SVGPath.cached("M12 20V4M6 8A6.5 6.5 0 0 1 18 8")
+        case .swipeDown: return SVGPath.cached("M12 4V20M6 16A6.5 6.5 0 0 0 18 16")
+        case .swipeLeft: return SVGPath.cached("M20 12H4M8 6A6.5 6.5 0 0 0 8 18")
+        case .swipeRight: return SVGPath.cached("M4 12H20M16 6A6.5 6.5 0 0 1 16 18")
+        case .rotation: return SVGPath.cached("M12 5A7 7 0 1 1 5 12M3.75 12a1.25 1.25 0 1 0 2.5 0a1.25 1.25 0 1 0-2.5 0ZM4.5 12a.5.5 0 1 0 1 0a.5.5 0 1 0-1 0Z")
+        case .movement: return SVGPath.cached("M12 13.5V5M12 13.5L5 17.5M12 13.5L19 17.5M10.75 13.5a1.25 1.25 0 1 0 2.5 0a1.25 1.25 0 1 0-2.5 0ZM11.5 13.5a.5.5 0 1 0 1 0a.5.5 0 1 0-1 0Z")
+        case .air: return SVGPath.cached("M4 16C9 16 15.5 12.5 15.5 8.5A3.5 3.5 0 0 0 8.5 8.5C8.5 12.5 13.5 16 17.5 16M17.75 16a1.25 1.25 0 1 0 2.5 0a1.25 1.25 0 1 0-2.5 0ZM18.5 16a.5.5 0 1 0 1 0a.5.5 0 1 0-1 0Z")
+        }
+        return path
+    }
+}
+
+/// A gesture's rune as an icon.
+struct RuneIcon: View {
+    let gesture: GestureKind
+    var size: CGFloat = 20
+    var body: some View {
+        IconStroke(path: GestureRune.path(gesture)).frame(width: size, height: size).accessibilityHidden(true)
+    }
+}
+
+/// A combo step written as a rune, plus the axis (and direction) for motion.
+struct RuneStep: View {
+    let step: ComboStep
+    var size: CGFloat = 20
+    var body: some View {
+        HStack(spacing: 2) {
+            RuneIcon(gesture: step.gesture, size: size)
+            if let axis = step.axis {
+                Text(axis.rawValue.uppercased() + (step.gesture == .rotation ? (step.direction ?? .any).arrow : ""))
+                    .font(.geist(max(10, size * 0.5), .medium, relativeTo: .caption2)).opacity(0.6)
+            }
+        }
+        .accessibilityElement().accessibilityLabel(step.name)
     }
 }
 

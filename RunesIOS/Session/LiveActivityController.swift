@@ -14,6 +14,7 @@ final class LiveActivityController {
     private var workout: WorkoutActivityState?
     private var score: ScoreActivityState?
     private var cook: CookActivityState?
+    private var alarm: AlarmActivityState?
     /// True while the regular mappings have the band though an app runs (`ControlSwitch`).
     private var regular = false
     private var bandWanted = false
@@ -40,7 +41,7 @@ final class LiveActivityController {
         bandWanted = snapshot.wantsConnection
         guard let activity else { return }
         // A recipe's timers stay on the Lock Screen without the band.
-        guard snapshot.wantsConnection || cook != nil else { end(); return }
+        guard snapshot.wantsConnection || cook != nil || alarm != nil else { end(); return }
         let phase = BandStatus(snapshot, setupComplete: true, relayStatus: nil).phase
         guard phase != lastPhase || snapshot.battery != battery else { return }
         lastPhase = phase; battery = snapshot.battery
@@ -112,6 +113,9 @@ final class LiveActivityController {
     /// Shows the recipe being cooked, or the band status again with nil.
     func show(cook state: CookActivityState?, alert: LiveAlert? = nil) { cook = state; push(alert) }
 
+    /// Shows the current alarm, or takes it away with nil. A ringing alarm sits over any app.
+    func show(alarm state: AlarmActivityState?, alert: LiveAlert? = nil) { alarm = state; push(alert) }
+
     /// While the regular mappings have the band, the running app steps aside here too: the
     /// activity shows the band status, as it does with no app running. The app's state is
     /// kept and comes back with its controls. `alert` is for a switch made with the phone locked.
@@ -124,10 +128,10 @@ final class LiveActivityController {
 
     /// Sends the current state; `alert` lights the Lock Screen with a sound.
     private func push(_ alert: LiveAlert?) {
-        if activity == nil, cook != nil { start() }
+        if activity == nil, cook != nil || alarm != nil { start() }
         guard let activity else { return }
         // Nothing left to show and no band session to report: take it down.
-        if cook == nil, workout == nil, score == nil, !bandWanted { end(); return }
+        if cook == nil, workout == nil, score == nil, alarm == nil, !bandWanted { end(); return }
         let phase = lastPhase ?? .connected
         Task {
             if let alert {
@@ -141,9 +145,9 @@ final class LiveActivityController {
     private func content(_ phase: BandPhase) -> ActivityContent<BandActivityAttributes.ContentState> {
         // A workout or a game can sit unchanged for a while; keep it from going stale too soon.
         // A simmering pot sits for longer still.
-        let quiet: TimeInterval = cook != nil ? 4 * 3600 : workout != nil || score != nil ? 15 * 60 : 60
+        let quiet: TimeInterval = alarm != nil ? 24 * 3600 : cook != nil ? 4 * 3600 : workout != nil || score != nil ? 15 * 60 : 60
         return ActivityContent(state: .init(status: phase.title, isConnected: phase == .connected, battery: battery, macConnected: macConnected,
-                                            profileIcon: profileIcon, workout: regular ? nil : workout, score: regular ? nil : score, cook: regular ? nil : cook),
+                                            profileIcon: profileIcon, workout: regular ? nil : workout, score: regular ? nil : score, cook: regular ? nil : cook, alarm: alarm),
                                staleDate: Date().addingTimeInterval(quiet))
     }
 

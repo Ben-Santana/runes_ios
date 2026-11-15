@@ -34,19 +34,19 @@ final class ControlSwitch: ObservableObject {
     /// For a trigger being chosen anywhere else: why these steps can't be used, when they are the combo's.
     func clash(_ steps: [ComboStep]) -> String? {
         guard let combo, combo.steps == steps else { return nil }
-        return "Switch controls uses this combo. Choose another."
+        return "Switch controls uses this spell. Choose another."
     }
 
     /// For the combo itself: what is already set off by these steps, in any profile or app.
     func taken(_ steps: [ComboStep]) -> String? {
         guard steps.count > 1 else { return nil }
         if let profile = MappingStore.shared.library.profiles.first(where: { $0.combos.contains { $0.steps == steps } }) {
-            return "A combo in the \(profile.name) profile uses these steps. Choose another."
+            return "A spell in the \(profile.name) profile uses these steps. Choose another."
         }
         let user: String? = WorkoutCommand.allCases.first { WorkoutStore.shared.controls.trigger(for: $0)?.steps == steps }.map { "Workouts uses this for “\($0.title)”." }
             ?? CookCommand.allCases.first { CookStore.shared.controls.trigger(for: $0)?.steps == steps }.map { "Cook uses this for “\($0.title)”." }
             ?? ScoreAction.all.first { ScoreStore.shared.controls.trigger(for: $0)?.steps == steps }.map { "Score uses this for “\($0.title)”." }
-            ?? (CaptureStore.shared.controls.trigger.steps == steps ? "Capture uses this to record a note." : nil)
+            ?? (CaptureStore.shared.controls.trigger.steps == steps ? "Scribe uses this to record a note." : nil)
         return user.map { "\($0) Choose another." }
     }
 

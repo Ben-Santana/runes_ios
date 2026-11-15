@@ -234,6 +234,11 @@ final class WorkoutStore: ObservableObject {
 
     func perform(_ command: WorkoutCommand) {
         guard var current = run else { return }
+        // The set logs the counter's settled count, which drops a lone movement at either end.
+        if command == .stop, current.phase == .counting, let settled = Self.feed.settled, settled != current.reps {
+            if !previewOnly { onTrace?(.event("settled", "live=\(current.reps) settled=\(settled)")) }
+            current.settle(settled)
+        }
         let before = current
         let logged = current.apply(command)
         run = current

@@ -587,7 +587,7 @@ struct WorkoutSettingsScreen: View {
                              feed: RunesIOSApp.snapshotName == nil ? .shared : nil,
                              note: { steps in
                     others.first { store.controls.trigger(for: $0)?.steps == steps }.map { "\($0.title) uses this; they’ll swap." }
-                        ?? (steps.first.map { $0.gesture.isMotion } == true ? "Exercises turn and move your wrist, so a combo that starts with rotation or movement will start often. Begin with a finger or swipe step." : nil)
+                        ?? (steps.first.map { $0.gesture.isMotion } == true ? "Exercises turn and move your wrist, so a spell that starts with rotation or movement will start often. Begin with a finger or swipe step." : nil)
                 }, save: { steps, interval in
                     store.setTrigger(steps.isEmpty ? nil : CommandTrigger(steps: steps, intervalMs: interval), for: command)
                 })
@@ -665,7 +665,7 @@ struct WorkoutSettingsScreen: View {
         } header: {
             Heading("Gestures")
         } footer: {
-            Note("A gesture or a combo each, the same for every workout. While a workout runs, mappings that use these gestures are off.")
+            Note("A gesture or a spell each, the same for every workout. While a workout runs, mappings that use these gestures are off.")
         }
     }
 }

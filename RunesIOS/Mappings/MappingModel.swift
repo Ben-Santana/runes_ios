@@ -93,7 +93,8 @@ enum GestureKind: String, Codable, CaseIterable, Sendable, Hashable {
 enum Axis: String, Codable, CaseIterable, Sendable, Hashable { case x, y, z }
 enum RotationDirection: String, Codable, CaseIterable, Sendable, Hashable {
     case left, right, any
-    var arrow: String { switch self { case .left: "←"; case .right: "→"; case .any: "↔" } }
+    /// Each carries the text-presentation selector, so iPhone draws a plain arrow and not the emoji.
+    var arrow: String { switch self { case .left: "←\u{FE0E}"; case .right: "→\u{FE0E}"; case .any: "↔\u{FE0E}" } }
 }
 
 /// One combo step, saved in the Mac's format: `{"gesture": "rotation", "axis": "x", "direction": "left"}`.
@@ -173,6 +174,9 @@ enum ComboRules {
     /// The Mac app's timing choices, in milliseconds.
     static let times = [200, 300, 500, 750, 1000, 1500, 2000, 3000, 5000]
     static let defaultTime = 750
+    /// No limit between steps: a started combo waits until another gesture ends it. iPhone only.
+    static let noLimit = 0
+    static func allows(time ms: Int?) -> Bool { ms.map { $0 == noLimit || times.contains($0) } ?? false }
     static let steps = 2...8
     static let actions = 1...16
 
@@ -207,8 +211,8 @@ enum ComboRules {
         }
     }
     static func problem(_ steps: [ComboStep]) -> String? {
-        if steps.count < Self.steps.lowerBound { return "A combo needs at least two steps." }
-        if steps.count > Self.steps.upperBound { return "A combo can have up to eight steps." }
+        if steps.count < Self.steps.lowerBound { return "A spell needs at least two steps." }
+        if steps.count > Self.steps.upperBound { return "A spell can have up to eight steps." }
         if activeHolds(steps) == nil { return "Each release needs a hold before it, and a finger can’t be held twice." }
         if !airPlacementValid(steps) { return "An air gesture needs another gesture before it to start recording." }
         if steps.contains(where: { $0.gesture.isAir && !($0.air?.isValid ?? false) }) { return "Draw or record the air gesture’s shape." }
@@ -258,9 +262,11 @@ enum MappingAction: Codable, Hashable, Sendable {
     case spotify(SpotifyCommand)
     /// Starts a Capture voice note, or saves the one being recorded.
     case capture
+    /// The same, keeping the note in one Scribe set (its id).
+    case captureInto(String)
 
     enum Kind: String, CaseIterable, Identifiable, Sendable {
-        case runShortcut, openURL, spotify, capture, apiCall, notify, copyText, haptic, wait, changeProfile, moveProfile
+        case runShortcut, openURL, spotify, capture, captureInto, apiCall, notify, copyText, haptic, wait, changeProfile, moveProfile
         var id: String { rawValue }
         var title: String {
             switch self {
@@ -274,12 +280,13 @@ enum MappingAction: Codable, Hashable, Sendable {
             case .changeProfile: "Switch to profile"
             case .moveProfile: "Next or previous profile"
             case .spotify: "Control Spotify"
-            case .capture: "Record a Capture note"
+            case .capture: "Record a Scribe note"
+            case .captureInto: "Record into a Scribe set"
             }
         }
         var group: String {
             switch self {
-            case .runShortcut, .openURL, .spotify, .capture: "Apps"
+            case .runShortcut, .openURL, .spotify, .capture, .captureInto: "Apps"
             case .apiCall, .notify, .copyText: "Send"
             case .haptic, .wait: "Feedback & timing"
             case .changeProfile, .moveProfile: "Profiles"
@@ -300,6 +307,7 @@ enum MappingAction: Codable, Hashable, Sendable {
             case .moveProfile: .moveProfile(.down)
             case .spotify: .spotify(.playPause)
             case .capture: .capture
+            case .captureInto: .captureInto("")
             }
         }
     }
@@ -317,6 +325,7 @@ enum MappingAction: Codable, Hashable, Sendable {
         case .moveProfile: .moveProfile
         case .spotify: .spotify
         case .capture: .capture
+        case .captureInto: .captureInto
         }
     }
 
@@ -332,9 +341,13 @@ enum MappingAction: Codable, Hashable, Sendable {
         case .changeProfile(let id): return "Switch to \(profiles.first { $0.id == id }?.name ?? "a profile")"
         case .moveProfile(let direction): return direction == .down ? "Next profile" : "Previous profile"
         case .spotify(let command): return "Spotify: \(command.title)"
-        case .capture: return "Capture: record or save a note"
+        case .capture: return "Scribe: record or save a note"
+        case .captureInto(let id): return "Scribe: record into \(Self.setNames[id] ?? "a set")"
         }
     }
+
+    /// Scribe's set names by id, kept current by Scribe, so labels can name the set.
+    nonisolated(unsafe) static var setNames: [String: String] = [:]
 
     private static func host(_ text: String) -> String {
         if let url = URL(string: text), let host = url.host(), !host.isEmpty { return host }
@@ -359,6 +372,7 @@ enum MappingAction: Codable, Hashable, Sendable {
         case .copyText(let text): return text.isEmpty ? "Enter the text to copy." : nil
         case .wait(let ms): return (50...30_000).contains(ms) ? nil : "Wait 0.05–30 seconds."
         case .changeProfile(let id): return id.isEmpty ? "Choose a profile." : nil
+        case .captureInto(let id): return id.isEmpty ? "Choose a set." : nil
         case .haptic, .moveProfile, .spotify, .capture: return nil
         }
     }
@@ -393,7 +407,7 @@ struct Mapping: Codable, Identifiable, Hashable, Sendable {
     /// Live only when enabled, complete and valid.
     var isLive: Bool {
         guard enabled, ComboRules.actions.contains(actions.count), actions.allSatisfy({ $0.problem == nil }) else { return false }
-        if let steps { return ComboRules.valid(steps) && ComboRules.times.contains(intervalMs ?? 0) }
+        if let steps { return ComboRules.valid(steps) && ComboRules.allows(time: intervalMs) }
         return motion != nil
     }
 

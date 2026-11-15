@@ -33,6 +33,8 @@ struct CaptureNote: Codable, Identifiable, Hashable, Sendable {
     var scroll: String?
     /// Who put it in its scroll, or left it loose. The model never moves one placed by hand.
     var filed: Filing?
+    /// The rune chosen for its bead; until one is chosen it carries one drawn for it.
+    var glyph: InscriptionRune?
 
     enum Filing: String, Codable, Sendable {
         case scribe, hand
@@ -56,6 +58,28 @@ struct CaptureNote: Codable, Identifiable, Hashable, Sendable {
     }
     /// The model may still choose a scroll for it.
     var isLoose: Bool { scroll == nil && filed != .hand }
+    /// The rune its bead carries, drawn for it once and the same ever after.
+    var mark: InscriptionRune { glyph ?? .drawn(for: id) }
+}
+
+/// The Runes glyphs (Documentation/rune-icons): the gestures' and the everyday ones. Each set
+/// is a ball carrying one, and each inscription a bead carrying one.
+enum InscriptionRune: String, Codable, CaseIterable, Identifiable, Sendable {
+    case tapIndex = "tap-index", tapMiddle = "tap-middle", doubleTapIndex = "double-tap-index", doubleTapMiddle = "double-tap-middle"
+    case holdIndex = "hold-index", holdMiddle = "hold-middle", releaseIndex = "release-index", releaseMiddle = "release-middle"
+    case swipeUp = "swipe-up", swipeDown = "swipe-down", swipeLeft = "swipe-left", swipeRight = "swipe-right"
+    case rotation, movement, air
+    case home, music, light, time, voice
+
+    var id: String { rawValue }
+    var gesture: GestureKind? { GestureKind(rawValue: rawValue) }
+
+    /// A rune picked at random for an id, the same one on every launch.
+    static func drawn(for id: String) -> InscriptionRune {
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in id.utf8 { hash = (hash ^ UInt64(byte)) &* 0x100000001b3 }
+        return allCases[Int(hash % UInt64(allCases.count))]
+    }
 }
 
 /// A rune from the Elder Futhark. Each scroll is marked with one.
@@ -135,7 +159,7 @@ enum Rune: String, Codable, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// A scroll: inscriptions kept together under a name and a rune.
+/// A set (stored as a scroll): inscriptions kept together under a name and a rune.
 struct CaptureScroll: Codable, Identifiable, Hashable, Sendable {
     var id = UUID().uuidString.lowercased()
     var name: String
@@ -143,6 +167,12 @@ struct CaptureScroll: Codable, Identifiable, Hashable, Sendable {
     /// What belongs in it, in the owner's words; it tells the model where inscriptions go.
     var purpose = ""
     var created = Date()
+    /// The rune on its ball; sets made before they had one are given one by their id.
+    var glyph: InscriptionRune?
+    /// The order its inscriptions hang in, once rearranged; any not listed hang after, oldest first.
+    var order: [String]?
+
+    var mark: InscriptionRune { glyph ?? .drawn(for: id) }
 }
 
 /// What starts a recording from the band: one gesture, or a combo of two to eight finger
@@ -270,7 +300,7 @@ enum CaptureRules {
     /// A hold shorter than this was a slip, not a note.
     static let minimum = 0.6
     /// A hold whose release never arrives (the band went out of range) stops here.
-    static let maximum = 300.0
+    static let maximum = 7200.0
     /// Sound kept from just before the hold was recognised, so the first word isn't cut.
     static let preroll = 0.8
     /// Bars in a note's waveform.

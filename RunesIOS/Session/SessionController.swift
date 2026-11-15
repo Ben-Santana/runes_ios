@@ -102,7 +102,11 @@ final class SessionController: ObservableObject {
             MotionLab.shared.trace(trace, hand: self?.snapshot.hand, unit: WorkoutStore.shared.unit)
         }
         let recorder = MotionLab.recorder
-        core.onRaw = { recorder.ingest($0) }
+        core.onRaw = { sample in
+            recorder.ingest(sample)
+            // EMG streams while workout data records; it lets a set drop a rep moved without load.
+            if sample.kind == .emg { feed.ingest(emg: sample.emg, at: sample.uptime) }
+        }
         core.onEMGStatus = { text in Task { @MainActor in MotionLab.shared.emgStatus = text } }
         MotionLab.shared.onDemand = { [weak self] on in
             guard let self else { return }
@@ -112,11 +116,13 @@ final class SessionController: ObservableObject {
         WorkoutStore.shared.onActivity = { [weak self] state, alert in self?.live.show(workout: state, alert: alert) }
         WorkoutStore.shared.onReserve = { [weak self] in self?.reserve($0, for: .workouts) }
         ScoreAudio.shared.onBandBuzz = { [core] buzz in core.transport.perform { core.buzzBand(buzz) } }
+        AlarmStore.shared.onBuzz = { [core] pulses, name in core.transport.perform { core.buzzBand(pulses: pulses, name: name) } }
         WorkoutStore.shared.onSound = { voice, volume in ScoreAudio.shared.cue(voice, volume: volume) }
         WorkoutStore.shared.onSoundsLive = { ScoreAudio.shared.setLive($0, for: "workout") }
         ScoreStore.shared.onReserve = { [weak self] in self?.reserve($0, for: .score) }
         CookStore.shared.onReserve = { [weak self] in self?.reserve($0, for: .cook) }
         CookStore.shared.onActivity = { [weak self] state, alert in self?.live.show(cook: state, alert: alert) }
+        AlarmStore.shared.onActivity = { [weak self] state, alert in self?.live.show(alarm: state, alert: alert) }
         CookStore.shared.onCue = { cue in
             let (voice, pitch): (SoundVoice, Double) = switch cue {
             case .step: (.tick, 392)
@@ -134,6 +140,7 @@ final class SessionController: ObservableObject {
         }
         CaptureStore.shared.onReserve = { [weak self] in self?.reserve($0, for: .capture) }
         ReelsStore.shared.onReserve = { [weak self] in self?.reserve($0, for: .reels) }
+        AlarmStore.shared.onReserve = { [weak self] in self?.reserve($0, for: .alarm) }
         // Capture plays its own cues while its microphone is open; these are the rest.
         CaptureStore.shared.onCue = { cue in
             let (voice, pitch): (SoundVoice, Double) = switch cue {
@@ -219,6 +226,7 @@ final class SessionController: ObservableObject {
             for task in pairTasks.values { task.cancel() }; pairTasks.removeAll()
         }
         if let level = state.battery, level != previousBattery { BatteryAlerts.observe(level) }
+        AlarmStore.shared.bandReady = state.state == .streaming
     }
     /// Runs gesture mappings, then one haptic per physical gesture; the end of a hold is silent.
     private func react(to gesture: BandGesture) {
@@ -228,7 +236,7 @@ final class SessionController: ObservableObject {
         // While an editor listens for steps (`paused`), gestures reach it and nothing else.
         if MappingStore.shared.paused {
             MappingStore.shared.receive(gesture)
-        } else if !WorkoutStore.shared.consume(gesture), !ScoreStore.shared.consume(gesture),
+        } else if !AlarmStore.shared.consume(gesture), !WorkoutStore.shared.consume(gesture), !ScoreStore.shared.consume(gesture),
                   !CookStore.shared.consume(gesture), !CaptureStore.shared.consume(gesture),
                   !ReelsStore.shared.consume(gesture) { MappingStore.shared.receive(gesture) }
         guard foreground, UserDefaults.standard.object(forKey: Preferences.haptics) as? Bool ?? true else { return }

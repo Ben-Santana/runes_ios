@@ -35,13 +35,7 @@ struct LabSet: Codable, Hashable {
         logged = log.reps; assumed = log.slot.assumed; loggedAt = log.at
     }
 
-    static func detector(_ e: Exercise) -> String? {
-        switch e.signal {
-        case .swing(let degrees)?: "swing degrees=\(degrees)"
-        case .burst(let on, let off)?: "burst on=\(on) off=\(off)"
-        case nil: nil
-        }
-    }
+    static func detector(_ e: Exercise) -> String? { e.signal?.summary }
 }
 
 /// meta.json in each workout's folder.
@@ -90,7 +84,6 @@ enum WorkoutTrace {
 final class MotionLab: ObservableObject {
     static let shared = MotionLab()
     nonisolated static let recorder = MotionRecorder()
-    private static let enabledKey = "runes.workoutdata.enabled"
     /// Raw recording stops after this long even if the workout is never ended.
     static let limit: TimeInterval = 3 * 3600
 
@@ -99,7 +92,6 @@ final class MotionLab: ObservableObject {
         var counts = MotionRecorder.Counts()
     }
 
-    @Published var enabled: Bool { didSet { UserDefaults.standard.set(enabled, forKey: Self.enabledKey) } }
     @Published private(set) var recordings: [LabMeta] = []
     /// The workout being recorded.
     @Published private(set) var active: LabMeta?
@@ -113,7 +105,8 @@ final class MotionLab: ObservableObject {
     let root: URL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("WorkoutData", isDirectory: true)
 
     private init() {
-        enabled = UserDefaults.standard.object(forKey: Self.enabledKey) as? Bool ?? true
+        // Recording used to be optional; every workout records now.
+        UserDefaults.standard.removeObject(forKey: "runes.workoutdata.enabled")
         reload()
     }
 
@@ -140,7 +133,6 @@ final class MotionLab: ObservableObject {
 
     private func begin(_ run: WorkoutRun, hand: Handedness?, unit: WeightUnit) {
         if active != nil { stopRecording(capped: false) }
-        guard enabled else { return }
         problem = nil
         let now = Date(), uptime = ProcessInfo.processInfo.systemUptime
         let stamp = now.formatted(.iso8601.year().month().day().time(includingFractionalSeconds: false).timeSeparator(.omitted).dateSeparator(.omitted))
@@ -187,7 +179,8 @@ final class MotionLab: ObservableObject {
     private func finish(_ run: WorkoutRun) {
         if active?.workoutStarted == run.started { Self.recorder.event("workout_end", "sets=\(run.logs.count)") }
         stopRecording(capped: false)
-        guard var meta = recordings.first(where: { $0.workoutStarted == run.started }) else { return }
+        // meta.json keeps whole seconds, so the run's start never compares equal.
+        guard var meta = recordings.first(where: { abs($0.workoutStarted.timeIntervalSince(run.started)) < 1 }) else { return }
         meta.sets = run.logs.map(LabSet.init)
         meta.complete = true
         do { try write(meta) } catch { problem = "Could not save: \(error.localizedDescription)" }
@@ -285,6 +278,7 @@ final class MotionLab: ObservableObject {
     `phone_uptime_s, kind, detail` on the same clock as the samples:
     `workout_start`, `command` (start/stop/repeatLast/skip and the phase change), `set_start`
     (exercise, set, target, weight), `rep` (the shipping detector counted a rep; running count),
+    `settled` (on stop, the detector dropped reps that didn't look like the rest: live and logged count),
     `set_logged` (exercise, logged value), `workout_end`, `capped`, `stop`.
 
     ## gyro.csv

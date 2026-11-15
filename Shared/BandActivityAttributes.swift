@@ -18,6 +18,8 @@ struct BandActivityAttributes: ActivityAttributes {
         var score: ScoreActivityState? = nil
         /// Present while a recipe is being cooked; shown when no workout or game is.
         var cook: CookActivityState? = nil
+        /// Present while an alarm rings or is snoozed (shown over everything), or is set.
+        var alarm: AlarmActivityState? = nil
     }
     let startedAt: Date
 }
@@ -43,6 +45,20 @@ struct CookActivityTimer: Codable, Hashable, Identifiable {
     var ringing = false
     /// Seconds left while paused; the time then stands still.
     var remaining: Int? = nil
+}
+
+/// The current alarm: ringing, snoozed until a time, or set for a time.
+struct AlarmActivityState: Codable, Hashable {
+    enum Phase: String, Codable, Hashable { case set, ringing, snoozed }
+    var phase: Phase
+    /// The label, or the vibration style when it has none.
+    var title: String
+    /// When it rings next, or when the snooze ends; nil while ringing.
+    var at: Date?
+    /// Whether a tap while ringing snoozes it; when it can't, opening the activity stops it.
+    var canSnooze: Bool
+    /// Rings within the next day; a far-off alarm leaves the band status in front.
+    var soon: Bool { phase != .set || (at.map { $0.timeIntervalSinceNow < 24 * 3600 } ?? false) }
 }
 
 /// A title and a line for a Live Activity alert, which lights the Lock Screen with a sound.

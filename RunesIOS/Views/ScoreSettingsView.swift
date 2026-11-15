@@ -18,7 +18,7 @@ struct ScoreSettingsScreen: View {
                     actionsBlock("Band gestures", ScoreAction.all.filter { $0.player == nil },
                                  note: "Swipe up stays with the score screen, where it zooms out to everyone. While a game is live, these gestures don’t run their mappings.")
                     actionsBlock("Each player", ScoreAction.all.filter { $0.player != nil },
-                                 note: "Optional: give a player their own gesture or combo, so you can score them without selecting them first.")
+                                 note: "Optional: give a player their own gesture or spell, so you can score them without selecting them first.")
                     Button("Reset gestures") { store.resetGestures() }.buttonStyle(.quiet)
                     SwitchControlsBlock()
                     buzzBlock

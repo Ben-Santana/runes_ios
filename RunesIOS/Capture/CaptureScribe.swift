@@ -14,7 +14,7 @@ enum CaptureScribe {
 
         var sentence: String {
             switch self {
-            case .ready: "Apple Intelligence names each inscription and files it in the scroll it belongs to, on this phone."
+            case .ready: "Apple Intelligence names each inscription and files it in the set it belongs to, on this phone."
             case .notEligible: "This iPhone can’t run Apple Intelligence, so inscriptions are named from their first words and you file them yourself."
             case .turnedOff: "Turn on Apple Intelligence in Settings to have inscriptions named and filed for you. Until then they’re named from their first words."
             case .downloading: "Apple Intelligence is still getting ready on this phone. Inscriptions are named from their first words until it is."

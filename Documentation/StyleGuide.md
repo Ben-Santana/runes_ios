@@ -22,7 +22,7 @@ It draws every token and part with the real code and has the appearance switch a
 | `Inputs.swift` | `FormSheet`, `ChoiceList`, `ChoiceSheet`, `ChipRow`, `TitleField`, `NumberChip`, `HairlineSwitch` |
 | `Indicators.swift` | `GestureChip`, `PulseDot`, `OrbitDot`, `RepBar`, `StepProgress`, `TimerRing`, `Sparkline` |
 | `Motion.swift` | `arrive(_:)`, `breathing(_:)`, `jiggle(_:index:)` |
-| `Icons.swift`, `HairlineRing.swift`, `TriggerComposer.swift`, `SwipeToDelete.swift` | The icon set, the ring, the gesture composer, swipe to delete |
+| `Icons.swift`, `HairlineRing.swift`, `TriggerComposer.swift`, `SwipeToDelete.swift` | The icon set, the ring, the trigger sheet, rows and chips, swipe to delete |
 
 A part goes in the library when a second screen needs it. Parts that read one app's model
 (`Waveform`, `StepTicks`, `DurationChip`) stay with that app and are still shown in the gallery.
@@ -152,8 +152,8 @@ one sentence, one hairline button.
 | `StepProgress`, `StepTicks`, `DurationChip` | Indicators, CookView | A recipe's steps as hairline segments and ticks; a step's time as a quiet chip |
 | `TimerRing` | Indicators | A hairline circle that fills as a timer runs out |
 | `HairlineSwitch` | Inputs | A switch in ink and hairline (outline and open knob off, filled on); reads in both appearances |
-| `TriggerComposer` | TriggerComposer | The one way to set a gesture or build a combo: a track of step tiles (the selected one in ink, a dashed slot for the next, an ink line under steps made with a finger held) over a four-column pad of gesture keys. Inline on a page it opens the pad when a step is touched |
-| `TriggerSheet` | TriggerComposer | The composer over a draft, with Cancel and Save; `TriggerRules` says whether it takes one gesture, a combo or either |
+| `ComboCreator` | ComboCreator | The one way to set a gesture or build a combo: the steps as beads on a string, with a pad of gesture keys down the right that opens from the ring at the string's end. `TriggerRules` decides which keys are offered |
+| `TriggerSheet` | TriggerComposer | The creator over a draft, with the time between steps for a combo, with Cancel and Save; `TriggerRules` says whether it takes one gesture, a combo or either |
 | `TriggerRow`, `TriggerChip` | TriggerComposer | A ledger row for something the band does, with its gesture or its combo's steps as a capsule |
 | `NoticeCard` | Surfaces | The issue card's look for any sentence and one action |
 | `Waveform` | CaptureView | A recording as hairline bars, inked up to the playback position |

@@ -13,14 +13,11 @@ struct MotionLabScreen: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {
                 PanelGroup("Recording", caption: "While a workout runs, Runes saves every raw band sample, EMG included, alongside your sets. Just do your workouts as usual. Recording stops when you end the workout, or after 3 hours.") {
-                    Toggle(isOn: $lab.enabled) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Record during workouts").font(.bodyText)
-                            Text("About 120 MB per hour, mostly EMG.").font(.caption).foregroundStyle(Color.muted)
-                        }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Always on during workouts").font(.bodyText)
+                        Text("About 120 MB per hour, mostly EMG. EMG also helps count reps.").font(.caption).foregroundStyle(Color.muted)
                     }
-                    .padding(.horizontal, Metric.inset).padding(.vertical, 10)
-                    .disabled(lab.active != nil)
+                    .padding(.horizontal, Metric.inset).padding(.vertical, 10).frame(maxWidth: .infinity, alignment: .leading)
                     Rule()
                     ValueRow("Band") { Text(controller.snapshot.state.title) }
                     Rule()

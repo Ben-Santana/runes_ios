@@ -113,7 +113,7 @@ struct SettingsView<Advanced: View>: View {
                     }
                     if developerMode {
                         PanelGroup("Developer") {
-                            LinkRow("Runes lab") { RunesLabScreen() }
+                            LinkRow("Runes lab") { VoiceLabScreen() }
                             Rule()
                             LinkRow("Workout data") { MotionLabScreen() }
                             Rule()
