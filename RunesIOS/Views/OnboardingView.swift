@@ -50,6 +50,8 @@ struct OnboardingActions {
     var setHand: (Handedness) -> Void = { _ in }
     var wristFeedback: (WristFeedbackPhase, Handedness, UUID) -> Void = { _, _, _ in }
     var cancelWristFeedback: (UUID) -> Void = { _ in }
+    /// A finger knocked one of the welcome ring's beads: its index and how hard (0…1).
+    var beadStruck: (Int, Double) -> Void = { _, _ in }
 }
 
 struct OnboardingView: View {
@@ -69,7 +71,7 @@ struct OnboardingView: View {
                                   cancelFeedback: actions.cancelWristFeedback, layout: .embedded)
                             .padding(.bottom, 20)
                     } else {
-                        HairlineRing(phase: ringPhase, gesture: context.gesture, emphasis: emphasis, emphasisLight: step == .pairing, playful: step == .welcome)
+                        HairlineRing(phase: ringPhase, gesture: context.gesture, emphasis: emphasis, emphasisLight: step == .pairing, playful: step == .welcome, struck: actions.beadStruck)
                             .frame(maxWidth: 300).padding(.top, 8).padding(.bottom, 12)
                     }
                     VStack(alignment: .leading, spacing: 10) {
@@ -361,8 +363,10 @@ struct OnboardingFlow: View {
     @State private var passed = false
     @State private var testStartID = 0
     @State private var scanningMac = false
+    @Environment(\.scenePhase) private var scenePhase
 
     private var snapshot: SessionSnapshot { controller.snapshot }
+    private var cues: OnboardingCues { .shared }
 
     var body: some View {
         OnboardingView(step: step, context: context, actions: actions)
@@ -370,8 +374,16 @@ struct OnboardingFlow: View {
                 if step == .bluetooth, value == .allowedAlways { advance(to: .pairing) }
             }
             .onChange(of: snapshot.state) { _, state in
-                if step == .signIn, state == .streaming { startTest() }
+                guard state == .streaming, step == .signIn || step == .test else { return }
+                if step == .signIn { startTest() }
+                cues.connected()
             }
+            .onChange(of: snapshot.devices.count) { old, new in
+                if step == .pick, new > old { cues.found() }
+            }
+            .onAppear { cues.setActive(scenePhase == .active) }
+            .onChange(of: scenePhase) { _, phase in cues.setActive(phase == .active) }
+            .onDisappear { cues.setActive(false) }
             .onChange(of: snapshot.lastGesture?.id) { _, _ in listen() }
             .sheet(isPresented: $scanningMac) {
                 IdentityScanner(title: "Scan the code on your Mac") { text in
@@ -421,7 +433,8 @@ struct OnboardingFlow: View {
             finish: { controller.completeSetup(); finished() },
             setUpBandAgain: controller.setUpBandAgain,
             setHand: controller.setHand,
-            wristFeedback: controller.wristFeedback, cancelWristFeedback: controller.cancelWristFeedback)
+            wristFeedback: controller.wristFeedback, cancelWristFeedback: controller.cancelWristFeedback,
+            beadStruck: cues.bead)
     }
 
     private func advance(to next: OnboardingStep) {
@@ -475,6 +488,10 @@ struct OnboardingFlow: View {
 
     private func listen() {
         guard step == .test, !passed, let gesture = snapshot.lastGesture, gesture.id > testStartID, gesture.kind != .holdEnded else { return }
-        if gesture.finger == 2, gesture.kind == .tap || gesture.kind == .doubleTap { passed = true } else { heard = gesture.title }
+        if gesture.finger == 2, gesture.kind == .tap || gesture.kind == .doubleTap {
+            passed = true; cues.passed()
+        } else {
+            heard = gesture.title; cues.heard()
+        }
     }
 }
