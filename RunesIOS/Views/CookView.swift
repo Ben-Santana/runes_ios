@@ -246,6 +246,9 @@ private struct Leader: View {
 /// time, a hairline as long as that time. It draws in once from the leading edge.
 struct TimeLine: View {
     let recipe: Recipe
+    /// While cooking: the step showing is in ink, the ones behind it lighter, the ones ahead faint.
+    var step: Int? = nil
+    var finished = false
     @State private var drawn = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -255,12 +258,16 @@ struct TimeLine: View {
             let total = CGFloat(times.reduce(0, +)), gap: CGFloat = 7
             let spare = max(0, size.width - gap * CGFloat(times.count))
             var x: CGFloat = 0
-            for seconds in times {
-                let length = total > 0 ? spare * CGFloat(seconds) / total : 0
+            for (index, seconds) in times.enumerated() {
+                // As a place in the recipe, steps with no time share the width evenly.
+                let length = total > 0 ? spare * CGFloat(seconds) / total : step != nil ? spare / CGFloat(times.count) : 0
                 let tall = seconds > 0 ? size.height : size.height / 2
-                context.fill(Path(CGRect(x: x, y: size.height - tall, width: Metric.hairline, height: tall)), with: .color(Color.ink))
-                if seconds > 0 {
-                    context.fill(Path(CGRect(x: x, y: size.height - Metric.hairline, width: length + gap - 3, height: Metric.hairline)), with: .color(Color.ink))
+                let here = step == index && !finished
+                let shade = step == nil ? Color.ink : here ? Color.ink : finished || index < (step ?? 0) ? Color.ink.opacity(0.45) : Color.faint
+                let weight = here ? 2 : Metric.hairline
+                context.fill(Path(CGRect(x: x, y: size.height - tall, width: weight, height: tall)), with: .color(shade))
+                if seconds > 0 || (here && total == 0) {
+                    context.fill(Path(CGRect(x: x, y: size.height - weight, width: length + gap - 3, height: weight)), with: .color(shade))
                 }
                 x += gap + length
             }
@@ -946,6 +953,14 @@ struct CookSettingsScreen: View {
                         Heading("On the wrist")
                     } footer: {
                         Note("The band buzzes three times when a timer ends, until you stop it. Everything adds a light tap for each gesture it takes.")
+                    }
+                    Block {
+                        HairlineSegments(selection: Binding(get: { store.dial ? Sound.on : .off }, set: { store.setDial($0 == .on) }),
+                                         options: Sound.allCases, title: \.rawValue)
+                    } header: {
+                        Heading("Wrist dial")
+                    } footer: {
+                        Note("Pinch your index finger and hold, turn your wrist to set the selected timer like the dial of a kitchen timer, and let go. On a step with no time it starts one. It keeps the band’s motion sensors on while you cook, which uses more battery.")
                     }
                     Block {
                         HairlineSegments(selection: Binding(get: { store.listLook }, set: { store.setListLook($0) }),

@@ -116,7 +116,7 @@ struct SnapshotGallery: View {
             NavigationStack { CookScreen(store: name == "cook-idle" ? PreviewFixtures.cookShelf() : PreviewFixtures.cook(listLook: name == "cook" ? .contents : .ledger), path: .constant([])) }
         } else if name == "recipe" || name == "recipe-salmon" {
             NavigationStack { RecipeScreen(store: PreviewFixtures.cookShelf(), recipeID: name == "recipe" ? Recipe.starter.id : Recipe.salmonPasta.id, path: .constant([])) }
-        } else if ["cooking-salmon", "cooking-salmon-ringing", "cooking-salmon-numbers", "cooking-picked", "cooking-salmon-done"].contains(name) {
+        } else if ["cooking-salmon", "cooking-salmon-ringing", "cooking-salmon-numbers", "cooking-picked", "cooking-salmon-done", "cooking-dial"].contains(name) {
             NavigationStack { CookingScreen(store: PreviewFixtures.cookSalmon(name)) }
         } else if name == "cooking-numbers" || name == "cooking-numbers-ringing" {
             NavigationStack { CookingScreen(store: PreviewFixtures.cook(step: name == "cooking-numbers" ? 2 : 1, ringing: name != "cooking-numbers", cookingLook: .numbers)) }

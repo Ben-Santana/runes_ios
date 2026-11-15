@@ -56,7 +56,8 @@ struct Hob: View {
         TimelineView(.periodic(from: .now, by: 0.5)) { context in
             let pots = pots
             let shown = pots.count > Self.burners ? fitting(pots) : pots
-            VStack(spacing: 0) {
+            // With nothing on it the hob isn't drawn, and the step has the room.
+            if !pots.isEmpty { VStack(spacing: 0) {
                 Rule(inset: 0)
                 HStack(alignment: .top, spacing: 0) {
                     ForEach(0..<Self.burners, id: \.self) { index in
@@ -78,7 +79,61 @@ struct Hob: View {
                 .padding(.horizontal, 8).padding(.top, 14).padding(.bottom, 4)
             }
             .animation(.standard, value: pots.map(\.id))
+            .transition(.opacity) }
         }
+    }
+}
+
+// MARK: The wrist dial
+
+/// The timer's dial, shown while the index finger is pinched and held: a ring of ticks
+/// that turns one tick for each step of the wrist under a fixed mark, round the time the
+/// timer will be set to. It moves only as the hand does.
+struct TimerDial: View {
+    let seconds: Int
+    /// What is being set: "Simmer", or the step when it has no name.
+    let label: String
+    /// Whether letting go starts a timer, or sets one already going.
+    let starts: Bool
+    private static let size: CGFloat = 264
+
+    /// Steps of the dial from nothing to this time, one tick each.
+    private var steps: Int {
+        seconds < 120 ? seconds / 10 : seconds < 900 ? 12 + (seconds - 120) / 30 : 38 + (seconds - 900) / 60
+    }
+
+    var body: some View {
+        VStack(spacing: 22) {
+            Text(label).font(.label)
+            ZStack {
+                Canvas { context, size in
+                    let centre = CGPoint(x: size.width / 2, y: size.height / 2), radius = min(size.width, size.height) / 2
+                    for tick in 0..<60 {
+                        let angle = Double(tick) * .pi / 30, long = tick % 5 == 0
+                        let inner = radius - (long ? 16 : 8)
+                        var path = Path()
+                        path.move(to: CGPoint(x: centre.x + sin(angle) * inner, y: centre.y - cos(angle) * inner))
+                        path.addLine(to: CGPoint(x: centre.x + sin(angle) * radius, y: centre.y - cos(angle) * radius))
+                        context.stroke(path, with: .color(long ? Color.ink : Color.faint), lineWidth: Metric.hairline)
+                    }
+                }
+                .rotationEffect(.degrees(Double(steps) * 6))
+                .animation(.standard, value: steps)
+                Capsule().fill(Color.ink).frame(width: 2.5, height: 26).offset(y: -Self.size / 2 + 4)
+                Text(DurationFinder.clock(seconds))
+                    .font(.geist(64, .medium, relativeTo: .largeTitle)).monospacedDigit().tracking(-2)
+                    .lineLimit(1).minimumScaleFactor(0.5).frame(width: Self.size - 70)
+                    .contentTransition(.numericText(value: Double(seconds)))
+                    .animation(.standard, value: seconds)
+            }
+            .frame(width: Self.size, height: Self.size)
+            Text(seconds == 0 ? (starts ? "Turn your wrist to set a time" : "Let go to clear it") : starts ? "Let go to start" : "Let go to set")
+                .font(.caption).foregroundStyle(Color.muted)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.paper)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Setting \(label) to \(DurationFinder.short(seconds))")
     }
 }
 

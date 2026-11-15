@@ -42,7 +42,7 @@ struct CookingScreen: View {
     var body: some View {
         Group {
             if let session = store.session {
-                CookingView(session: session, controls: store.controls, look: store.cookingLook, actions: CookActions(
+                CookingView(session: session, controls: store.controls, look: store.cookingLook, dial: store.dial, dialing: store.dialing, actions: CookActions(
                     perform: store.perform, toggle: { store.toggleTimer(slot: $0) }, reset: store.resetTimer, addMinute: store.addMinute,
                     toggleTimer: { store.toggleTimer($0) }, cancelTimer: store.cancelTimer,
                     select: store.select, stopRinging: store.stopRinging,
@@ -81,6 +81,9 @@ struct CookingView: View {
     let session: CookSession
     let controls: CookControls
     var look = CookingLook.hob
+    /// Whether the wrist dial is on, and the time it shows while the pinch is held.
+    var dial = false
+    var dialing: Int? = nil
     var actions = CookActions()
     @State private var drag: CGFloat = 0
     @State private var confirmStop = false
@@ -94,8 +97,12 @@ struct CookingView: View {
         let rung = session.ringing(at: now)
         let ringing = !rung.isEmpty
         VStack(spacing: 0) {
-            StepProgress(count: session.count, step: session.step, finished: session.finished, height: 3)
-                .padding(.horizontal, Metric.gutter).padding(.top, 4)
+            // The hob look draws the recipe as its line of time, so a long wait ahead is seen coming.
+            Group {
+                if look == .hob { TimeLine(recipe: session.recipe, step: session.step, finished: session.finished) }
+                else { StepProgress(count: session.count, step: session.step, finished: session.finished, height: 3) }
+            }
+            .padding(.horizontal, Metric.gutter).padding(.top, 4)
             if let first = rung.first {
                 let durations = session.recipe.durations(step: first.step)
                 let cue = durations.indices.contains(first.slot) ? StepDetails.cue(for: durations[first.slot], in: session.recipe.steps[first.step]) : nil
@@ -106,8 +113,15 @@ struct CookingView: View {
             ZStack {
                 if session.finished { finished.transition(.opacity.combined(with: .scale(scale: 0.96))) }
                 else { pages.transition(.opacity) }
+                if let dialing {
+                    let target = session.selectedTimer.flatMap { $0.isLive ? $0 : nil }
+                    let named = session.pickedTimer == nil && session.durations.indices.contains(session.slot) ? session.durations[session.slot].label : nil
+                    TimerDial(seconds: dialing, label: target?.label ?? named ?? "Step \(session.step + 1)", starts: target == nil)
+                        .transition(.opacity)
+                }
             }
             .frame(maxHeight: .infinity)
+            .animation(.standard, value: dialing != nil)
             if !session.finished { NextPeek(session: session) }
             if look == .hob { Hob(session: session, actions: actions) } else { TimerShelf(session: session, actions: actions) }
             legend(ringing: ringing, now: now).padding(.top, 16).padding(.bottom, 10).padding(.horizontal, 12)
@@ -222,6 +236,8 @@ struct CookingView: View {
         if ringing || !session.live(at: now).isEmpty || session.durations.isEmpty { add([.addMinute], "+1") }
         if selected != nil { add([.reset], "Reset") }
         if session.slots + session.others.count > (session.selection == nil ? 0 : 1) { add([.timerUp, .timerDown], "Timer") }
+        // Pinch and hold, then turn the wrist: shown only while no command has that hold.
+        if dial, !controls.reserved.contains(.holdIndex) { result.append(Hint(id: "dial", triggers: [.gesture(.holdIndex)], word: "Dial")) }
         return result
     }
 
@@ -724,7 +740,8 @@ extension PreviewFixtures {
         session.start(step: 2, slot: 0, at: now.addingTimeInterval(-40))
         if name == "cooking-picked" { session.apply(.timerDown, at: now); session.apply(.timerDown, at: now) }
         if name == "cooking-salmon-done" { session.go(to: session.count - 1); session.apply(.next, at: now) }
-        return CookStore(preview: Recipe.samples, session: session, cookingLook: name == "cooking-salmon-numbers" ? .numbers : .hob)
+        return CookStore(preview: Recipe.samples, session: session, cookingLook: name == "cooking-salmon-numbers" ? .numbers : .hob,
+                         dialing: name == "cooking-dial" ? 450 : nil)
     }
 
     /// Recipes with nothing cooking, some cooked before.
