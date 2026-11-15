@@ -180,6 +180,8 @@ struct TimeUpBand: View {
     let timer: CookTimer
     /// How many more are up as well.
     let others: Int
+    /// How to tell it is done, when the step says: "until deeply browned".
+    var cue: String? = nil
     let controls: CookControls
     let stop: () -> Void
 
@@ -191,20 +193,21 @@ struct TimeUpBand: View {
                     Text("Time’s up").font(.label)
                     Text("\(timer.label) · step \(timer.step + 1)" + (others > 0 ? " · and \(others) more" : ""))
                         .font(.caption).opacity(0.72).lineLimit(1)
+                    if let cue { Text("Check: \(cue)").font(.caption).lineLimit(2).fixedSize(horizontal: false, vertical: true) }
                 }
                 Spacer(minLength: 8)
                 hint(.timer, "Stop")
                 hint(.addMinute, "+1")
             }
             .foregroundStyle(Color.paper)
-            .padding(.horizontal, Metric.inset).frame(minHeight: 56)
+            .padding(.horizontal, Metric.inset).padding(.vertical, 10).frame(minHeight: 56)
             .background(Color.ink, in: RoundedRectangle(cornerRadius: Metric.panel))
             .contentShape(Rectangle())
         }
         .buttonStyle(PressRow())
         .padding(.horizontal, Metric.gutter)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Time’s up for \(timer.label), step \(timer.step + 1)")
+        .accessibilityLabel("Time’s up for \(timer.label), step \(timer.step + 1)" + (cue.map { ". Check: \($0)" } ?? ""))
         .accessibilityHint("Stops the timer.")
     }
 

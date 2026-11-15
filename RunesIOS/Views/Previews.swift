@@ -112,10 +112,14 @@ struct SnapshotGallery: View {
             NavigationStack { ReelsScreen(store: .shared) }
         } else if name == "reels-settings" {
             ReelsSettingsScreen(store: .shared)
-        } else if name == "cook" {
-            NavigationStack { CookScreen(store: PreviewFixtures.cook(), path: .constant([])) }
-        } else if name == "recipe" {
-            NavigationStack { RecipeScreen(store: PreviewFixtures.cook(), recipeID: Recipe.starter.id, path: .constant([])) }
+        } else if name == "cook" || name == "cook-ledger" || name == "cook-idle" {
+            NavigationStack { CookScreen(store: name == "cook-idle" ? PreviewFixtures.cookShelf() : PreviewFixtures.cook(listLook: name == "cook" ? .contents : .ledger), path: .constant([])) }
+        } else if name == "recipe" || name == "recipe-salmon" {
+            NavigationStack { RecipeScreen(store: PreviewFixtures.cookShelf(), recipeID: name == "recipe" ? Recipe.starter.id : Recipe.salmonPasta.id, path: .constant([])) }
+        } else if ["cooking-salmon", "cooking-salmon-ringing", "cooking-salmon-numbers", "cooking-picked", "cooking-salmon-done"].contains(name) {
+            NavigationStack { CookingScreen(store: PreviewFixtures.cookSalmon(name)) }
+        } else if name == "cooking-numbers" || name == "cooking-numbers-ringing" {
+            NavigationStack { CookingScreen(store: PreviewFixtures.cook(step: name == "cooking-numbers" ? 2 : 1, ringing: name != "cooking-numbers", cookingLook: .numbers)) }
         } else if name == "recipe-editor" || name == "recipe-new" {
             RecipeEditor(store: PreviewFixtures.cook(), recipe: name == "recipe-editor" ? .starter : nil) { _ in }
         } else if ["cooking", "cooking-first", "cooking-ringing", "cooking-done"].contains(name) {

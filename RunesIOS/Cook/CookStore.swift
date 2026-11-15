@@ -161,6 +161,15 @@ final class CookStore: ObservableObject {
         persist()
     }
 
+    /// Keeps a note with a recipe, such as what to change next time. It joins the one being cooked too.
+    func addNote(_ text: String, to id: String) {
+        let note = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !note.isEmpty, let index = recipes.firstIndex(where: { $0.id == id }) else { return }
+        recipes[index].notes = (recipes[index].notes ?? []) + [note]
+        if session?.recipe.id == id { session?.recipe.notes = recipes[index].notes }
+        persist()
+    }
+
     func delete(_ id: String) {
         if session?.recipe.id == id { end() }
         recipes.removeAll { $0.id == id }

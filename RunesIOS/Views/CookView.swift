@@ -182,7 +182,7 @@ private struct ContentsRow: View {
                 HStack(alignment: .lastTextBaseline, spacing: 10) {
                     Text(recipe.title).font(.heading).lineLimit(2).multilineTextAlignment(.leading).layoutPriority(1)
                     Leader().frame(minWidth: 16)
-                    trailing.font(.geist(15, .medium, relativeTo: .body)).monospacedDigit()
+                    trailing.font(.geist(15, .medium, relativeTo: .body)).monospacedDigit().lineLimit(1).fixedSize().layoutPriority(2)
                 }
                 Text(caption).font(.caption).foregroundStyle(Color.muted).lineLimit(1)
             }
@@ -328,6 +328,7 @@ struct RecipeScreen: View {
     @State private var servings = 0.0
     /// Ingredients ticked off before cooking starts.
     @State private var ready: Set<Int> = []
+    @State private var noting = false
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -408,11 +409,13 @@ struct RecipeScreen: View {
                         SpineStep(index: index, last: index == shown.steps.count - 1, text: step, uses: shown.uses(step: index))
                     }
                 } header: { Heading("Steps", count: shown.steps.count).padding(.bottom, 4) }
-                if let notes = recipe.notes, !notes.isEmpty { NotesBlock(notes: notes) }
+                NotesBlock(notes: recipe.notes ?? []) { noting = true }
             }
             .padding(.horizontal, Metric.gutter).padding(.top, 12).padding(.bottom, 24)
             .animation(.standard, value: count)
+            .animation(.standard, value: recipe.notes)
         }
+        .sheet(isPresented: $noting) { NoteSheet { store.addNote($0, to: recipe.id) } }
         .safeAreaInset(edge: .bottom) {
             VStack(spacing: 0) {
                 Rule(inset: 0)
@@ -518,9 +521,11 @@ private struct SpineStep: View {
     }
 }
 
-/// Tips, storage and reheating: kept with the recipe, out of the way of the steps.
+/// Tips, storage, reheating and what to change next time: kept with the recipe, out of
+/// the way of the steps.
 struct NotesBlock: View {
     let notes: [String]
+    var add: (() -> Void)? = nil
     var body: some View {
         Block {
             ForEach(Array(notes.enumerated()), id: \.offset) { index, note in
@@ -528,7 +533,31 @@ struct NotesBlock: View {
                 Text(note).font(.bodyText).lineSpacing(3).fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 12)
             }
-        } header: { Heading("Notes", count: notes.count) }
+            if let add {
+                if !notes.isEmpty { Hairline() }
+                AddRow(title: "Add a note", action: add)
+            }
+        } header: { Heading("Notes", count: notes.isEmpty ? nil : notes.count) }
+    }
+}
+
+/// One note, typed: what to do differently next time.
+struct NoteSheet: View {
+    let save: (String) -> Void
+    @State private var text = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        FormSheet("Note", done: "Save", canSave: !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, save: { save(text) }) {
+            VStack(alignment: .leading, spacing: 10) {
+                TextField("Less salt next time", text: $text, axis: .vertical)
+                    .font(.heading).lineLimit(1...6).focused($focused)
+                FocusRule(active: focused)
+                Note("Kept with the recipe, and shown when you finish cooking it.")
+            }
+        }
+        .presentationDetents([.medium])
+        .onAppear { focused = true }
     }
 }
 

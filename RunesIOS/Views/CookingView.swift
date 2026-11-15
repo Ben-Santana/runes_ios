@@ -26,6 +26,7 @@ struct CookActions {
     var cancelTimer: (String) -> Void = { _ in }
     var select: (_ slot: Int) -> Void = { _ in }
     var stopRinging: () -> Void = {}
+    var addNote: (String) -> Void = { _ in }
     var go: (_ step: Int, _ slot: Int?) -> Void = { _, _ in }
     var stop: () -> Void = {}
     var done: () -> Void = {}
@@ -45,6 +46,7 @@ struct CookingScreen: View {
                     perform: store.perform, toggle: { store.toggleTimer(slot: $0) }, reset: store.resetTimer, addMinute: store.addMinute,
                     toggleTimer: { store.toggleTimer($0) }, cancelTimer: store.cancelTimer,
                     select: store.select, stopRinging: store.stopRinging,
+                    addNote: { store.addNote($0, to: session.recipe.id) },
                     go: { store.go(to: $0, slot: $1) },
                     stop: { store.end(); dismiss() },
                     done: { store.end(); dismiss() }))
@@ -82,6 +84,7 @@ struct CookingView: View {
     var actions = CookActions()
     @State private var drag: CGFloat = 0
     @State private var confirmStop = false
+    @State private var noting = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private static let slide = Animation.spring(duration: 0.45, bounce: 0.12)
@@ -94,7 +97,9 @@ struct CookingView: View {
             StepProgress(count: session.count, step: session.step, finished: session.finished, height: 3)
                 .padding(.horizontal, Metric.gutter).padding(.top, 4)
             if let first = rung.first {
-                TimeUpBand(timer: first, others: rung.count - 1, controls: controls, stop: actions.stopRinging)
+                let durations = session.recipe.durations(step: first.step)
+                let cue = durations.indices.contains(first.slot) ? StepDetails.cue(for: durations[first.slot], in: session.recipe.steps[first.step]) : nil
+                TimeUpBand(timer: first, others: rung.count - 1, cue: cue, controls: controls, stop: actions.stopRinging)
                     .padding(.top, 10)
                     .transition(reduceMotion ? .opacity : .wipe)
             }
@@ -165,29 +170,31 @@ struct CookingView: View {
     }
 
     private var finished: some View {
-        let notes = session.recipe.notes ?? []
-        return VStack(spacing: 16) {
-            FinishedMark().frame(width: notes.isEmpty ? 120 : 72, height: notes.isEmpty ? 120 : 72).padding(.bottom, 8)
-            Text("Enjoy.").font(.display).tracking(-0.6)
-            Text("\(session.recipe.title) · \(max(1, Int(Date().timeIntervalSince(session.started) / 60))) min")
-                .font(.bodyText).foregroundStyle(Color.muted).multilineTextAlignment(.center)
-            // Storage and reheating matter now, with the pan still on the table.
-            if !notes.isEmpty {
-                ViewThatFits(in: .vertical) {
-                    NotesBlock(notes: notes)
-                    ScrollView { NotesBlock(notes: notes) }
-                }
-                .padding(.top, 16)
-            }
+        // Centred when it fits; with a few notes under it, it scrolls.
+        ViewThatFits(in: .vertical) {
+            enjoy.frame(maxHeight: .infinity)
+            ScrollView { enjoy }
         }
-        .padding(.horizontal, Metric.gutter)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .contentShape(Rectangle())
         // Swipe back to the last step, as the band does.
-        .gesture(DragGesture(minimumDistance: 14).onEnded { value in
+        .simultaneousGesture(DragGesture(minimumDistance: 14).onEnded { value in
             if value.translation.width > 60, abs(value.translation.width) > abs(value.translation.height) * 1.2 { actions.perform(.previous) }
         })
-        .accessibilityElement(children: .combine)
+        .sheet(isPresented: $noting) { NoteSheet(save: actions.addNote) }
+    }
+
+    private var enjoy: some View {
+        VStack(spacing: 16) {
+            FinishedMark().frame(width: 120, height: 120).padding(.bottom, 8)
+            Text("Enjoy.").font(.display).tracking(-0.6)
+            Text("\(session.recipe.title) · \(max(1, Int(Date().timeIntervalSince(session.started) / 60))) min")
+                .font(.bodyText).foregroundStyle(Color.muted).multilineTextAlignment(.center)
+            // Storage and reheating matter now, with the pan still on the table, and so
+            // does what to change next time.
+            NotesBlock(notes: session.recipe.notes ?? []) { noting = true }.padding(.top, 16)
+        }
+        .padding(.horizontal, Metric.gutter).padding(.vertical, 24)
     }
 
     // MARK: Controls
@@ -282,6 +289,13 @@ private struct StepPage: View {
         result.tracking = tracking
         // A layer for one time shows nothing else.
         if time != nil { result.foregroundColor = .clear }
+        // How hot: a hairline under it, so it is found again at a glance. An underline
+        // takes no room, so the layers still break their lines alike.
+        if time == nil {
+            for heat in StepDetails.heat(in: text) {
+                if let range = Range(heat, in: result) { result[range].underlineStyle = Text.LineStyle(pattern: .solid, color: Color.muted) }
+            }
+        }
         for (slot, duration) in durations.enumerated() {
             guard let range = Range(NSRange(location: duration.location, length: duration.length), in: result) else { continue }
             guard slot == time else {
@@ -339,9 +353,11 @@ private struct StepPage: View {
             // Drawn directly whenever the words fit, which is nearly always. A scroll view
             // is a different kind of layer and trails a beat behind the timers when the
             // page slides, so it is only used for a step too long for the screen.
+            // The cues said again beside the amounts are the first thing to go when room is short.
             ViewThatFits(in: .vertical) {
-                reading(durations).frame(maxHeight: .infinity, alignment: .top)
-                ScrollView { reading(durations) }.scrollBounceBehavior(.basedOnSize)
+                reading(durations, cues: true).frame(maxHeight: .infinity, alignment: .top)
+                reading(durations, cues: false).frame(maxHeight: .infinity, alignment: .top)
+                ScrollView { reading(durations, cues: false) }.scrollBounceBehavior(.basedOnSize)
             }
             // The minute a step without a time was given counts as one of its times.
             let own = session.timer(step: index, slot: durations.count).flatMap { $0.isLive ? $0 : nil }
@@ -354,7 +370,7 @@ private struct StepPage: View {
     }
 
     /// The step's number and its words.
-    private func reading(_ durations: [StepDuration]) -> some View {
+    private func reading(_ durations: [StepDuration], cues wanted: Bool) -> some View {
         VStack(alignment: .leading, spacing: 24) {
             Text("Step \(index + 1) of \(session.count)")
                 .font(.caption).monospacedDigit().foregroundStyle(Color.muted)
@@ -374,17 +390,22 @@ private struct StepPage: View {
             // are, and they would trail the page when it slides to another step.
             .geometryGroup()
             // What the step uses and doesn't say how much of: no scrolling back to the list.
-            let uses = session.recipe.uses(step: index)
-            if !uses.isEmpty {
+            // In a long step, set small, how to tell it is done is said again beside them.
+            let uses = session.recipe.uses(step: index).map(\.text)
+            let cues = wanted && text.count >= 140 ? StepDetails.cues(in: text).map(\.text) : []
+            if !uses.isEmpty || !cues.isEmpty {
                 HStack(alignment: .top, spacing: 12) {
                     Rectangle().fill(Color.rule).frame(width: Metric.hairline)
-                    Text(uses.map(\.text).joined(separator: "  ·  "))
-                        .font(.geist(17, relativeTo: .body)).lineSpacing(4).foregroundStyle(Color.muted)
-                        .fixedSize(horizontal: false, vertical: true)
+                    VStack(alignment: .leading, spacing: 6) {
+                        if !uses.isEmpty { Text(uses.joined(separator: "  ·  ")).foregroundStyle(Color.muted) }
+                        ForEach(cues, id: \.self) { Text($0) }
+                    }
+                    .font(.geist(17, relativeTo: .body)).lineSpacing(4)
+                    .fixedSize(horizontal: false, vertical: true)
                 }
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel("Uses \(uses.map(\.text).joined(separator: ", "))")
+                .accessibilityLabel((uses.isEmpty ? "" : "Uses \(uses.joined(separator: ", ")). ") + cues.joined(separator: ". "))
             }
         }
         .padding(.horizontal, Metric.gutter).padding(.top, 28).padding(.bottom, 16)
@@ -692,7 +713,30 @@ extension PreviewFixtures {
         return CookStore(preview: [steak, .starter], session: session)
     }
 
-    @MainActor static func cook(step: Int = 2, ringing: Bool = false, finished: Bool = false) -> CookStore {
+    /// The salmon pasta being cooked: timers from two steps, one of them picked from the band.
+    @MainActor static func cookSalmon(_ name: String) -> CookStore {
+        let now = Date()
+        var session = CookSession(recipe: .salmonPasta, at: now.addingTimeInterval(-1200))
+        session.start(step: 0, slot: 0, at: now.addingTimeInterval(name == "cooking-salmon-ringing" ? -500 : -130))
+        session.go(to: 1)
+        session.start(step: 1, slot: 0, at: now.addingTimeInterval(-65))
+        session.go(to: 2)
+        session.start(step: 2, slot: 0, at: now.addingTimeInterval(-40))
+        if name == "cooking-picked" { session.apply(.timerDown, at: now); session.apply(.timerDown, at: now) }
+        if name == "cooking-salmon-done" { session.go(to: session.count - 1); session.apply(.next, at: now) }
+        return CookStore(preview: Recipe.samples, session: session, cookingLook: name == "cooking-salmon-numbers" ? .numbers : .hob)
+    }
+
+    /// Recipes with nothing cooking, some cooked before.
+    @MainActor static func cookShelf() -> CookStore {
+        var salmon = Recipe.salmonPasta, starter = Recipe.starter
+        salmon.cooked = 3; salmon.lastCooked = Date().addingTimeInterval(-86_400)
+        starter.cooked = 1
+        return CookStore(preview: [salmon, starter] + cook().recipes.dropFirst(), session: nil)
+    }
+
+    @MainActor static func cook(step: Int = 2, ringing: Bool = false, finished: Bool = false,
+                                listLook: CookListLook = .contents, cookingLook: CookingLook = .hob) -> CookStore {
         let now = Date()
         var session = CookSession(recipe: .starter, at: now.addingTimeInterval(-900))
         session.go(to: 1)
@@ -715,7 +759,7 @@ extension PreviewFixtures {
         2. Fry the guanciale for 5 minutes until crisp.
         3. Toss everything together off the heat.
         """)
-        return CookStore(preview: [.starter, carbonara], session: session)
+        return CookStore(preview: [.starter, carbonara], session: session, listLook: listLook, cookingLook: cookingLook)
     }
 }
 

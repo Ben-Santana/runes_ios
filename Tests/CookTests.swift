@@ -194,6 +194,19 @@ struct CookTests {
         precondition(big.ingredients[0] == "2 lb salmon" && big.ingredients[9] == "10 cloves garlic" && big.yield == "Serves 8")
         precondition(big.notes == Recipe.salmonPasta.notes && (0..<6).map { big.durations(step: $0).map(\.seconds) } == (0..<6).map { Recipe.salmonPasta.durations(step: $0).map(\.seconds) })
 
+        // MARK: Details in a step
+        func heat(_ text: String) -> [String] { StepDetails.heat(in: text).map { (text as NSString).substring(with: $0) } }
+        precondition(heat(Recipe.salmonPasta.steps[0]) == ["390°F", "145°F"] && heat(Recipe.starter.steps[1]) == ["medium heat"], "\(heat(Recipe.salmonPasta.steps[0]))")
+        precondition(heat("Heat the oven to 200 C, or gas mark 6.") == ["200 C", "gas mark 6"] && heat(Recipe.salmonPasta.steps[2]) == ["medium-high heat"])
+        precondition(heat("Add 200 g flour and 3 cloves, about 20 of them") == [] && heat("Bake at 180 degrees for 20 minutes") == ["180 degrees"])
+        precondition(StepDetails.cues(in: Recipe.starter.steps[1]).map(\.text) == ["until fragrant but not coloured"])
+        precondition(StepDetails.cues(in: "Fry until soft, then add the garlic until it smells good.").map(\.text) == ["until soft", "until it smells good"])
+        let mushrooms = Recipe.salmonPasta.durations(step: 2)
+        precondition(StepDetails.cue(for: mushrooms[0], in: Recipe.salmonPasta.steps[2]) == "until their water has gone and they are deeply browned")
+        precondition(StepDetails.cue(for: mushrooms[1], in: Recipe.salmonPasta.steps[2]) == nil, "The cue belongs to the time in its own sentence")
+        precondition(StepDetails.cue(for: Recipe.salmonPasta.durations(step: 0)[0], in: Recipe.salmonPasta.steps[0]) == "until the centre reaches 145°F")
+        precondition(StepDetails.cue(for: Recipe.starter.durations(step: 3)[0], in: Recipe.starter.steps[3]) == nil)
+
         // MARK: A web page
         let html = """
         <html><head><script type="application/ld+json">{"@type":"WebSite","name":"Site"}</script>

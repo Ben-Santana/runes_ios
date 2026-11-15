@@ -240,6 +240,44 @@ enum Ingredients {
     }
 }
 
+/// What a cook glances back at a step for: how hot, and how to tell it is done.
+enum StepDetails {
+    private static let heat = try! NSRegularExpression(
+        pattern: #"(?<![\w.])\d{2,3}\s?°\s?[CF]?(?![a-z])|(?<![\w.])\d{3}\s?[CF]\b|(?<![\w.])\d{2,3} degrees(?: [CF]\b)?|\bgas mark \d|\b(?:very low|low|medium[- ]low|medium[- ]high|medium|moderate|high|gentle)\s+heat\b"#,
+        options: [.caseInsensitive])
+    private static let until = try! NSRegularExpression(pattern: #"\buntil\b(?:(?!\buntil\b)[^.;!?])*"#, options: [.caseInsensitive])
+    private static let cut = try! NSRegularExpression(pattern: #",?\s+(?:and then|then|before)\b"#, options: [.caseInsensitive])
+
+    /// Where a step names a temperature or a heat: "390°F", "medium-high heat".
+    static func heat(in step: String) -> [NSRange] {
+        heat.matches(in: step, range: NSRange(location: 0, length: (step as NSString).length)).map(\.range)
+    }
+
+    /// What to look for: "until fragrant but not coloured", with where it starts.
+    static func cues(in step: String) -> [(location: Int, text: String)] {
+        let ns = step as NSString
+        return until.matches(in: step, range: NSRange(location: 0, length: ns.length)).compactMap { match in
+            var text = ns.substring(with: match.range)
+            if let stop = cut.firstMatch(in: text, range: NSRange(location: 0, length: (text as NSString).length)) {
+                text = (text as NSString).substring(to: stop.range.location)
+            }
+            text = text.trimmingCharacters(in: CharacterSet(charactersIn: " ,:"))
+            return text.count > 8 ? (match.range.location, text) : nil
+        }
+    }
+
+    /// How to tell a timer's food is done: the "until" in the sentence its time is in.
+    static func cue(for duration: StepDuration, in step: String) -> String? {
+        let ns = step as NSString
+        let ends = CharacterSet(charactersIn: ".;!?")
+        let before = ns.rangeOfCharacter(from: ends, options: .backwards, range: NSRange(location: 0, length: duration.location))
+        let afterStart = duration.location + duration.length
+        let after = ns.rangeOfCharacter(from: ends, range: NSRange(location: afterStart, length: ns.length - afterStart))
+        let from = before.location == NSNotFound ? 0 : before.location, to = after.location == NSNotFound ? ns.length : after.location
+        return cues(in: step).first { $0.location >= from && $0.location < to }?.text
+    }
+}
+
 extension Recipe {
     /// How many it serves, when the yield says.
     var servings: Int? { Ingredients.servings(in: yield) }
