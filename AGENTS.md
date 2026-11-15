@@ -17,11 +17,41 @@ history in the user's separate personal project workspace. Do not copy them here
   setup. Add source/resource membership directly to the existing project.
 - Before updating from upstream, inspect and preserve local changes. Keep build
   caches and logs outside tracked source. Do not publish changes without a request.
-- Use `bug/` branches for fixes and `feature/` branches for features. Separate
-  unrelated concerns and make small logical commits after appropriate validation.
-  Use short, human, one-line commit messages. Do not push unless asked.
-- Keep code simple and comments minimal; explain only non-obvious constraints.
-  Keep comments and documentation free of tool or assistant branding.
+- Follow the rules for branches, commits and comments below.
+
+## Branches and commits
+
+- Use `bug/` branches for fixes and `feature/` branches for features. Group
+  related changes on one branch; a tiny change does not need a branch of its
+  own. Keep unrelated concerns apart so each branch can become one pull request.
+- Commit every small change as soon as it builds and its checks pass. Many small
+  commits are better than one large one: each should be readable alone and safe
+  to revert alone.
+- Start the subject with the kind of change: `feat:`, `fix:`, `refactor:`,
+  `test:`, `docs:` or `chore:`. Then say what was done in plain words, lower
+  case, no full stop, about 70 characters at most. For example:
+  `fix: onboarding can search again while an old band is pending`.
+- When one line cannot say it, leave a blank line and add a few short lines, one
+  per thing done. Say what changed and, where it is not obvious, why. No
+  paragraphs, no lists of files, no account of how the work went.
+- Do not push, open a pull request or merge into `main` unless asked.
+
+## Comments and wording
+
+- Keep code simple and comments few. Comment only what the code cannot say: a
+  constraint, a reason, a unit, an order that matters. Leave out a comment that
+  repeats the line under it.
+- Write plain full sentences. Do not use a dash as punctuation: no em dash, no
+  en dash and no spaced hyphen standing in for one. Use a full stop, a comma or
+  a colon, or split the sentence.
+- Leave out anything that reads as generated: tool or assistant names, emoji,
+  arrows, decorative banners, labels such as "Note:" or "Important:", and filler
+  such as "simply", "robust" or "seamless".
+- Describe the code as it is. A comment does not tell the story of a change
+  ("now uses", "no longer", "fixed"); that belongs in the commit message.
+- No commented-out code. A `TODO` says what is missing and why it is not done.
+- The same wording rules apply to documentation, commit messages and text shown
+  in the app.
 
 ## Architecture
 
