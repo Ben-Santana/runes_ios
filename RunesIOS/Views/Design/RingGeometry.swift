@@ -7,9 +7,16 @@ final class BeadPlay {
     private var speed: [SIMD2<Double>]
     /// Where a finger is, how fast it is moving, and whether it has only just landed.
     var finger: SIMD2<Double>?, fingerSpeed = 0.0, landed = false
+    /// Called when a finger knocks a bead aside, with its index and how hard (0…1): once
+    /// a frame at most, and not again for that bead until it has settled back.
+    var struck: ((Int, Double) -> Void)?
+    private var knocked: [Bool]
     private var last: Date?
 
-    init(beads: Int = 8) { offset = Array(repeating: .zero, count: beads); speed = offset }
+    init(beads: Int = 8) {
+        offset = Array(repeating: .zero, count: beads); speed = offset
+        knocked = Array(repeating: false, count: beads)
+    }
 
     static func length(_ vector: SIMD2<Double>) -> Double { (vector * vector).sum().squareRoot() }
 
@@ -25,6 +32,8 @@ final class BeadPlay {
         defer { last = now; landed = false }
         guard let last else { return }
         let dt = min(1.0 / 30, max(0, now.timeIntervalSince(last)))
+        var hardest: (bead: Int, strength: Double)?
+        defer { if let hardest { struck?(hardest.bead, hardest.strength) } }
         for index in offset.indices {
             var pull = -90 * offset[index] - 14 * speed[index]
             if let finger {
@@ -36,6 +45,12 @@ final class BeadPlay {
             }
             speed[index] += pull * dt
             offset[index] += speed[index] * dt
+            let far = Self.length(offset[index])
+            if far < 2.5 { knocked[index] = false }
+            guard finger != nil, far > 6, !knocked[index] else { continue }
+            knocked[index] = true
+            let strength = min(1, Self.length(speed[index]) / 140)
+            if strength >= hardest?.strength ?? 0 { hardest = (index, strength) }
         }
     }
 }

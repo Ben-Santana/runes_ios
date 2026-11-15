@@ -28,6 +28,8 @@ struct HairlineRing: View {
     /// noticed, and it can be played with. A finger nudges the pods near it aside and they
     /// settle back.
     var playful = false
+    /// In play, a finger knocked a pod aside: its index and how hard (0…1).
+    var struck: ((Int, Double) -> Void)? = nil
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var effects: [Effect] = []
@@ -60,6 +62,7 @@ struct HairlineRing: View {
         .aspectRatio(1.25, contentMode: .fit)
         .contentShape(Rectangle())
         .gesture(DragGesture(minimumDistance: 0).onChanged(play.touch).onEnded { _ in play.finger = nil }, isEnabled: playful && !reduceMotion)
+        .onAppear { play.struck = struck }
         .onChange(of: gesture?.id) { _, _ in if let gesture { react(to: gesture) } }
         .onChange(of: phase) { old, _ in
             previous = old; phaseChangedAt = Date()
