@@ -13,6 +13,8 @@ enum CookCue: Sendable { case step, start, pause, extend, stop, reset, select, r
 final class CookStore: ObservableObject {
     static let shared = CookStore()
     private static let key = "runes.cook.v1"
+    /// The ids of the premade recipes this phone has been given.
+    private static let samplesKey = "runes.cook.samples"
     private nonisolated static let notificationPrefix = "cook.timer."
 
     private struct Saved: Codable {
@@ -70,9 +72,18 @@ final class CookStore: ObservableObject {
     }
 
     private init() {
-        var saved = Saved(recipes: [.starter])
+        var saved = Saved(recipes: Recipe.samples)
+        var added: [Recipe] = []
         if let data = UserDefaults.standard.data(forKey: Self.key),
-           let decoded = try? JSONDecoder().decode(Saved.self, from: data) { saved = decoded }
+           let decoded = try? JSONDecoder().decode(Saved.self, from: data) {
+            saved = decoded
+            // A premade recipe added since reaches someone who already has recipes, once;
+            // deleting it keeps it gone. The first one was there from the start.
+            let given = Set(UserDefaults.standard.stringArray(forKey: Self.samplesKey) ?? [Recipe.starter.id])
+            added = Recipe.samples.filter { sample in !given.contains(sample.id) && !saved.recipes.contains { $0.id == sample.id } }
+            saved.recipes.insert(contentsOf: added, at: 0)
+        }
+        UserDefaults.standard.set(Recipe.samples.map(\.id), forKey: Self.samplesKey)
         recipes = saved.recipes
         controls = saved.controls ?? .standard
         sounds = saved.sounds ?? true
@@ -89,6 +100,7 @@ final class CookStore: ObservableObject {
             MainActor.assumeIsolated { self?.woke() }
         }
         arm()
+        if !added.isEmpty { persist() }
     }
 
     #if DEBUG

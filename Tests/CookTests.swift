@@ -89,6 +89,9 @@ struct CookTests {
         let starter = RecipeParser.parse(Recipe.starter.text)
         precondition(starter.steps == Recipe.starter.steps && starter.ingredients == Recipe.starter.ingredients && starter.title == Recipe.starter.title)
         precondition(Recipe.starter.timerCount == 4)
+        let salmon = RecipeParser.parse(Recipe.salmonPasta.text)
+        precondition(salmon.steps == Recipe.salmonPasta.steps && salmon.ingredients == Recipe.salmonPasta.ingredients && salmon.title == Recipe.salmonPasta.title)
+        precondition((0..<6).map { Recipe.salmonPasta.durations(step: $0).map(\.phrase) } == [["8–12 minutes"], ["3 minutes"], ["6–8 minutes", "2–3 minutes"], [], [], []])
 
         // No headings at all: short lines that start like amounts are ingredients, sentences are steps.
         let bare = RecipeParser.parse("""
