@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// The pulses the band was actually sent, most recent last. The edge effect draws from this,
-/// so it appears anywhere in the app and only when the band vibrates.
+/// The pulses the band was actually sent and the gestures it heard, most recent last. The
+/// edge effect draws from this, so it appears on any page when the band vibrates, and on
+/// any page but home when a gesture arrives.
 @MainActor
 final class BandBuzzFeed: ObservableObject {
     static let shared = BandBuzzFeed()
@@ -17,6 +18,8 @@ final class BandBuzzFeed: ObservableObject {
     static let tail = 1.0
     @Published private(set) var events: [Event] = []
     @Published private(set) var live = false
+    /// Whether gestures show on the edge. Off while the home page is in front: its ring shows them.
+    var showsGestures = true
     private var quietAt = Date.distantPast
     private var watch: Task<Void, Never>?
 
@@ -32,6 +35,17 @@ final class BandBuzzFeed: ObservableObject {
                 try? await Task.sleep(for: .seconds(max(0.05, quietAt.timeIntervalSinceNow)))
             }
             if !Task.isCancelled { live = false }
+        }
+    }
+
+    /// A gesture arrived: the edge shows it as a short pulse, longer and stronger for a hold.
+    func heard(_ gesture: BandGesture) {
+        guard showsGestures else { return }
+        switch gesture.kind {
+        case .tap, .doubleTap: sent(BandPulse(duration: 60, amplitude: 170))
+        case .swipe: sent(BandPulse(duration: 120, amplitude: 200))
+        case .holdBegan: sent(BandPulse(duration: 260, amplitude: 230))
+        case .holdEnded: break
         }
     }
 
