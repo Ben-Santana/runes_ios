@@ -28,6 +28,7 @@ struct AdvancedView: View {
     @State private var exporting = false
     @State private var confirmClear = false
     @State private var scanner: Scanner?
+    @State private var walkingThrough = false
     private enum Scanner: Identifiable { case mac, identity; var id: Self { self } }
 
     var body: some View {
@@ -59,6 +60,9 @@ struct AdvancedView: View {
                     Rule()
                     BandSetupAgainAction(band: values.selectedBand, enabled: values.canSetUpBandAgain, action: actions.setUpBandAgain)
                 }
+                PanelGroup("Onboarding", caption: "Plays setup from the start with a pretend band. Your band stays connected and nothing is changed.") {
+                    ActionRow("Walk through setup") { walkingThrough = true }
+                }
                 PanelGroup("Raw packets", caption: "\(values.eventCount) received this session. Newest first, up to 200.") {
                     if values.events.isEmpty {
                         Text("Gesture packets will appear here.").font(.bodyText).foregroundStyle(Color.muted).panelRow()
@@ -88,6 +92,7 @@ struct AdvancedView: View {
         .confirmationDialog("Clear the journal and recent packets?", isPresented: $confirmClear, titleVisibility: .visible) {
             Button("Clear journal", role: .destructive) { actions.clear(); exported = nil }
         }
+        .fullScreenCover(isPresented: $walkingThrough) { OnboardingWalkthrough(done: { walkingThrough = false }) }
         .sheet(item: $scanner) { kind in
             switch kind {
             case .mac: IdentityScanner(title: "Scan Mac test code", completed: actions.pairMac)
