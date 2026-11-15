@@ -3,7 +3,7 @@ import UIKit
 /// What the band guide sounds and feels like. Each plate plays its cues once as it arrives,
 /// in time with its drawing, and then keeps quiet. A connected band joins in: it taps where
 /// the drawn band lands on the wrist, and answers each drawn gesture as the drawn band does.
-/// The plate about the light is silent.
+/// The phone plays those same pulses (`BandEcho`). The plate about the light is silent.
 @MainActor
 final class GuideCues {
     static let shared = GuideCues()
@@ -25,7 +25,6 @@ final class GuideCues {
 
     private let soft = UIImpactFeedbackGenerator(style: .soft)
     private let light = UIImpactFeedbackGenerator(style: .light)
-    private let rigid = UIImpactFeedbackGenerator(style: .rigid)
     private let notice = UINotificationFeedbackGenerator()
     private var active = false
 
@@ -35,7 +34,7 @@ final class GuideCues {
     func setActive(_ on: Bool) {
         active = on
         ScoreAudio.shared.setLive(on, for: "guide")
-        if on { [soft, light, rigid].forEach { $0.prepare() } }
+        if on { [soft, light].forEach { $0.prepare() } }
     }
 
     /// Plays `score` in time: each cue falls `at` seconds after `start`. A cue whose moment
@@ -53,15 +52,12 @@ final class GuideCues {
         let audio = ScoreAudio.shared
         switch cue {
         case .lands:
-            soft.impactOccurred(intensity: 0.9)
             audio.cue(.pop, pitch: 293.66, volume: 0.3)
             audio.cue(.bandTap, volume: 1)
         case .press(let finger):
-            light.impactOccurred()
             audio.cue(.pip, pitch: finger == 0 ? 587.33 : 493.88, volume: 0.3)
             audio.cue(.bandTap, volume: 1)
         case .hold:
-            rigid.impactOccurred(intensity: 0.8)
             audio.cue(.soft, pitch: 392, volume: 0.35)
             audio.cue(.bandLong, volume: 1)
         case .held(let index):

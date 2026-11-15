@@ -11,12 +11,13 @@ final class BandEcho {
 
     private var engine: CHHapticEngine?
     private var player: CHHapticPatternPlayer?
+    private var quiet = false
 
     private init() {}
 
     /// Plays `pulses` on the phone, replacing a pattern still playing, as the band does.
     func play(_ pulses: [BandPulse]) {
-        guard !pulses.isEmpty, UIApplication.shared.applicationState == .active,
+        guard !quiet, !pulses.isEmpty, UIApplication.shared.applicationState == .active,
               CHHapticEngine.capabilitiesForHardware().supportsHaptics else { return }
         var start = 0.0
         let events = pulses.map { pulse in
@@ -40,5 +41,10 @@ final class BandEcho {
             // The engine is made again on the next buzz.
             engine = nil
         }
+    }
+
+    /// Runs `send` with no echo, for a screen that plays its own taps for what it sends.
+    func quietly(_ send: () -> Void) {
+        quiet = true; send(); quiet = false
     }
 }
