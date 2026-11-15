@@ -5,7 +5,7 @@
 //       RunesIOS/Persistence/IdentityStore.swift RunesIOS/Mappings/MappingModel.swift RunesIOS/Mappings/AirGesture.swift RunesIOS/Mappings/MappingEngine.swift \
 //       RunesIOS/Mappings/TriggerRules.swift RunesIOS/Mappings/CommandTrigger.swift \
 //       Shared/ProfileIcon.swift Shared/SVGPath.swift Shared/LucideData.swift \
-//       RunesIOS/Cook/RecipeParser.swift RunesIOS/Cook/Ingredients.swift RunesIOS/Cook/CookModel.swift Tests/CookTests.swift -o /private/tmp/runes-cook-tests && /private/tmp/runes-cook-tests
+//       RunesIOS/Cook/RecipeParser.swift RunesIOS/Cook/Ingredients.swift RunesIOS/Cook/CookDial.swift RunesIOS/Cook/CookModel.swift Tests/CookTests.swift -o /private/tmp/runes-cook-tests && /private/tmp/runes-cook-tests
 import Foundation
 
 @main
@@ -396,6 +396,56 @@ struct CookTests {
         // A timer that rang and was stopped is no longer in the round.
         precondition(hob.apply(.timer, at: t0.addingTimeInterval(500)) == .stopped && hob.others.isEmpty && hob.slots == 0)
         precondition(try! JSONDecoder().decode(CookSession.self, from: try! JSONEncoder().encode(hob)) == hob)
+
+        // MARK: The wrist dial
+        // Still, the sensor's offset is learned; held, a steady turn about one axis comes out in degrees.
+        var wrist = WristDial()
+        var clock: UInt64 = 0
+        func feed(_ values: [Double], samples: Int) -> Double {
+            var turned = 0.0
+            for _ in 0..<samples { clock += 10_000; turned += wrist.gyro(values, timestamp: clock) ?? 0 }
+            return turned
+        }
+        precondition(feed([3, -2, 1], samples: 800) == 0 && !wrist.engaged, "Nothing is turned until the pinch is held")
+        wrist.engage()
+        precondition(abs(feed([3, -2, 1], samples: 100)) < 0.3, "A still hand doesn't turn the dial")
+        let quarter = feed([3, -2 + 1286, 1], samples: 100)
+        precondition(abs(quarter - 90) < 3, "One second at this rate is a quarter turn: \(quarter)")
+        precondition(abs(feed([3 + 600, -2 - 1286, 1], samples: 100) + 90) < 3, "Back again, on the axis it began on, whatever the others do")
+        clock += 400_000
+        precondition(wrist.gyro([3, 1284, 1], timestamp: clock) == nil, "Samples were lost: that turn is unknown")
+        wrist.release()
+        precondition(feed([3, 1284, 1], samples: 50) == 0)
+
+        var time = DialTime()
+        precondition(time.turn(3, from: 0) == 0 && time.turn(1.5, from: 0) == 10, "Four degrees a step")
+        precondition(time.turn(40, from: 90) == 330, "Ten seconds a step to two minutes, then thirty")
+        time = DialTime()
+        precondition(time.turn(-8, from: 120) == 100 && time.turn(-400, from: 100) == 0 && time.turn(-40, from: 0) == 0, "Down to nothing, never below")
+        time = DialTime()
+        precondition(time.turn(8, from: 125) == 180 && time.turn(8, from: 900) == 1020 && time.turn(.nan, from: 60) == 60, "Odd times snap to the step")
+        time = DialTime()
+        precondition(time.turn(3, from: 60) == 60 && time.turn(-2, from: 60) == 60 && time.turn(-3, from: 60) == 50, "Turning back starts the step again")
+
+        // Let go, and the selected timer takes the time the dial shows.
+        var dialled = CookSession(recipe: .starter, at: t0)
+        precondition(dialled.dialSeconds(at: t0) == 0 && dialled.dial(to: 0, at: t0) == nil, "A hold with no turn does nothing")
+        guard case .started(let boil)? = dialled.dial(to: 240, at: t0) else { preconditionFailure("A step with no time gets one from the dial") }
+        precondition(boil.total == 240 && boil.label == "Step 1" && dialled.selectedTimer?.id == boil.id && dialled.dialSeconds(at: t0.addingTimeInterval(40)) == 200)
+        guard case .extended(let longerBoil)? = dialled.dial(to: 300, at: t0.addingTimeInterval(40)) else { preconditionFailure("A counting timer is set to what the dial shows") }
+        precondition(longerBoil.end == t0.addingTimeInterval(340) && longerBoil.total == 300 && longerBoil.isRunning(at: t0.addingTimeInterval(41)))
+        dialled.apply(.timer, at: t0.addingTimeInterval(50))
+        guard case .extended(let heldBoil)? = dialled.dial(to: 60, at: t0.addingTimeInterval(60)) else { preconditionFailure("A paused timer too") }
+        precondition(heldBoil.paused == 60 && heldBoil.total == 300, "and it stays paused")
+        precondition(dialled.dial(to: 0, at: t0.addingTimeInterval(70)) == .reset && dialled.timers.isEmpty, "Dialled down to nothing, it is gone")
+        dialled.apply(.next, at: t0)
+        precondition(dialled.dialSeconds(at: t0) == 120, "A time the step mentions starts the dial there")
+        guard case .started(let shorter)? = dialled.dial(to: 90, at: t0) else { preconditionFailure("and starts from where the dial was left") }
+        precondition(shorter.total == 90 && shorter.label == "Cook" && shorter.slot == 0 && dialled.timer(step: 1, slot: 0)?.id == shorter.id)
+        dialled.go(to: 0); dialled.apply(.timerDown, at: t0)
+        precondition(dialled.pickedTimer?.id == shorter.id && dialled.dialSeconds(at: t0.addingTimeInterval(30)) == 60)
+        guard case .extended(let other)? = dialled.dial(to: 600, at: t0.addingTimeInterval(30)) else { preconditionFailure("Another step's timer, once picked") }
+        precondition(other.id == shorter.id && other.total == 600 && dialled.timers.count == 1)
 
         // MARK: Gestures
         var controls = CookControls.standard

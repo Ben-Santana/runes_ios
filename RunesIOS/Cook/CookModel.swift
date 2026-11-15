@@ -250,6 +250,35 @@ struct CookSession: Codable, Equatable, Sendable {
         return live(at: now).first.flatMap { soonest in timers.firstIndex { $0.id == soonest.id } }
     }
 
+    /// What the wrist dial starts from: the selected timer's time left, the time a step
+    /// mentions that hasn't been started, or nothing on a step with no time.
+    func dialSeconds(at now: Date) -> Int {
+        if let timer = selectedTimer, timer.isLive { return timer.isRinging(at: now) ? 0 : timer.remaining(at: now) }
+        return pickedTimer == nil && durations.indices.contains(slot) ? durations[slot].seconds : 0
+    }
+
+    /// Sets the selected timer to what the dial shows when it is let go. A timer that is
+    /// counting keeps counting from there and a paused one stays paused; a time that wasn't
+    /// started, or a step with none, starts counting from it. Nothing left cancels it.
+    @discardableResult
+    mutating func dial(to seconds: Int, at now: Date = Date()) -> CookEvent? {
+        guard !finished, seconds != dialSeconds(at: now) else { return nil }
+        if let timer = selectedTimer, timer.isLive, let index = timers.firstIndex(where: { $0.id == timer.id }) {
+            guard seconds > 0 else { cancel(timer.id); return .reset }
+            if timers[index].isPaused { timers[index].paused = seconds } else { timers[index].end = now.addingTimeInterval(Double(seconds)) }
+            timers[index].total = max(timers[index].total, seconds)
+            return .extended(timers[index])
+        }
+        guard seconds > 0, pickedTimer == nil else { return nil }
+        let own = durations.indices.contains(slot) ? slot : durations.count
+        timers.removeAll { $0.step == step && $0.slot == own }
+        let label = durations.indices.contains(own) ? durations[own].label : nil
+        let timer = CookTimer(step: step, slot: own, label: label ?? "Step \(step + 1)", total: seconds, end: now.addingTimeInterval(Double(seconds)))
+        timers.append(timer)
+        chosen = own
+        return .started(timer)
+    }
+
     /// Another minute for one timer. A timer that already rang starts again with a minute.
     @discardableResult
     mutating func addMinute(to id: String, at now: Date = Date()) -> CookTimer? {
