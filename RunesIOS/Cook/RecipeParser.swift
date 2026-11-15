@@ -32,6 +32,8 @@ struct Recipe: Codable, Identifiable, Hashable, Sendable {
         steps.indices.contains(index) ? DurationFinder.find(in: steps[index]) : []
     }
     var timerCount: Int { steps.reduce(0) { $0 + DurationFinder.find(in: $1).count } }
+    /// The seconds its timers add up to. Not how long it takes: steps without a time aren't counted.
+    var timed: Int { steps.reduce(0) { $0 + DurationFinder.find(in: $1).reduce(0) { $0 + $1.seconds } } }
 
     /// "8 ingredients · 6 steps · 3 timers".
     var summary: String {

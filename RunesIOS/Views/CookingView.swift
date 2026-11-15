@@ -11,6 +11,9 @@ import UIKit
 // up on it for another minute; none of that is spelled out on screen, since the band is
 // the main way in and its gestures are listed along the bottom. Timers from other steps
 // wait on a shelf above the page controls. The phone stays awake here.
+//
+// That is the Numbers look. The Hob look (CookingLayouts.swift) leaves the pages to the
+// words and puts every timer, from any step, in a fixed row of rings under them.
 
 struct CookActions {
     var perform: (CookCommand) -> Void = { _ in }
@@ -18,6 +21,9 @@ struct CookActions {
     var toggle: (_ slot: Int) -> Void = { _ in }
     var reset: (_ slot: Int) -> Void = { _ in }
     var addMinute: (String) -> Void = { _ in }
+    /// The same for any timer by id, wherever its step is.
+    var toggleTimer: (String) -> Void = { _ in }
+    var cancelTimer: (String) -> Void = { _ in }
     var select: (_ slot: Int) -> Void = { _ in }
     var stopRinging: () -> Void = {}
     var go: (_ step: Int, _ slot: Int?) -> Void = { _, _ in }
@@ -35,8 +41,9 @@ struct CookingScreen: View {
     var body: some View {
         Group {
             if let session = store.session {
-                CookingView(session: session, controls: store.controls, actions: CookActions(
-                    perform: store.perform, toggle: store.toggleTimer, reset: store.resetTimer, addMinute: store.addMinute,
+                CookingView(session: session, controls: store.controls, look: store.cookingLook, actions: CookActions(
+                    perform: store.perform, toggle: { store.toggleTimer(slot: $0) }, reset: store.resetTimer, addMinute: store.addMinute,
+                    toggleTimer: { store.toggleTimer($0) }, cancelTimer: store.cancelTimer,
                     select: store.select, stopRinging: store.stopRinging,
                     go: { store.go(to: $0, slot: $1) },
                     stop: { store.end(); dismiss() },
@@ -71,6 +78,7 @@ struct CookingScreen: View {
 struct CookingView: View {
     let session: CookSession
     let controls: CookControls
+    var look = CookingLook.hob
     var actions = CookActions()
     @State private var drag: CGFloat = 0
     @State private var confirmStop = false
@@ -80,16 +88,23 @@ struct CookingView: View {
 
     var body: some View {
         let now = Date()
-        let ringing = !session.ringing(at: now).isEmpty
+        let rung = session.ringing(at: now)
+        let ringing = !rung.isEmpty
         VStack(spacing: 0) {
             StepProgress(count: session.count, step: session.step, finished: session.finished, height: 3)
                 .padding(.horizontal, Metric.gutter).padding(.top, 4)
+            if let first = rung.first {
+                TimeUpBand(timer: first, others: rung.count - 1, controls: controls, stop: actions.stopRinging)
+                    .padding(.top, 10)
+                    .transition(reduceMotion ? .opacity : .wipe)
+            }
             ZStack {
                 if session.finished { finished.transition(.opacity.combined(with: .scale(scale: 0.96))) }
                 else { pages.transition(.opacity) }
             }
             .frame(maxHeight: .infinity)
-            TimerShelf(session: session, actions: actions)
+            if !session.finished { NextPeek(session: session) }
+            if look == .hob { Hob(session: session, actions: actions) } else { TimerShelf(session: session, actions: actions) }
             legend(ringing: ringing, now: now).padding(.top, 16).padding(.bottom, 10).padding(.horizontal, 12)
             if session.finished {
                 Button(action: actions.done) { Text("Done") }.buttonStyle(CapsuleAction(filled: true))
@@ -105,8 +120,9 @@ struct CookingView: View {
             } message: { Text("Timers that are running are cancelled.") }
         }
         .animation(reduceMotion ? nil : .entrance, value: session.finished)
+        .animation(.entrance, value: ringing)
         .sensoryFeedback(.selection, trigger: session.step)
-        .sensoryFeedback(.selection, trigger: session.slot)
+        .sensoryFeedback(.selection, trigger: session.selection)
         .sensoryFeedback(.warning, trigger: ringing) { _, now in now }
     }
 
@@ -118,7 +134,7 @@ struct CookingView: View {
             let width = geo.size.width
             ZStack {
                 ForEach(max(0, session.step - 1)...min(session.count - 1, session.step + 1), id: \.self) { index in
-                    StepPage(session: session, index: index, actions: actions)
+                    StepPage(session: session, index: index, numbers: look == .numbers, actions: actions)
                         .frame(width: width)
                         .offset(x: CGFloat(index - session.step) * width + drag)
                         .allowsHitTesting(index == session.step)
@@ -149,11 +165,20 @@ struct CookingView: View {
     }
 
     private var finished: some View {
-        VStack(spacing: 16) {
-            FinishedMark().frame(width: 120, height: 120).padding(.bottom, 8)
+        let notes = session.recipe.notes ?? []
+        return VStack(spacing: 16) {
+            FinishedMark().frame(width: notes.isEmpty ? 120 : 72, height: notes.isEmpty ? 120 : 72).padding(.bottom, 8)
             Text("Enjoy.").font(.display).tracking(-0.6)
             Text("\(session.recipe.title) · \(max(1, Int(Date().timeIntervalSince(session.started) / 60))) min")
                 .font(.bodyText).foregroundStyle(Color.muted).multilineTextAlignment(.center)
+            // Storage and reheating matter now, with the pan still on the table.
+            if !notes.isEmpty {
+                ViewThatFits(in: .vertical) {
+                    NotesBlock(notes: notes)
+                    ScrollView { NotesBlock(notes: notes) }
+                }
+                .padding(.top, 16)
+            }
         }
         .padding(.horizontal, Metric.gutter)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -185,10 +210,11 @@ struct CookingView: View {
         add([.next], session.isLast ? "Finish" : "Next")
         let selected = session.selectedTimer
         if ringing { add([.timer], "Stop") }
-        else if !session.durations.isEmpty { add([.timer], selected?.isRunning(at: now) == true ? "Pause" : "Start") }
-        if ringing || !session.live(at: now).isEmpty { add([.addMinute], "+1") }
+        else if session.slots > 0 || session.pickedTimer != nil { add([.timer], selected?.isRunning(at: now) == true ? "Pause" : "Start") }
+        // On a step with no time, another minute starts a timer for it.
+        if ringing || !session.live(at: now).isEmpty || session.durations.isEmpty { add([.addMinute], "+1") }
         if selected != nil { add([.reset], "Reset") }
-        if session.durations.count > 1 { add([.timerUp, .timerDown], "Timer") }
+        if session.slots + session.others.count > 1 { add([.timerUp, .timerDown], "Timer") }
         return result
     }
 
@@ -218,12 +244,15 @@ struct CookingView: View {
 private struct StepPage: View {
     let session: CookSession
     let index: Int
+    /// Whether the step's timers are drawn on the page, as large numbers.
+    let numbers: Bool
     let actions: CookActions
 
     private var text: String { session.recipe.steps[index] }
     private var current: Bool { index == session.step }
-    /// The time the controls act on; other pages show their first.
-    private var selected: Int { current ? session.slot : 0 }
+    /// The time the controls act on; other pages show their first. None while a timer
+    /// from another step is selected.
+    private var selected: Int { current ? (session.pickedTimer == nil ? session.slot : -1) : 0 }
 
     /// Short steps are set large; long ones step down so they still fit a screen.
     private var size: CGFloat {
@@ -314,8 +343,11 @@ private struct StepPage: View {
                 reading(durations).frame(maxHeight: .infinity, alignment: .top)
                 ScrollView { reading(durations) }.scrollBounceBehavior(.basedOnSize)
             }
-            if !durations.isEmpty {
-                TimerStack(session: session, step: index, durations: durations, selected: selected, actions: actions)
+            // The minute a step without a time was given counts as one of its times.
+            let own = session.timer(step: index, slot: durations.count).flatMap { $0.isLive ? $0 : nil }
+            let times = durations + (own.map { [StepDuration(seconds: $0.total, location: 0, length: 0, phrase: "", label: nil)] } ?? [])
+            if numbers, !times.isEmpty {
+                TimerStack(session: session, step: index, durations: times, selected: selected, actions: actions)
             }
         }
         .accessibilityElement(children: .contain)
@@ -341,6 +373,19 @@ private struct StepPage: View {
             // Without this the fade's timing would also be applied to where the words
             // are, and they would trail the page when it slides to another step.
             .geometryGroup()
+            // What the step uses and doesn't say how much of: no scrolling back to the list.
+            let uses = session.recipe.uses(step: index)
+            if !uses.isEmpty {
+                HStack(alignment: .top, spacing: 12) {
+                    Rectangle().fill(Color.rule).frame(width: Metric.hairline)
+                    Text(uses.map(\.text).joined(separator: "  ·  "))
+                        .font(.geist(17, relativeTo: .body)).lineSpacing(4).foregroundStyle(Color.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Uses \(uses.map(\.text).joined(separator: ", "))")
+            }
         }
         .padding(.horizontal, Metric.gutter).padding(.top, 28).padding(.bottom, 16)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -499,15 +544,10 @@ struct TimerRing: View {
     }
 }
 
-/// Ink behind a number whose time is up, breathing until it is stopped.
+/// Ink behind a number whose time is up, still until it is stopped.
 private struct Ringing: View {
-    @State private var pulse = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
-        RoundedRectangle(cornerRadius: Metric.panel).fill(Color.ink)
-            .opacity(pulse ? 0.72 : 1)
-            .onAppear { if !reduceMotion { withAnimation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true)) { pulse = true } } }
-            .accessibilityHidden(true)
+        RoundedRectangle(cornerRadius: Metric.panel).fill(Color.ink).accessibilityHidden(true)
     }
 }
 
@@ -530,7 +570,7 @@ private struct TimerShelf: View {
                     Button { if ringing { actions.stopRinging() } else { actions.go(timer.step, timer.slot) } } label: {
                         HStack(spacing: 12) {
                             ZStack {
-                                if ringing { PulseDot() }
+                                if ringing { Circle().fill(Color.ink).frame(width: 8, height: 8) }
                                 else if timer.isPaused { LucideIcon(.pause, size: 14).foregroundStyle(Color.muted) }
                                 else { TimerRing(progress: timer.progress(at: now), lineWidth: 1.25) }
                             }
@@ -544,6 +584,12 @@ private struct TimerShelf: View {
                                 .contentTransition(.numericText(countsDown: true))
                         }
                         .padding(.horizontal, Metric.gutter).frame(minHeight: Metric.row).contentShape(Rectangle())
+                        // The one the band's gestures act on, when it was selected from another step.
+                        .overlay {
+                            RoundedRectangle(cornerRadius: Metric.panel).strokeBorder(Color.ink, lineWidth: 1.5)
+                                .padding(.horizontal, Metric.gutter - Metric.inset).padding(.vertical, 3)
+                                .opacity(timer.id == session.pickedTimer?.id ? 1 : 0)
+                        }
                     }
                     .buttonStyle(PressRow())
                     .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -553,7 +599,25 @@ private struct TimerShelf: View {
                 Rule(inset: 0)
             }
             .animation(.standard, value: timers.map(\.id))
+            .animation(.standard, value: session.pickedTimer?.id)
         }
+    }
+}
+
+/// One line of what comes next, so the pan for it can be found before the page turns.
+private struct NextPeek: View {
+    let session: CookSession
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(session.isLast ? "Last step" : "Next").font(.geist(12, .medium, relativeTo: .caption)).foregroundStyle(session.isLast ? Color.muted : Color.ink)
+            if !session.isLast {
+                Text(session.recipe.steps[session.step + 1]).font(.caption).foregroundStyle(Color.muted).lineLimit(1)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, Metric.gutter).padding(.vertical, 10)
+        .animation(.standard, value: session.step)
+        .accessibilityElement(children: .combine)
     }
 }
 

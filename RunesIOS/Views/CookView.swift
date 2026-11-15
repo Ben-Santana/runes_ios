@@ -16,18 +16,9 @@ struct CookScreen: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                if let session = store.session {
-                    CookingBanner(session: session) { path.append(.cooking) }
-                        .padding(.bottom, 28)
-                }
-                Heading("Recipes", count: store.recipes.count)
-                ForEach(Array(store.recipes.enumerated()), id: \.element.id) { index, recipe in
-                    RecipeRow(index: index, recipe: recipe, cooking: store.session?.recipe.id == recipe.id,
-                              open: { path.append(.recipe(recipe.id)) },
-                              start: { begin(recipe) })
-                        .swipeToDelete(confirms: true) { deleting = recipe }
-                        .arrive(index)
-                    Hairline(delay: 0.05 * Double(index))
+                switch store.listLook {
+                case .contents: contents
+                case .ledger: ledger
                 }
                 AddRow(title: "Add a recipe") { adding = true }
                 Note("Paste a recipe or a link to one. Runes finds the steps, and the times in them become timers.")
@@ -51,6 +42,51 @@ struct CookScreen: View {
         .confirmationDialog("Delete \(deleting?.title ?? "this recipe")?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
                             titleVisibility: .visible) {
             Button("Delete recipe", role: .destructive) { if let deleting { store.delete(deleting.id) } }
+        }
+    }
+
+    /// Today's rows: number, name, the recipe's line of time, and a play button.
+    @ViewBuilder private var ledger: some View {
+        if let session = store.session {
+            CookingBanner(session: session) { path.append(.cooking) }
+                .padding(.bottom, 28)
+        }
+        Heading("Recipes", count: store.recipes.count)
+        ForEach(Array(store.recipes.enumerated()), id: \.element.id) { index, recipe in
+            RecipeRow(index: index, recipe: recipe, cooking: store.session?.recipe.id == recipe.id,
+                      open: { path.append(.recipe(recipe.id)) },
+                      start: { begin(recipe) })
+                .swipeToDelete(confirms: true) { deleting = recipe }
+                .arrive(index)
+            Hairline(delay: 0.05 * Double(index))
+        }
+    }
+
+    /// A cookbook's contents page: what is cooking, what was cooked lately, and the rest.
+    @ViewBuilder private var contents: some View {
+        let recent = Array(store.recipes.filter { $0.lastCooked != nil }.sorted { ($0.lastCooked ?? .distantPast) > ($1.lastCooked ?? .distantPast) }.prefix(3))
+        let rest = store.recipes.filter { recipe in !recent.contains { $0.id == recipe.id } }
+        if let session = store.session {
+            Heading("Cooking now")
+            ContentsRow(recipe: session.recipe, session: session) { path.append(.cooking) }
+                .padding(.bottom, 24)
+        }
+        if !recent.isEmpty {
+            Heading("Recent")
+            contentsRows(recent).padding(.bottom, 24)
+        }
+        Heading(recent.isEmpty ? "Recipes" : "All", count: rest.count)
+        contentsRows(rest)
+        Hairline()
+    }
+
+    private func contentsRows(_ recipes: [Recipe]) -> some View {
+        VStack(spacing: 0) {
+            ForEach(Array(recipes.enumerated()), id: \.element.id) { index, recipe in
+                ContentsRow(recipe: recipe) { path.append(.recipe(recipe.id)) }
+                    .swipeToDelete(confirms: true) { deleting = recipe }
+                    .arrive(index)
+            }
         }
     }
 
@@ -110,7 +146,8 @@ private struct RecipeRow: View {
                         .font(.geist(12, .medium, relativeTo: .caption)).monospacedDigit().foregroundStyle(Color.muted)
                     VStack(alignment: .leading, spacing: 8) {
                         Text(recipe.title).font(.heading).lineLimit(2).multilineTextAlignment(.leading)
-                        StepTicks(recipe: recipe)
+                        TimeLine(recipe: recipe)
+                        Text(recipe.timeSummary).font(.caption).foregroundStyle(Color.muted).lineLimit(1)
                     }
                     Spacer(minLength: 0)
                 }
@@ -130,6 +167,114 @@ private struct RecipeRow: View {
             .disabled(!recipe.isUsable).opacity(recipe.isUsable ? 1 : 0.3)
         }
     }
+}
+
+/// A recipe as a line in a cookbook's contents: its name, a dotted leader that draws
+/// across, and what its timers add up to. The recipe being cooked shows its soonest timer.
+private struct ContentsRow: View {
+    let recipe: Recipe
+    var session: CookSession? = nil
+    let open: () -> Void
+
+    var body: some View {
+        Button(action: open) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .lastTextBaseline, spacing: 10) {
+                    Text(recipe.title).font(.heading).lineLimit(2).multilineTextAlignment(.leading).layoutPriority(1)
+                    Leader().frame(minWidth: 16)
+                    trailing.font(.geist(15, .medium, relativeTo: .body)).monospacedDigit()
+                }
+                Text(caption).font(.caption).foregroundStyle(Color.muted).lineLimit(1)
+            }
+            .padding(.vertical, 14).contentShape(Rectangle())
+        }
+        .buttonStyle(PressRow())
+        .accessibilityElement(children: .combine)
+        .accessibilityHint(session == nil ? "" : "Opens the recipe you’re cooking.")
+    }
+
+    @ViewBuilder private var trailing: some View {
+        if let session {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                if let timer = session.live(at: context.date).first {
+                    Text(timer.isRinging(at: context.date) ? "Time’s up" : DurationFinder.clock(timer.remaining(at: context.date)))
+                        .contentTransition(.numericText())
+                } else {
+                    Text(session.finished ? "Done" : "\(session.step + 1) of \(session.count)")
+                }
+            }
+        } else if recipe.timed > 0 {
+            HStack(spacing: 5) {
+                LucideIcon(.timer, size: 14).foregroundStyle(Color.muted)
+                Text(DurationFinder.short(recipe.timed))
+            }
+            .accessibilityElement(children: .ignore).accessibilityLabel("\(DurationFinder.short(recipe.timed)) on timers")
+        } else {
+            Text(recipe.steps.count == 1 ? "1 step" : "\(recipe.steps.count) steps").foregroundStyle(Color.muted)
+        }
+    }
+
+    private var caption: String {
+        if let session { return session.finished ? "Finished" : session.position }
+        var parts = [recipe.yield, recipe.steps.count == 1 ? "1 step" : "\(recipe.steps.count) steps"].compactMap { $0 }
+        if recipe.cooked > 0 { parts.append(recipe.cooked == 1 ? "cooked once" : "cooked \(recipe.cooked) times") }
+        return parts.joined(separator: " · ")
+    }
+}
+
+/// Dots to the trailing edge that draw in once, as in a table of contents.
+private struct Leader: View {
+    @State private var drawn = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private struct Line: Shape {
+        func path(in rect: CGRect) -> Path {
+            Path { $0.move(to: CGPoint(x: 1, y: rect.midY)); $0.addLine(to: CGPoint(x: rect.maxX - 1, y: rect.midY)) }
+        }
+    }
+
+    var body: some View {
+        Line().trim(from: 0, to: drawn || reduceMotion ? 1 : 0)
+            .stroke(Color.faint, style: StrokeStyle(lineWidth: 1.5, lineCap: .round, dash: [0.1, 5]))
+            .frame(height: 2).padding(.bottom, 3)
+            .onAppear { withAnimation(.easeOut(duration: 0.6)) { drawn = true } }
+            .accessibilityHidden(true)
+    }
+}
+
+/// A recipe as a line of time: a tick where each step begins and, after a step that has a
+/// time, a hairline as long as that time. It draws in once from the leading edge.
+struct TimeLine: View {
+    let recipe: Recipe
+    @State private var drawn = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        let times = recipe.steps.prefix(40).map { DurationFinder.find(in: $0).reduce(0) { $0 + $1.seconds } }
+        Canvas { context, size in
+            let total = CGFloat(times.reduce(0, +)), gap: CGFloat = 7
+            let spare = max(0, size.width - gap * CGFloat(times.count))
+            var x: CGFloat = 0
+            for seconds in times {
+                let length = total > 0 ? spare * CGFloat(seconds) / total : 0
+                let tall = seconds > 0 ? size.height : size.height / 2
+                context.fill(Path(CGRect(x: x, y: size.height - tall, width: Metric.hairline, height: tall)), with: .color(Color.ink))
+                if seconds > 0 {
+                    context.fill(Path(CGRect(x: x, y: size.height - Metric.hairline, width: length + gap - 3, height: Metric.hairline)), with: .color(Color.ink))
+                }
+                x += gap + length
+            }
+        }
+        .frame(height: 14)
+        .mask(alignment: .leading) { Rectangle().scaleEffect(x: drawn || reduceMotion ? 1 : 0, anchor: .leading) }
+        .onAppear { withAnimation(.easeOut(duration: 0.6)) { drawn = true } }
+        .accessibilityHidden(true)
+    }
+}
+
+extension Recipe {
+    /// "8 ingredients · 6 steps · 4 timers · 27 min timed".
+    var timeSummary: String { timed > 0 ? "\(summary) · \(DurationFinder.short(timed)) timed" : summary }
 }
 
 /// One short hairline per step; a step with a timer stands taller.
@@ -179,6 +324,10 @@ struct RecipeScreen: View {
     @Binding var path: [AppRoute]
     @State private var editing = false
     @State private var confirmDelete = false
+    /// How many to cook for; 0 is as the recipe is written.
+    @State private var servings = 0.0
+    /// Ingredients ticked off before cooking starts.
+    @State private var ready: Set<Int> = []
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -207,60 +356,179 @@ struct RecipeScreen: View {
         }
     }
 
+    /// The page follows the servings chosen: amounts in the list and in the steps scale,
+    /// times don't. While the recipe is being cooked it shows what is being cooked.
     private func content(_ recipe: Recipe) -> some View {
-        let cooking = store.session?.recipe.id == recipe.id
+        let session = store.session?.recipe.id == recipe.id ? store.session : nil
+        let base = recipe.servings
+        let count = session?.recipe.servings ?? (servings > 0 ? Int(servings) : base)
+        let shown = count.map(recipe.scaled(to:)) ?? recipe
+        let ticked = session?.ready ?? ready
         return ScrollView {
             VStack(alignment: .leading, spacing: 36) {
                 VStack(alignment: .leading, spacing: 10) {
                     Text(recipe.title).font(.display).tracking(-0.6).fixedSize(horizontal: false, vertical: true)
-                    Text(([recipe.yield, recipe.sourceHost].compactMap { $0 } + [recipe.cooked > 0 ? (recipe.cooked == 1 ? "Cooked once" : "Cooked \(recipe.cooked) times") : nil]
+                    Text(([shown.yield, recipe.sourceHost].compactMap { $0 } + [recipe.cooked > 0 ? (recipe.cooked == 1 ? "Cooked once" : "Cooked \(recipe.cooked) times") : nil]
                         .compactMap { $0 }).joined(separator: " · "))
                         .font(.caption).foregroundStyle(Color.muted)
-                    StepTicks(recipe: recipe)
+                    if let nutrition = recipe.nutrition {
+                        Text(nutrition).font(.caption).foregroundStyle(Color.muted).fixedSize(horizontal: false, vertical: true)
+                    }
+                    TimeLine(recipe: recipe).padding(.top, 6)
+                    Text(recipe.timeSummary).font(.caption).foregroundStyle(Color.muted)
                 }
-                if !recipe.ingredients.isEmpty {
+                if !shown.ingredients.isEmpty {
                     Block {
-                        ForEach(Array(recipe.ingredients.enumerated()), id: \.offset) { index, item in
-                            if index > 0 { Hairline(delay: 0.03 * Double(index)) }
-                            Text(item).font(.bodyText).fixedSize(horizontal: false, vertical: true)
-                                .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 12)
+                        if let base, session == nil {
+                            HStack(spacing: 12) {
+                                Text("Amounts for").font(.bodyText)
+                                Spacer(minLength: 8)
+                                NumberChip(value: Binding(get: { servings > 0 ? servings : Double(base) }, set: { servings = $0 }),
+                                           range: 1...99, unit: base == 1 ? "serving" : "servings", label: "Servings")
+                            }
+                            .padding(.vertical, 8)
+                            Hairline()
                         }
-                    } header: { Heading("Ingredients", count: recipe.ingredients.count) }
+                        ForEach(Array(shown.ingredients.enumerated()), id: \.offset) { index, item in
+                            if index > 0 { Hairline(delay: 0.03 * Double(index)) }
+                            IngredientRow(text: item, ready: ticked.contains(index)) {
+                                if session != nil { store.toggle(ingredient: index) }
+                                else if ready.contains(index) { ready.remove(index) } else { ready.insert(index) }
+                            }
+                        }
+                    } header: {
+                        Heading("Ingredients", count: shown.ingredients.count)
+                    } footer: {
+                        Note("Tap what you have out. The ticks come with you when you start cooking.")
+                    }
+                    .sensoryFeedback(.selection, trigger: ticked)
                 }
                 Block {
-                    ForEach(Array(recipe.steps.enumerated()), id: \.offset) { index, step in
-                        if index > 0 { Hairline(delay: 0.03 * Double(index)) }
-                        HStack(alignment: .firstTextBaseline, spacing: 14) {
-                            Text(String(format: "%02d", index + 1))
-                                .font(.geist(12, .medium, relativeTo: .caption)).monospacedDigit().foregroundStyle(Color.muted)
-                            VStack(alignment: .leading, spacing: 10) {
-                                Text(step).font(.bodyText).lineSpacing(3).fixedSize(horizontal: false, vertical: true)
-                                let durations = DurationFinder.find(in: step)
-                                if !durations.isEmpty {
-                                    HStack(spacing: 6) { ForEach(durations, id: \.self) { DurationChip(duration: $0) } }
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .padding(.vertical, 14)
+                    ForEach(Array(shown.steps.enumerated()), id: \.offset) { index, step in
+                        SpineStep(index: index, last: index == shown.steps.count - 1, text: step, uses: shown.uses(step: index))
                     }
-                } header: { Heading("Steps", count: recipe.steps.count) }
+                } header: { Heading("Steps", count: shown.steps.count).padding(.bottom, 4) }
+                if let notes = recipe.notes, !notes.isEmpty { NotesBlock(notes: notes) }
             }
             .padding(.horizontal, Metric.gutter).padding(.top, 12).padding(.bottom, 24)
+            .animation(.standard, value: count)
         }
         .safeAreaInset(edge: .bottom) {
             VStack(spacing: 0) {
                 Rule(inset: 0)
                 Button {
-                    if !cooking { store.start(recipe) }
+                    if session == nil { store.start(shown, ready: ready) }
                     path.append(.cooking)
-                } label: { Text(cooking ? "Continue cooking" : "Start cooking") }
+                } label: { Text(session != nil ? "Continue cooking" : "Start cooking") }
                     .buttonStyle(CapsuleAction(filled: true))
                     .disabled(!recipe.isUsable)
                     .padding(.horizontal, Metric.gutter).padding(.top, 14).padding(.bottom, -8)
             }
             .background(Color.paper)
         }
+    }
+}
+
+/// An ingredient as a ledger line: how much in its own column, then what. Tapping ticks it off.
+private struct IngredientRow: View {
+    let text: String
+    let ready: Bool
+    let toggle: () -> Void
+    static let amountWidth: CGFloat = 84
+
+    var body: some View {
+        if text.hasSuffix(":") {
+            Text(text.dropLast()).font(.label).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 16).padding(.bottom, 10)
+                .accessibilityAddTraits(.isHeader)
+        } else {
+            let line = Ingredients.split(text)
+            Button(action: toggle) {
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Text(line.amount ?? "").font(.bodyText).monospacedDigit().foregroundStyle(Color.muted)
+                        .lineLimit(1).minimumScaleFactor(0.7)
+                        .frame(width: Self.amountWidth, alignment: .trailing)
+                        .contentTransition(.numericText())
+                    Text(line.name).font(.bodyText).strikethrough(ready, color: Color.muted)
+                        .foregroundStyle(ready ? Color.muted : Color.ink)
+                        .multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                    LucideIcon(.check, size: 14).opacity(ready ? 1 : 0)
+                }
+                .padding(.vertical, 12).contentShape(Rectangle())
+            }
+            .buttonStyle(PressRow())
+            .animation(.standard, value: ready)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(text)
+            .accessibilityAddTraits(ready ? [.isButton, .isSelected] : .isButton)
+        }
+    }
+}
+
+/// A step on the recipe's spine: its number in a circle on a line that runs down the page
+/// and draws in once, inked where the step has a timer. Under its words, its times and
+/// the amounts it uses without saying.
+private struct SpineStep: View {
+    let index: Int
+    let last: Bool
+    let text: String
+    let uses: [StepUse]
+    @State private var drawn = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private static let node: CGFloat = 26
+
+    var body: some View {
+        let durations = DurationFinder.find(in: text)
+        HStack(alignment: .top, spacing: 14) {
+            VStack(spacing: 0) {
+                segment.frame(height: 11).opacity(index > 0 ? 1 : 0)
+                ZStack {
+                    Circle().strokeBorder(durations.isEmpty ? Color.rule : Color.ink, lineWidth: durations.isEmpty ? Metric.hairline : 1.5)
+                    Text("\(index + 1)").font(.geist(11, .medium, relativeTo: .caption)).monospacedDigit()
+                        .foregroundStyle(durations.isEmpty ? Color.muted : Color.ink)
+                }
+                .frame(width: Self.node, height: Self.node)
+                segment.frame(maxHeight: .infinity).opacity(last ? 0 : 1)
+            }
+            .frame(width: Self.node)
+            .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 10) {
+                Text(text).font(.bodyText).lineSpacing(3).fixedSize(horizontal: false, vertical: true)
+                if !durations.isEmpty {
+                    HStack(spacing: 6) { ForEach(durations, id: \.self) { DurationChip(duration: $0) } }
+                }
+                if !uses.isEmpty {
+                    Text(uses.map(\.text).joined(separator: " · ")).font(.caption).foregroundStyle(Color.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityLabel("Uses \(uses.map(\.text).joined(separator: ", "))")
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 14)
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .onAppear { withAnimation(.easeOut(duration: 0.3).delay(0.06 * Double(index))) { drawn = true } }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Step \(index + 1). \(text)")
+    }
+
+    private var segment: some View {
+        Rectangle().fill(Color.rule).frame(width: Metric.hairline)
+            .scaleEffect(y: drawn || reduceMotion ? 1 : 0, anchor: .top)
+    }
+}
+
+/// Tips, storage and reheating: kept with the recipe, out of the way of the steps.
+struct NotesBlock: View {
+    let notes: [String]
+    var body: some View {
+        Block {
+            ForEach(Array(notes.enumerated()), id: \.offset) { index, note in
+                if index > 0 { Hairline(delay: 0.03 * Double(index)) }
+                Text(note).font(.bodyText).lineSpacing(3).fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 12)
+            }
+        } header: { Heading("Notes", count: notes.count) }
     }
 }
 
@@ -461,7 +729,26 @@ struct CookSettingsScreen: View {
                     } header: {
                         Heading("Sounds")
                     } footer: {
-                        Note("A tick for each step and a bell when a timer ends, while Runes is open. With the phone locked, a finished timer sends a notification instead.")
+                        Note("A tick for each step, and a bell when a timer ends that rings until you stop it, also with the phone locked.")
+                    }
+                    Block {
+                        HairlineSegments(selection: Binding(get: { store.buzz }, set: { store.setBuzz($0) }),
+                                         options: CookBuzz.allCases, title: \.title)
+                    } header: {
+                        Heading("On the wrist")
+                    } footer: {
+                        Note("The band buzzes three times when a timer ends, until you stop it. Everything adds a light tap for each gesture it takes.")
+                    }
+                    Block {
+                        HairlineSegments(selection: Binding(get: { store.listLook }, set: { store.setListLook($0) }),
+                                         options: CookListLook.allCases, title: \.title)
+                        HairlineSegments(selection: Binding(get: { store.cookingLook }, set: { store.setCookingLook($0) }),
+                                         options: CookingLook.allCases, title: \.title)
+                            .padding(.top, 12)
+                    } header: {
+                        Heading("Look")
+                    } footer: {
+                        Note("Temporary. The first is the recipe list, the second the cooking screen. Try each, pick one, and the other goes.")
                     }
                 }
                 .padding(.horizontal, Metric.gutter).padding(.top, 8).padding(.bottom, 40)

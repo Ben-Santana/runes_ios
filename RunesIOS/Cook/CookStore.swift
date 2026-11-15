@@ -5,6 +5,25 @@ import UserNotifications
 /// The sound for something that happened while cooking; the session turns it into a voice.
 enum CookCue: Sendable { case step, start, pause, extend, stop, reset, select, ring, finish, nothing }
 
+/// How the recipe list and the cooking screen are drawn. Temporary: each is being tried
+/// on the phone, and the ones not chosen go.
+enum CookListLook: String, Codable, CaseIterable, Sendable {
+    case contents, ledger
+    var title: String { self == .contents ? "Contents" : "Ledger" }
+}
+enum CookingLook: String, Codable, CaseIterable, Sendable {
+    case hob, numbers
+    var title: String { self == .hob ? "Hob" : "Numbers" }
+}
+
+/// What reaches the wrist while cooking.
+enum CookBuzz: String, Codable, CaseIterable, Sendable {
+    case off, timers, all
+    var title: String {
+        switch self { case .off: "Off"; case .timers: "Timers"; case .all: "Everything" }
+    }
+}
+
 /// Saved recipes and the one being cooked. While a recipe is being cooked its gestures
 /// are taken here and mappings that use them are off. Timers are absolute end times, so
 /// they survive the phone locking and the app being closed: each one also schedules a
@@ -22,12 +41,19 @@ final class CookStore: ObservableObject {
         var controls: CookControls?
         var sounds: Bool?
         var session: CookSession?
+        var buzz: CookBuzz?
+        var listLook: CookListLook?
+        var cookingLook: CookingLook?
     }
 
     @Published private(set) var recipes: [Recipe]
     @Published private(set) var controls: CookControls { didSet { configureDecider(); motionChanged() } }
     /// Sounds for steps and timers while Runes is open. A finished timer always notifies.
     @Published private(set) var sounds: Bool
+    /// A finished timer buzzes the band until it is stopped; "everything" also taps it for each command.
+    @Published private(set) var buzz: CookBuzz
+    @Published private(set) var listLook: CookListLook
+    @Published private(set) var cookingLook: CookingLook
     @Published private(set) var session: CookSession? { didSet { if (oldValue == nil) != (session == nil) { motionChanged() } } }
 
     /// Told whether cooking needs the band's motion streams: only while a recipe is being
@@ -46,6 +72,17 @@ final class CookStore: ObservableObject {
     /// Shows the recipe on the Live Activity (nil restores band status), with an optional alert.
     var onActivity: ((CookActivityState?, LiveAlert?) -> Void)? { didSet { if session != nil { show() } } }
     var onCue: ((CookCue) -> Void)?
+    var onBuzz: ((BandBuzz) -> Void)?
+    /// Told while a timer is counting or ringing. The session then keeps the shared audio
+    /// engine going, which keeps Runes awake behind a locked phone to ring it.
+    var onLive: ((Bool) -> Void)? { didSet { live = wantsLive; onLive?(live) } }
+    private var live = false
+    private var wantsLive: Bool { ringTask != nil || session?.timers.contains { $0.isRunning(at: Date()) } ?? false }
+    private func liveChanged() {
+        guard !previewOnly, wantsLive != live else { return }
+        live = wantsLive
+        onLive?(live)
+    }
     /// True while the cooking screen is in front; it shows a ringing timer itself.
     var onScreen = false
 
@@ -87,6 +124,9 @@ final class CookStore: ObservableObject {
         recipes = saved.recipes
         controls = saved.controls ?? .standard
         sounds = saved.sounds ?? true
+        buzz = saved.buzz ?? .timers
+        listLook = saved.listLook ?? .contents
+        cookingLook = saved.cookingLook ?? .hob
         session = saved.session
         scheduled = Set((saved.session?.timers ?? []).map { Self.notificationPrefix + $0.id })
         decider.onFire = { [weak self] id in
@@ -105,8 +145,9 @@ final class CookStore: ObservableObject {
 
     #if DEBUG
     /// Fixed state for screenshots and previews; never saved.
-    init(preview recipes: [Recipe], session: CookSession? = nil) {
-        self.recipes = recipes; controls = .standard; sounds = true; self.session = session; previewOnly = true
+    init(preview recipes: [Recipe], session: CookSession? = nil, listLook: CookListLook = .contents, cookingLook: CookingLook = .hob) {
+        self.recipes = recipes; controls = .standard; sounds = true; buzz = .timers
+        self.listLook = listLook; self.cookingLook = cookingLook; self.session = session; previewOnly = true
     }
     #endif
 
@@ -132,6 +173,9 @@ final class CookStore: ObservableObject {
         if !previewOnly { onReserve?(reservedNow) }
     }
     func setSounds(_ on: Bool) { sounds = on; persist() }
+    func setBuzz(_ value: CookBuzz) { buzz = value; persist() }
+    func setListLook(_ look: CookListLook) { listLook = look; persist() }
+    func setCookingLook(_ look: CookingLook) { cookingLook = look; persist() }
 
     /// Fetches a page and reads the recipe it publishes.
     func fetch(_ url: URL) async throws -> Recipe {
@@ -152,10 +196,13 @@ final class CookStore: ObservableObject {
 
     // MARK: Cooking
 
-    func start(_ recipe: Recipe) {
+    /// Starts cooking, with the ingredients already got out ticked.
+    func start(_ recipe: Recipe, ready: Set<Int> = []) {
         guard recipe.isUsable else { return }
         if session != nil { end() }
-        session = CookSession(recipe: recipe)
+        var fresh = CookSession(recipe: recipe)
+        for index in ready { fresh.toggle(ingredient: index) }
+        session = fresh
         changed()
     }
 
@@ -167,7 +214,7 @@ final class CookStore: ObservableObject {
             recipes[index].cooked += 1; recipes[index].lastCooked = Date()
         }
         ringTask?.cancel(); ringTask = nil
-        persist(); arm(); syncNotifications()
+        persist(); arm(); syncNotifications(); liveChanged()
         guard !previewOnly else { return }
         onReserve?(reservedNow)
         onActivity?(nil, nil)
@@ -221,6 +268,19 @@ final class CookStore: ObservableObject {
         current.select(slot: slot); session = current
         react(to: .selected(current.slot))
     }
+    /// Any timer's main button, wherever its step is: it is selected and started, paused or stopped.
+    func toggleTimer(_ id: String) {
+        guard var current = session, let timer = current.timers.first(where: { $0.id == id }) else { return }
+        current.pick(id)
+        let event = current.toggle(step: timer.step, slot: timer.slot)
+        session = current
+        react(to: event)
+    }
+    func cancelTimer(_ id: String) {
+        guard var current = session, current.timers.contains(where: { $0.id == id }) else { return }
+        current.cancel(id); session = current
+        react(to: .reset)
+    }
     func addMinute(to id: String) {
         guard var current = session, let timer = current.addMinute(to: id) else { return }
         session = current
@@ -261,11 +321,16 @@ final class CookStore: ObservableObject {
             cue = .start; alert = LiveAlert(title: "Timer started again", body: "\(timer.label) · \(DurationFinder.clock(timer.remaining(at: Date()))) left")
         case .reset:
             cue = .reset; alert = LiveAlert(title: "Timer reset", body: session.durations.indices.contains(session.slot) ? session.durations[session.slot].short : session.position)
-        case .selected(let slot):
+        case .selected(let position):
             cue = .select
-            let duration = session.durations.indices.contains(slot) ? session.durations[slot] : nil
-            alert = LiveAlert(title: "Timer \(slot + 1) of \(session.durations.count)",
-                              body: [duration?.label, duration?.short].compactMap { $0 }.joined(separator: " · "))
+            let body: String
+            if let other = session.pickedTimer {
+                body = "\(other.label) · step \(other.step + 1)"
+            } else {
+                let duration = session.durations.indices.contains(session.slot) ? session.durations[session.slot] : nil
+                body = [duration?.label ?? session.selectedTimer?.label, duration?.short].compactMap { $0 }.joined(separator: " · ")
+            }
+            alert = LiveAlert(title: "Timer \(position + 1) of \(session.slots + session.others.count)", body: body)
         case .stopped:
             cue = .stop
         case .extended(let timer):
@@ -274,6 +339,7 @@ final class CookStore: ObservableObject {
             cue = .nothing
         }
         if sounds, !previewOnly { onCue?(cue) }
+        if buzz == .all, event != nil, !previewOnly { onBuzz?(.tap) }
         // With Runes open the screen shows the change; an alert is for a locked phone.
         changed(alert: UIApplication.shared.applicationState == .active ? nil : alert)
     }
@@ -281,7 +347,7 @@ final class CookStore: ObservableObject {
     private func changed(alert: LiveAlert? = nil) {
         persist()
         guard !previewOnly else { return }
-        arm(); syncNotifications()
+        arm(); syncNotifications(); liveChanged()
         onReserve?(reservedNow)
         show(alert: alert)
     }
@@ -313,18 +379,20 @@ final class CookStore: ObservableObject {
         ring()
     }
 
-    /// Repeats the bell while a timer rings and Runes is open. In the background the
-    /// timer's notification is the bell.
+    /// Rings a finished timer until it is stopped, for up to a minute: the bell, and three
+    /// buzzes on the wrist. Runes is kept awake while a timer counts, so this also happens
+    /// behind a locked phone; the timer's notification is there in case it could not be.
     private func ring() {
-        guard ringTask == nil, sounds, UIApplication.shared.applicationState == .active else { return }
+        guard ringTask == nil, !previewOnly, sounds || buzz != .off else { return }
         ringTask = Task { [weak self] in
-            for _ in 0..<8 {
-                guard let self, !Task.isCancelled, let session = self.session, !session.ringing(at: Date()).isEmpty,
-                      UIApplication.shared.applicationState == .active else { break }
-                self.onCue?(.ring)
-                try? await Task.sleep(for: .milliseconds(1800))
+            for _ in 0..<30 {
+                guard let self, !Task.isCancelled, let session = self.session, !session.ringing(at: Date()).isEmpty else { break }
+                if self.sounds { self.onCue?(.ring) }
+                if self.buzz != .off { self.onBuzz?(.triple) }
+                try? await Task.sleep(for: .seconds(2))
             }
             self?.ringTask = nil
+            self?.liveChanged()
         }
     }
 
@@ -374,7 +442,8 @@ final class CookStore: ObservableObject {
 
     private func persist() {
         guard !previewOnly else { return }
-        let saved = Saved(recipes: recipes, controls: controls, sounds: sounds, session: session)
+        let saved = Saved(recipes: recipes, controls: controls, sounds: sounds, session: session, buzz: buzz,
+                          listLook: listLook, cookingLook: cookingLook)
         if let data = try? JSONEncoder().encode(saved) { UserDefaults.standard.set(data, forKey: Self.key) }
     }
 }

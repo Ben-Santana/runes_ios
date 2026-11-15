@@ -117,6 +117,8 @@ final class SessionController: ObservableObject {
         ScoreStore.shared.onReserve = { [weak self] in self?.reserve($0, for: .score) }
         CookStore.shared.onReserve = { [weak self] in self?.reserve($0, for: .cook) }
         CookStore.shared.onActivity = { [weak self] state, alert in self?.live.show(cook: state, alert: alert) }
+        CookStore.shared.onBuzz = { [core] buzz in core.transport.perform { core.buzzBand(buzz) } }
+        CookStore.shared.onLive = { ScoreAudio.shared.setLive($0, for: "cook") }
         CookStore.shared.onCue = { cue in
             let (voice, pitch): (SoundVoice, Double) = switch cue {
             case .step: (.tick, 392)
@@ -130,7 +132,7 @@ final class SessionController: ObservableObject {
             case .finish: (.resolve, 392)
             case .nothing: (.tap, 196)
             }
-            ScoreAudio.shared.preview(voice, pitch: pitch, volume: 0.9)
+            ScoreAudio.shared.cue(voice, pitch: pitch, volume: 0.9)
         }
         CaptureStore.shared.onReserve = { [weak self] in self?.reserve($0, for: .capture) }
         ReelsStore.shared.onReserve = { [weak self] in self?.reserve($0, for: .reels) }
