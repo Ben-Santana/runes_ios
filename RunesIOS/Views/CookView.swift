@@ -382,10 +382,13 @@ struct RecipeScreen: View {
                     Block {
                         if let base, session == nil {
                             HStack(spacing: 12) {
-                                Text("Amounts for").font(.bodyText)
+                                Text("Servings").font(.bodyText)
+                                if servings > 0, Int(servings) != base {
+                                    Text("written for \(base)").font(.caption).foregroundStyle(Color.muted).transition(.opacity)
+                                }
                                 Spacer(minLength: 8)
                                 NumberChip(value: Binding(get: { servings > 0 ? servings : Double(base) }, set: { servings = $0 }),
-                                           range: 1...99, unit: base == 1 ? "serving" : "servings", label: "Servings")
+                                           range: 1...99, unit: "", label: "Servings")
                             }
                             .padding(.vertical, 8)
                             Hairline()
@@ -414,6 +417,13 @@ struct RecipeScreen: View {
             .padding(.horizontal, Metric.gutter).padding(.top, 12).padding(.bottom, 24)
             .animation(.standard, value: count)
             .animation(.standard, value: recipe.notes)
+        }
+        .scrollDismissesKeyboard(.interactively)
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Done") { endEditing() }.font(.label)
+            }
         }
         .sheet(isPresented: $noting) { NoteSheet { store.addNote($0, to: recipe.id) } }
         .safeAreaInset(edge: .bottom) {

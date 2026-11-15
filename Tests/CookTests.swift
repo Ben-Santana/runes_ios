@@ -214,7 +214,7 @@ struct CookTests {
         <script type='application/ld+json'>
         {"@context":"https://schema.org","@graph":[{"@type":"Person","name":"A Cook"},
           {"@type":["Recipe","NewsArticle"],"name":"Lemon &amp; herb chicken","recipeYield":["4","4 servings"],
-           "recipeIngredient":["1 chicken","2 lemons, <b>zested</b>"],
+           "recipeIngredient":["1 chicken (, jointed)","2 lemons, <b>zested</b>"],
            "nutrition":{"@type":"NutritionInformation","calories":"410 calories","proteinContent":"38 grams protein","fatContent":"22","servingSize":"1 portion"},
            "recipeInstructions":[
              {"@type":"HowToSection","name":"Roast","itemListElement":[
@@ -225,7 +225,7 @@ struct CookTests {
         """
         guard let chicken = RecipeParser.recipe(fromHTML: html, source: "https://www.example.com/chicken") else { preconditionFailure("No recipe found") }
         precondition(chicken.title == "Lemon & herb chicken" && chicken.yield == "Serves 4")
-        precondition(chicken.ingredients == ["1 chicken", "2 lemons, zested"], "\(chicken.ingredients)")
+        precondition(chicken.ingredients == ["1 chicken (jointed)", "2 lemons, zested"], "\(chicken.ingredients)")
         precondition(chicken.steps == ["Heat the oven to 200°C.", "Roast for 1 hour 15 minutes.", "Rest for 10 minutes before carving."], "\(chicken.steps)")
         precondition(chicken.sourceHost == "example.com" && chicken.durations(step: 1).map(\.seconds) == [4500])
         precondition(chicken.nutrition == "410 kcal · 38 g protein · 22 g fat per serving", "\(String(describing: chicken.nutrition))")

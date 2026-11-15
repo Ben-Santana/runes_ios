@@ -398,7 +398,10 @@ enum RecipeParser {
     }
 
     static func recipe(fromSchema object: [String: Any], source: String?) -> Recipe? {
-        let ingredients = strings(object["recipeIngredient"] ?? object["ingredients"] ?? [])
+        // Sites that keep an ingredient's note in its own field publish "2 eggs (, whisked)" and "((Note 3))".
+        let ingredients = strings(object["recipeIngredient"] ?? object["ingredients"] ?? []).map {
+            $0.replacingOccurrences(of: "(, ", with: "(").replacingOccurrences(of: "((", with: "(").replacingOccurrences(of: "))", with: ")")
+        }
         var steps = instructions(object["recipeInstructions"] ?? [])
         if steps.count == 1, steps[0].count > 200 { steps = sentences(steps[0]) }
         guard !steps.isEmpty else { return nil }
