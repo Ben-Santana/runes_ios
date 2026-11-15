@@ -342,7 +342,10 @@ struct OnboardingFlow: View {
 
     private func advance(to next: OnboardingStep) {
         step = next
-        if next == .pick, !AccessoryPicker.isEnabled { controller.scan() }
+        guard next == .pick else { return }
+        // A band saved earlier keeps a connection pending, which blocks searching and choosing.
+        if snapshot.wantsConnection { controller.disconnect() }
+        if !AccessoryPicker.isEnabled { controller.scan() }
     }
 
     private func next() {
