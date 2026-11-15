@@ -15,6 +15,11 @@ struct RootView: View {
     @State private var restartBandSetup: UUID?
     @ObservedObject private var links = AppLinkRouter.shared
 
+    /// Home with nothing over it.
+    private var homeInFront: Bool {
+        controller.setupComplete && !showSetup && !showSettings && !showMappings && !showApplications && !showApp
+    }
+
     private var status: BandStatus {
         BandStatus(controller.snapshot, setupComplete: controller.setupComplete, relayStatus: controller.relayStatus)
     }
@@ -37,6 +42,7 @@ struct RootView: View {
             }
         }
         .animation(.entrance, value: controller.setupComplete)
+        .onChange(of: homeInFront, initial: true) { _, front in BandBuzzFeed.shared.showsGestures = !front }
         .fullScreenCover(isPresented: $showSettings, onDismiss: {
             if let band = restartBandSetup {
                 restartBandSetup = nil; queuedApp = nil

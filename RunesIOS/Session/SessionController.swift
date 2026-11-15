@@ -233,7 +233,9 @@ final class SessionController: ObservableObject {
         } else if !WorkoutStore.shared.consume(gesture), !ScoreStore.shared.consume(gesture),
                   !CookStore.shared.consume(gesture), !CaptureStore.shared.consume(gesture),
                   !ReelsStore.shared.consume(gesture) { MappingStore.shared.receive(gesture) }
-        guard foreground, UserDefaults.standard.object(forKey: Preferences.haptics) as? Bool ?? true else { return }
+        guard foreground else { return }
+        BandBuzzFeed.shared.heard(gesture)
+        guard UserDefaults.standard.object(forKey: Preferences.haptics) as? Bool ?? true else { return }
         switch gesture.kind {
         case .tap, .doubleTap: tapHaptic.impactOccurred()
         case .holdBegan: holdHaptic.impactOccurred()
