@@ -118,6 +118,14 @@ final class SessionController: ObservableObject {
         CookStore.shared.onReserve = { [weak self] in self?.reserve($0, for: .cook) }
         CookStore.shared.onActivity = { [weak self] state, alert in self?.live.show(cook: state, alert: alert) }
         CookStore.shared.onBuzz = { [core] buzz in core.transport.perform { core.buzzBand(buzz) } }
+        // Cook's wrist dial is worked out on the transport queue; only the degrees turned hop to the main actor.
+        let dial = DialBox()
+        core.onGyro = { [weak self] timestamp, values in
+            guard let degrees = dial.gyro(values, timestamp: timestamp) else { return }
+            // The same turn reads the other way round on the left wrist.
+            Task { @MainActor in CookStore.shared.turn(self?.snapshot.hand == .left ? -degrees : degrees) }
+        }
+        CookStore.shared.onDial = { dial.set($0) }
         CookStore.shared.onLive = { ScoreAudio.shared.setLive($0, for: "cook") }
         CookStore.shared.onCue = { cue in
             let (voice, pitch): (SoundVoice, Double) = switch cue {
@@ -129,6 +137,7 @@ final class SessionController: ObservableObject {
             case .reset: (.tap, 262)
             case .select: (.tick, 523)
             case .ring: (.bell, 784)
+            case .soon: (.soft, 523)
             case .finish: (.resolve, 392)
             case .nothing: (.tap, 196)
             }
@@ -411,6 +420,14 @@ final class SessionController: ObservableObject {
 
 /// Holds the motion detector; used only on the transport queue.
 private final class MotionBox: @unchecked Sendable { var detector = MotionDetector() }
+
+/// The wrist dial's estimate: fed on the transport queue, switched on and off from the main actor.
+private final class DialBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var dial = WristDial()
+    func set(_ engaged: Bool) { lock.withLock { if engaged { dial.engage() } else { dial.release() } } }
+    func gyro(_ values: [Double], timestamp: UInt64) -> Double? { lock.withLock { dial.gyro(values, timestamp: timestamp) } }
+}
 
 enum Preferences {
     static let setupComplete = "setupComplete"

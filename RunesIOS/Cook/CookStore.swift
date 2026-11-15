@@ -3,7 +3,7 @@ import UIKit
 import UserNotifications
 
 /// The sound for something that happened while cooking; the session turns it into a voice.
-enum CookCue: Sendable { case step, start, pause, extend, stop, reset, select, ring, finish, nothing }
+enum CookCue: Sendable { case step, start, pause, extend, stop, reset, select, ring, soon, finish, nothing }
 
 /// How the recipe list and the cooking screen are drawn. Temporary: each is being tried
 /// on the phone, and the ones not chosen go.
@@ -43,6 +43,7 @@ final class CookStore: ObservableObject {
         var session: CookSession?
         // Kept as text, so a look that is later removed doesn't stop the recipes loading.
         var buzz: String?
+        var dial: Bool?
         var listLook: String?
         var cookingLook: String?
     }
@@ -53,6 +54,16 @@ final class CookStore: ObservableObject {
     @Published private(set) var sounds: Bool
     /// A finished timer buzzes the band until it is stopped; "everything" also taps it for each command.
     @Published private(set) var buzz: CookBuzz
+    /// The wrist dial: pinch the index finger and hold, turn the wrist to set the selected
+    /// timer, let go. It keeps the band's motion sensors on while a recipe is being cooked.
+    @Published private(set) var dial: Bool
+    /// The time the dial shows while the pinch is held.
+    @Published private(set) var dialing: Int?
+    /// Told to start and stop reading the wrist's turn.
+    var onDial: ((Bool) -> Void)?
+    private var dialTime = DialTime()
+    /// Off while a command has the index hold to itself.
+    private var dialUsable: Bool { dial && !controls.reserved.contains(.holdIndex) }
     @Published private(set) var listLook: CookListLook
     @Published private(set) var cookingLook: CookingLook
     @Published private(set) var session: CookSession? { didSet { if (oldValue == nil) != (session == nil) { motionChanged() } } }
@@ -61,7 +72,7 @@ final class CookStore: ObservableObject {
     /// cooked and one of its combos has a rotation, movement or air step.
     var onMotionDemand: ((Bool) -> Void)? { didSet { motionOn = motionWanted; onMotionDemand?(motionOn) } }
     private var motionOn = false
-    private var motionWanted: Bool { session != nil && controls.usesMotion }
+    private var motionWanted: Bool { session != nil && (controls.usesMotion || dialUsable) }
     private func motionChanged() {
         guard !previewOnly, motionWanted != motionOn else { return }
         motionOn = motionWanted
@@ -96,7 +107,8 @@ final class CookStore: ObservableObject {
     private var askedToNotify = false
 
     private var reservedNow: Set<GestureKind> {
-        session == nil || yielded ? [] : controls.reserved.union(SwitchControls.reserved(switchMapping))
+        guard session != nil, !yielded else { return [] }
+        return controls.reserved.union(SwitchControls.reserved(switchMapping)).union(dialUsable ? [.holdIndex, .releaseIndex] : [])
     }
     /// The switch-controls combo, while this is the app the band switches to and from and
     /// its controls are selected. Set by `ControlSwitch`.
@@ -126,6 +138,7 @@ final class CookStore: ObservableObject {
         controls = saved.controls ?? .standard
         sounds = saved.sounds ?? true
         buzz = saved.buzz.flatMap(CookBuzz.init) ?? .timers
+        dial = saved.dial ?? true
         listLook = saved.listLook.flatMap(CookListLook.init) ?? .contents
         cookingLook = saved.cookingLook.flatMap(CookingLook.init) ?? .hob
         session = saved.session
@@ -146,8 +159,8 @@ final class CookStore: ObservableObject {
 
     #if DEBUG
     /// Fixed state for screenshots and previews; never saved.
-    init(preview recipes: [Recipe], session: CookSession? = nil, listLook: CookListLook = .contents, cookingLook: CookingLook = .hob) {
-        self.recipes = recipes; controls = .standard; sounds = true; buzz = .timers
+    init(preview recipes: [Recipe], session: CookSession? = nil, listLook: CookListLook = .contents, cookingLook: CookingLook = .hob, dialing: Int? = nil) {
+        self.recipes = recipes; controls = .standard; sounds = true; buzz = .timers; dial = true; self.dialing = dialing
         self.listLook = listLook; self.cookingLook = cookingLook; self.session = session; previewOnly = true
     }
     #endif
@@ -184,6 +197,10 @@ final class CookStore: ObservableObject {
     }
     func setSounds(_ on: Bool) { sounds = on; persist() }
     func setBuzz(_ value: CookBuzz) { buzz = value; persist() }
+    func setDial(_ on: Bool) {
+        dial = on; persist(); motionChanged()
+        if !previewOnly { onReserve?(reservedNow) }
+    }
     func setListLook(_ look: CookListLook) { listLook = look; persist() }
     func setCookingLook(_ look: CookingLook) { cookingLook = look; persist() }
 
@@ -231,6 +248,8 @@ final class CookStore: ObservableObject {
             recipes[index].cooked += 1; recipes[index].lastCooked = Date()
         }
         ringTask?.cancel(); ringTask = nil
+        if dialing != nil { dialing = nil; onDial?(false) }
+        warned = []
         persist(); arm(); syncNotifications(); liveChanged()
         guard !previewOnly else { return }
         onReserve?(reservedNow)
@@ -249,6 +268,8 @@ final class CookStore: ObservableObject {
     /// Returns false to let mappings handle it.
     func consume(_ gesture: BandGesture) -> Bool {
         guard session != nil, let kind = GestureKind(gesture), reservedNow.contains(kind) else { return false }
+        if dialUsable, kind == .holdIndex { beginDial(); return true }
+        if dialUsable, kind == .releaseIndex { endDial(); return true }
         decider.receive(kind)
         return true
     }
@@ -259,6 +280,36 @@ final class CookStore: ObservableObject {
         guard session != nil, reservedNow.contains(step.gesture) else { return false }
         decider.receive(step)
         return true
+    }
+
+    // MARK: The wrist dial
+
+    private func beginDial() {
+        guard let session, !session.finished, dialing == nil else { return }
+        dialTime = DialTime()
+        dialing = session.dialSeconds(at: Date())
+        onDial?(true)
+        if buzz != .off { onBuzz?(.tap) }
+    }
+
+    /// Degrees the wrist turned while the pinch is held. Each step of the dial ticks.
+    func turn(_ degrees: Double) {
+        guard let showing = dialing else { return }
+        let next = dialTime.turn(degrees, from: showing)
+        guard next != showing else { return }
+        dialing = next
+        if sounds { onCue?(.select) }
+    }
+
+    private func endDial() {
+        guard let seconds = dialing else { return }
+        dialing = nil
+        onDial?(false)
+        guard var current = session else { return }
+        let target = current.selectedTimer
+        guard let event = current.dial(to: seconds) else { return }
+        session = current
+        react(to: event, about: target)
     }
 
     /// The band's orientation, for air steps in cooking's combos.
@@ -373,10 +424,28 @@ final class CookStore: ObservableObject {
 
     // MARK: Timers
 
-    /// Wakes at the next timer's end, so the screen and the Lock Screen turn to ringing.
+    /// Timers already given their minute's notice.
+    private var warned: Set<String> = []
+    /// A minute before a timer of three minutes or more ends: time to find the colander.
+    private func notices(at now: Date) -> [(timer: CookTimer, time: Date)] {
+        (session?.running(at: now) ?? []).filter { $0.total >= 180 && !warned.contains($0.id) }.map { ($0, $0.end.addingTimeInterval(-60)) }
+    }
+
+    private func giveNotice() {
+        let now = Date()
+        let due = notices(at: now).filter { $0.time <= now && $0.timer.remaining(at: now) > 45 }
+        guard !due.isEmpty else { return }
+        warned.formUnion(due.map(\.timer.id))
+        if sounds { onCue?(.soon) }
+        if buzz != .off { onBuzz?(.double) }
+    }
+
+    /// Wakes at the next timer's end, so the screen and the Lock Screen turn to ringing,
+    /// and a minute before a long one ends.
     private func arm() {
         wake?.invalidate(); wake = nil
-        guard !previewOnly, let end = session?.nextEnd(after: Date()) else { return }
+        let now = Date()
+        guard !previewOnly, let end = ([session?.nextEnd(after: now)] + notices(at: now).map(\.time).filter { $0 > now }).compactMap({ $0 }).min() else { return }
         let timer = Timer(fire: end, interval: 0, repeats: false) { [weak self] _ in
             Task { @MainActor in self?.rang() }
         }
@@ -386,6 +455,7 @@ final class CookStore: ObservableObject {
 
     private func rang() {
         objectWillChange.send()
+        giveNotice()
         arm(); show()
         ring()
         liveChanged()
@@ -463,7 +533,7 @@ final class CookStore: ObservableObject {
 
     private func persist() {
         guard !previewOnly else { return }
-        let saved = Saved(recipes: recipes, controls: controls, sounds: sounds, session: session, buzz: buzz.rawValue,
+        let saved = Saved(recipes: recipes, controls: controls, sounds: sounds, session: session, buzz: buzz.rawValue, dial: dial,
                           listLook: listLook.rawValue, cookingLook: cookingLook.rawValue)
         if let data = try? JSONEncoder().encode(saved) { UserDefaults.standard.set(data, forKey: Self.key) }
     }

@@ -30,6 +30,8 @@ final class SessionCore: @unchecked Sendable {
     var onEMGStatus: ((String) -> Void)?
     /// Orientation and gyroscope samples, whether they were started for the Mac or for this phone.
     var onMotion: ((RelayWire.Event.Kind, [Double]) -> Void)?
+    /// Gyroscope samples with the band's clock in microseconds, while this phone wants motion.
+    var onGyro: ((UInt64, [Double]) -> Void)?
     var onGesture: ((GestureEvent) -> Void)?
     /// One call per physical gesture (plus the end of a hold); drives haptics and animation.
     var onBandGesture: ((BandGesture) -> Void)?
@@ -544,6 +546,7 @@ final class SessionCore: @unchecked Sendable {
             guard snapshot.state == .streaming else { return }
             onRaw?(RawSample(kind: kind == .gyro ? .gyro : .orientation, uptime: receipt.uptime, sequence: sequence, timestamp: timestamp, values: values))
             if localMotion { onMotion?(kind, values) }
+            if localMotion, kind == .gyro { onGyro?(timestamp, values) }
             onRelayEvent?(RelayWire.Event(kind: kind, sequence: sequence, timestamp: timestamp,
                                           phoneUptime: receipt.uptime, phoneTime: receipt.wallTime, values: values))
         case .gesture(let finger, let action, let derived, let synthetic, let sequence, let timestamp):
