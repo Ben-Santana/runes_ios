@@ -34,6 +34,12 @@ enum RecipeModel {
         }
     }
 
+    /// How much pasted text the model on this phone takes in one go. `RecipeImporter.limit`
+    /// is sized for the smallest model, 4,096 tokens; a model that holds more is given more.
+    static var inputLimit: Int {
+        max(RecipeImporter.limit, SystemLanguageModel.default.contextSize * RecipeImporter.limit / 4096)
+    }
+
     private static let instructions = """
     You sort the text of a recipe into its parts. Copy, don't write: use only what the text says, in its own words. \
     Never invent or change an ingredient, an amount, a time or a temperature. Keep every detail of how something is \
@@ -55,10 +61,10 @@ enum RecipeModel {
     /// long for the model is tried once more on a narrower part before giving up.
     static func sort(_ text: String, partial: @escaping @MainActor (Recipe) -> Void) async throws -> Recipe {
         do {
-            return try await run(RecipeImporter.window(text), partial: partial)
+            return try await run(RecipeImporter.window(text, limit: inputLimit), partial: partial)
         } catch {
-            guard text.count > RecipeImporter.limit / 2, !Task.isCancelled else { throw error }
-            return try await run(RecipeImporter.window(text, limit: RecipeImporter.limit / 2), partial: partial)
+            guard text.count > inputLimit / 2, !Task.isCancelled else { throw error }
+            return try await run(RecipeImporter.window(text, limit: inputLimit / 2), partial: partial)
         }
     }
 

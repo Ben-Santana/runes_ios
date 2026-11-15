@@ -16,6 +16,7 @@ struct RecipeImportProbe {
         let rules = RecipeParser.parse(text)
         print("Rules: \(rules.summary); clear: \(RecipeImporter.isClear(text, parsed: rules))")
         guard RecipeModel.availability == .ready else { print("Model: \(RecipeModel.availability), so nothing to run."); return }
+        print("Model takes about \(RecipeModel.inputLimit) characters of this text's \(text.count)")
         do {
             let started = Date()
             let recipe = try await RecipeModel.sort(text) { _ in }

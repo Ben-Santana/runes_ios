@@ -833,7 +833,7 @@ struct RecipeEditor: View {
             do {
                 let sorted = try await RecipeModel.sort(pasted) { draft in place(draft.text) }
                 guard sorted.isUsable else { throw CookError.noRecipe }
-                original = pasted; checked = RecipeImporter.window(pasted)
+                original = pasted; checked = RecipeImporter.window(pasted, limit: RecipeModel.inputLimit)
                 place(sorted.text)
             } catch {
                 let rough = RecipeParser.parse(pasted)
