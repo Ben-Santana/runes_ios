@@ -5,7 +5,8 @@
 //       RunesIOS/Persistence/IdentityStore.swift RunesIOS/Mappings/MappingModel.swift RunesIOS/Mappings/AirGesture.swift RunesIOS/Mappings/MappingEngine.swift \
 //       RunesIOS/Mappings/TriggerRules.swift RunesIOS/Mappings/CommandTrigger.swift \
 //       Shared/ProfileIcon.swift Shared/SVGPath.swift Shared/LucideData.swift \
-//       RunesIOS/Cook/RecipeParser.swift RunesIOS/Cook/Ingredients.swift RunesIOS/Cook/CookDial.swift RunesIOS/Cook/CookModel.swift Tests/CookTests.swift -o /private/tmp/runes-cook-tests && /private/tmp/runes-cook-tests
+//       RunesIOS/Cook/RecipeParser.swift RunesIOS/Cook/Ingredients.swift RunesIOS/Cook/CookDial.swift RunesIOS/Cook/CookModel.swift RunesIOS/Cook/CookAsk.swift \
+//       Tests/CookTests.swift -o /private/tmp/runes-cook-tests && /private/tmp/runes-cook-tests
 import Foundation
 
 @main
@@ -447,10 +448,26 @@ struct CookTests {
         guard case .extended(let other)? = dialled.dial(to: 600, at: t0.addingTimeInterval(30)) else { preconditionFailure("Another step's timer, once picked") }
         precondition(other.id == shorter.id && other.total == 600 && dialled.timers.count == 1)
 
+        // MARK: A question
+        // What the model is told: the recipe, where the cook is, and what the timers are doing.
+        var asked = CookSession(recipe: .salmonPasta, at: t0)
+        asked.start(step: 0, slot: 0, at: t0)
+        asked.go(to: 2)
+        let told = CookAsk.context(asked, at: t0.addingTimeInterval(60))
+        precondition(told.hasPrefix("Recipe: Creamy lemon-garlic salmon pasta (Serves 4)") && told.contains("- 5 cloves garlic") && told.contains("3. Heat 1 tsp olive oil"), told)
+        precondition(told.contains("Now: the cook is on step 3 of 6.") && told.contains("Timers: Fry from step 1, 7 min left."), told)
+        precondition(told.contains("- Refrigerate and eat within 3–4 days, or freeze.") && told.contains("Nutrition: 620 kcal"))
+        precondition(CookAsk.context(CookSession(recipe: .starter, at: t0), at: t0).hasSuffix("Timers: none running."))
+        let short = CookAsk.context(asked, at: t0, limit: 1500)
+        precondition(short.count <= 1500 && !short.contains("Refrigerate") && short.contains("Now: the cook is on step 3"), "Too long: notes go first, then the ends of long steps. \(short.count)")
+        asked.go(to: 5); asked.apply(.next, at: t0)
+        precondition(CookAsk.context(asked, at: t0).contains("Now: the recipe is finished.") && asked.apply(.ask, at: t0) == nil)
+
         // MARK: Gestures
         var controls = CookControls.standard
         precondition(controls.command(for: .swipeRight) == .next && controls.command(for: .doubleTapIndex) == .timer)
-        precondition(controls.command(for: .swipeDown) == .timerDown && controls.command(for: .swipeUp) == .timerUp && controls.command(for: .holdMiddle) == .reset)
+        precondition(controls.command(for: .swipeDown) == .timerDown && controls.command(for: .swipeUp) == .timerUp && controls.command(for: .holdMiddle) == .ask)
+        precondition(controls.gesture(for: .reset) == nil, "The dial turned down to nothing clears a timer")
         precondition(controls.reserved == [.swipeRight, .swipeLeft, .swipeUp, .swipeDown, .doubleTapIndex, .tapIndex, .doubleTapMiddle, .tapMiddle, .holdMiddle, .releaseMiddle])
         controls.set(.swipeRight, for: .timer)
         precondition(controls.gesture(for: .timer) == .swipeRight && controls.gesture(for: .next) == .doubleTapIndex, "Taking a gesture swaps")
@@ -462,7 +479,17 @@ struct CookTests {
         precondition(try! JSONDecoder().decode(CookControls.self, from: stored) == controls, "None stays None once saved")
         // Settings saved before reset and timer selection existed get those gestures, unless something has them.
         let older = try! JSONDecoder().decode(CookControls.self, from: Data(#"{"gestures":["next","swipe-right","previous","swipe-up","timer","double-tap-index"]}"#.utf8))
-        precondition(older.gesture(for: .reset) == .holdMiddle && older.gesture(for: .timerDown) == .swipeDown)
+        precondition(older.gesture(for: .reset) == nil && older.gesture(for: .ask) == .holdMiddle && older.gesture(for: .timerDown) == .swipeDown)
+        // Saved with the old defaults, the middle hold moves from reset to asking; one given to something else stays.
+        func before(_ gestures: [CookCommand: GestureKind]) -> CookControls {
+            let now = String(decoding: try! JSONEncoder().encode(CookControls(gestures: gestures)), as: UTF8.self)
+            return try! JSONDecoder().decode(CookControls.self, from: Data(now.replacingOccurrences(of: "\"version\":4", with: "\"version\":3").utf8))
+        }
+        let moved = before([.reset: .holdMiddle, .next: .swipeRight])
+        precondition(moved.gesture(for: .ask) == .holdMiddle && moved.gesture(for: .reset) == nil && moved.gesture(for: .next) == .swipeRight, "\(moved.triggers)")
+        let stays = before([.next: .holdMiddle])
+        precondition(stays.gesture(for: .next) == .holdMiddle && stays.gesture(for: .ask) == nil)
+        precondition(try! JSONDecoder().decode(CookControls.self, from: JSONEncoder().encode(stays)).gesture(for: .ask) == nil, "None stays None once saved")
         precondition(older.gesture(for: .timerUp) == nil && older.gesture(for: .previous) == .swipeUp, "A gesture already in use is left where it is")
 
         // A command can take a combo. The engine Mappings uses decides when it was made.
@@ -480,8 +507,8 @@ struct CookTests {
         precondition(made(engine.receive(.swipeUp, at: 1)).isEmpty, "A swipe up waits for the combo that starts with it")
         precondition(made(engine.tick(at: 1.2)).isEmpty && made(engine.tick(at: 1.6)) == [.timerUp], "and is the previous timer once the combo's time runs out")
         precondition(made(engine.receive(.swipeUp, at: 3) + engine.receive(.swipeUp, at: 3.3) + engine.tick(at: 5)) == [.addMinute], "Twice in time adds a minute, and only that")
-        controls.setTrigger(twice, for: .reset)
-        precondition(controls.trigger(for: .reset) == twice && controls.gesture(for: .addMinute) == .holdMiddle, "Taking a combo swaps too")
+        controls.setTrigger(twice, for: .ask)
+        precondition(controls.trigger(for: .ask) == twice && controls.gesture(for: .addMinute) == .holdMiddle, "Taking a combo swaps too")
         precondition(!controls.usesMotion, "No motion step, no motion sensors")
         controls.setTrigger(CommandTrigger(steps: [ComboStep(.holdIndex), .movement(.z), ComboStep(.releaseIndex)]), for: .next)
         precondition(controls.usesMotion && controls.reserved.isSuperset(of: [.movement, .holdIndex, .releaseIndex]))

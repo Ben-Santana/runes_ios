@@ -7,7 +7,7 @@ import Foundation
 
 /// What the band (or a button) can do while cooking.
 enum CookCommand: String, Codable, CaseIterable, Identifiable, Sendable {
-    case next, previous, timer, addMinute, reset, timerDown, timerUp
+    case next, previous, timer, addMinute, reset, timerDown, timerUp, ask
 
     var id: String { rawValue }
     var title: String {
@@ -19,6 +19,7 @@ enum CookCommand: String, Codable, CaseIterable, Identifiable, Sendable {
         case .reset: "Reset the timer"
         case .timerDown: "Next timer"
         case .timerUp: "Previous timer"
+        case .ask: "Ask a question"
         }
     }
     var detail: String {
@@ -30,6 +31,7 @@ enum CookCommand: String, Codable, CaseIterable, Identifiable, Sendable {
         case .reset: "Puts the selected timer back to its full time, not running."
         case .timerDown: "Selects the next timer: this step’s times, then any other timer still going."
         case .timerUp: "Selects the timer before."
+        case .ask: "Hold it and ask about the recipe out loud: how much, how hot, how long, what can stand in for what. With a hold, let go when you’re done; otherwise make it again."
         }
     }
 }
@@ -40,11 +42,13 @@ struct CookControls: Codable, Hashable, Sendable {
 
     /// Side swipes turn the page and up and down move between the timers, as on
     /// screen. The index finger runs the selected timer. Double taps, because one pinch
-    /// happens by itself when hands are busy with a knife or a pan.
+    /// happens by itself when hands are busy with a knife or a pan. Holding the middle
+    /// finger asks a question, for as long as it is held. Reset has no gesture of its own:
+    /// the wrist dial turned down to nothing clears a timer.
     static let standard = CookControls(gestures: standardGestures)
     private static let standardGestures: [CookCommand: GestureKind] = [
         .next: .swipeRight, .previous: .swipeLeft, .timer: .doubleTapIndex, .addMinute: .doubleTapMiddle,
-        .reset: .holdMiddle, .timerDown: .swipeDown, .timerUp: .swipeUp,
+        .ask: .holdMiddle, .timerDown: .swipeDown, .timerUp: .swipeUp,
     ]
     /// Gestures a command may use on its own. Releases only exist inside combos.
     static let choices = CommandTrigger.singleChoices
@@ -75,22 +79,30 @@ struct CookControls: Codable, Hashable, Sendable {
 
     private enum Keys: String, CodingKey { case gestures, triggers, version }
     /// 2 added reset and moving between a step's timers. 3 lets a command take a combo.
-    private static let version = 3
+    /// 4 added asking a question.
+    private static let version = 4
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
+        let version = (try? c.decode(Int.self, forKey: .version)) ?? 1
         if let saved = try c.decodeIfPresent([String: CommandTrigger].self, forKey: .triggers) {
             triggers = Dictionary(saved: saved)
-            return
+        } else {
+            // Saved before a command could take a combo: one gesture each.
+            triggers = try c.decode([CookCommand: GestureKind].self, forKey: .gestures).mapValues(CommandTrigger.gesture)
         }
-        // Saved before a command could take a combo: one gesture each.
-        triggers = try c.decode([CookCommand: GestureKind].self, forKey: .gestures).mapValues(CommandTrigger.gesture)
         // Settings saved before a command existed get its usual gesture, if it is free.
         // After that, "None" is a choice and stays.
-        if ((try? c.decode(Int.self, forKey: .version)) ?? 1) < 2 {
-            for command in [CookCommand.reset, .timerDown, .timerUp] where triggers[command] == nil {
+        if version < 2 {
+            for command in [CookCommand.timerDown, .timerUp] where triggers[command] == nil {
                 if let usual = Self.standardGestures[command], self.command(for: usual) == nil { triggers[command] = .gesture(usual) }
             }
+        }
+        // Asking takes the middle hold. Where reset still had it from the old defaults,
+        // reset gives it up; a hold given to something else stays there.
+        if version < 4, triggers[.ask] == nil {
+            if triggers[.reset]?.gesture == .holdMiddle { triggers[.reset] = nil }
+            if self.command(for: .holdMiddle) == nil { triggers[.ask] = .gesture(.holdMiddle) }
         }
     }
     func encode(to encoder: Encoder) throws {
@@ -229,6 +241,9 @@ struct CookSession: Codable, Equatable, Sendable {
             guard !finished, let timer = selectedTimer else { return nil }
             cancel(timer.id)
             return .reset
+        case .ask:
+            // Asking changes nothing in the recipe; the store hears it.
+            return nil
         case .timerDown, .timerUp:
             let others = others, count = slots + others.count, current = selection
             guard !finished, count > (current == nil ? 0 : 1) else { return nil }
