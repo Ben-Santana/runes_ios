@@ -44,6 +44,25 @@ private enum Plate: Int, CaseIterable {
         [(.green, nil, "Over 80%"), (.orange, nil, "20 to 80%"), (.orange, 1.6, "Under 20%"), (.white, 1.1, "On, or pairing")]
 }
 
+private extension Plate {
+    /// What the plate sounds and feels like as it plays through once: each cue, and how
+    /// many seconds after the plate comes into view it falls.
+    var score: [(at: Double, cue: GuideCues.Cue)] {
+        switch self {
+        case .meet, .light: []
+        case .wear: [(BeadTheatre.bandLands, .lands)]
+        case .gestures:
+            Self.moves.enumerated().flatMap { index, move in
+                BeadTheatre.landings(of: move).map {
+                    ((Double(index) + $0) * BeadTheatre.gestureBeat, move.held ? GuideCues.Cue.hold : .press(finger: move.finger))
+                }
+            }
+        case .button: Self.holds.enumerated().map { (BeadTheatre.holdTime($1.seconds), .held($0)) }
+        case .charging: (0..<8).map { (BeadTheatre.fillTime(bead: $0), GuideCues.Cue.fills($0)) } + [(BeadTheatre.fillTime(bead: 8), .full)]
+        }
+    }
+}
+
 /// An optional guide to the band, told by its own eight beads. Each plate is one lesson;
 /// swiping moves the same beads into the next shape.
 struct BandGuidePage: View {
@@ -125,6 +144,17 @@ struct BandGuidePage: View {
         .page()
         .navigationTitle("Your band")
         .navigationBarTitleDisplayMode(.inline)
+        .sensoryFeedback(.selection, trigger: current)
+        .task(id: [Double(current), entered[current]]) {
+            guard !reduceMotion, let plate = Plate(rawValue: current) else { return }
+            await GuideCues.shared.play(plate.score, since: Date(timeIntervalSinceReferenceDate: entered[current]))
+        }
+        .onAppear {
+            play.struck = OnboardingCues.shared.bead
+            GuideCues.shared.setActive(scenePhase == .active)
+        }
+        .onChange(of: scenePhase) { _, phase in GuideCues.shared.setActive(phase == .active) }
+        .onDisappear { GuideCues.shared.setActive(false) }
     }
 
     private func advance() {
@@ -273,7 +303,13 @@ private struct BeadTheatre: View {
     private static let columnWidth = 78.0
     private static let rowY = 150.0
     /// Seconds each gesture, light and lap of the loops below is shown.
-    private static let gestureBeat = 1.35, lightBeat = 2.2, chargeLoop = 6.0
+    static let gestureBeat = 1.35, lightBeat = 2.2, chargeLoop = 6.0
+    /// When the band first reaches its place on the wrist, as `wearOffset` swings it in.
+    static let bandLands = 0.69
+    /// How long the arc of a hold of `seconds` takes to draw.
+    static func holdTime(_ seconds: Double) -> Double { 0.5 + seconds * 0.45 }
+    /// When a bead of the charging row fills, in seconds into a lap. The row is full a little before the lap ends.
+    static func fillTime(bead index: Int) -> Double { chargeLoop * Double(index) / 8 / 1.2 }
 
     var body: some View {
         Canvas { canvas, size in
@@ -347,7 +383,10 @@ private struct BeadTheatre: View {
     /// only play on a plate that has settled, so nothing is caught half-made by a swipe.
     private func settled(on plate: Plate) -> Double { min(1, max(0, 1 - abs(position - Double(plate.rawValue)) / 0.3)) }
     /// When each press of the gesture lands, and how long its signal takes to reach the band, in beats.
-    private var landings: [Double] { move.held ? [0.2] : move.twice ? [0.17, 0.51] : [0.24] }
+    static func landings(of move: (name: String, finger: Int, twice: Bool, held: Bool)) -> [Double] {
+        move.held ? [0.2] : move.twice ? [0.17, 0.51] : [0.24]
+    }
+    private var landings: [Double] { Self.landings(of: move) }
     private static let signalTime = 0.1
     /// The signal on its way from the finger to the band while it travels, 0…1.
     private var signal: Double? {
@@ -574,7 +613,7 @@ private struct BeadTheatre: View {
             // Each hold as an arc, an eighth of a turn per second, drawn at the pace it takes.
             for (index, hold) in Plate.holds.enumerated() {
                 let middle = CGPoint(x: column(index, of: Plate.holds.count, centre: centre), y: Self.rowY)
-                let sweep = still ? 1 : min(1, clock(.button).truncatingRemainder(dividingBy: 6) / (0.5 + hold.seconds * 0.45))
+                let sweep = still ? 1 : min(1, clock(.button).truncatingRemainder(dividingBy: 6) / Self.holdTime(hold.seconds))
                 var arc = Path()
                 arc.addArc(center: middle, radius: 29, startAngle: .degrees(-90), endAngle: .degrees(-90 + 45 * hold.seconds * sweep), clockwise: false)
                 canvas.stroke(Path(ellipseIn: CGRect(x: middle.x - 29, y: middle.y - 29, width: 58, height: 58)), with: .color(.rule.opacity(holds)), lineWidth: 1)

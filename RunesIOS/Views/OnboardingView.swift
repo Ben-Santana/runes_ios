@@ -97,6 +97,10 @@ struct OnboardingView: View {
         .animation(.standard, value: step)
         .animation(.standard, value: context)
         .page()
+        .onChange(of: step) { old, new in
+            OnboardingCues.shared.step(new.rawValue, of: OnboardingStep.allCases.count, forward: new.rawValue > old.rawValue)
+        }
+        .onChange(of: context.issue) { _, issue in if issue != nil { OnboardingCues.shared.trouble() } }
         .sheet(isPresented: $showingGuide) { BandGuideSheet() }
     }
 
@@ -313,13 +317,16 @@ struct OnboardingView: View {
 }
 
 /// The optional band guide, offered as the top row of a panel that carries on below the
-/// screen. It rises into view a moment after the step arrives; its three beads hop once, one
-/// after another, and then keep still.
+/// screen. It snaps up into view a moment after the step arrives and stops dead; its three
+/// beads hop once as it lands, one after another, and then keep still.
 private struct GuideDrawer: View {
     let open: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var tucked = true
     @State private var hopping: Int?
+    /// Fast off the mark and no settling at the end.
+    private static let rise = Animation.timingCurve(0.2, 0.9, 0.1, 1, duration: 0.24)
+    private static let hop = Animation.easeOut(duration: 0.12)
 
     var body: some View {
         let edge = UnevenRoundedRectangle(topLeadingRadius: Metric.panel, topTrailingRadius: Metric.panel)
@@ -348,14 +355,15 @@ private struct GuideDrawer: View {
         .accessibilityAddTraits(.isButton)
         .task {
             guard !reduceMotion else { tucked = false; return }
-            try? await Task.sleep(for: .seconds(0.25))
-            withAnimation(.entrance) { tucked = false }
-            try? await Task.sleep(for: .seconds(1.1))
+            try? await Task.sleep(for: .seconds(0.3))
+            withAnimation(Self.rise) { tucked = false }
+            try? await Task.sleep(for: .seconds(0.2))
+            OnboardingCues.shared.card()
             for bead in 0..<3 {
-                withAnimation(.standard) { hopping = bead }
-                try? await Task.sleep(for: .seconds(0.13))
+                withAnimation(Self.hop) { hopping = bead }
+                try? await Task.sleep(for: .seconds(0.1))
             }
-            withAnimation(.standard) { hopping = nil }
+            withAnimation(Self.hop) { hopping = nil }
         }
     }
 }
