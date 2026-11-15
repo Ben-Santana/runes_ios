@@ -503,8 +503,8 @@ struct OnboardingFlow: View {
 }
 
 /// Setup played from start to finish with a pretend band, to see, hear and feel every step.
-/// The band is found, connects and taps by itself; nothing reaches the real band or its
-/// settings, apart from the light tap it gets when the test passes.
+/// The band is found, connects and taps by itself. The real band keeps its connection and
+/// settings; if it is on, it buzzes when the test passes and on the wrist step, as in setup.
 struct OnboardingWalkthrough: View {
     var done: () -> Void
     @State private var step = OnboardingStep.welcome
@@ -550,6 +550,7 @@ struct OnboardingWalkthrough: View {
                     if hand.wrote() { _ = hand.received(wrist) }
                 }
             },
+            wristFeedback: { phase, _, _ in cues.band(phase) },
             beadStruck: cues.bead, close: done)
     }
 
