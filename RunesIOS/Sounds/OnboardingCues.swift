@@ -4,8 +4,11 @@ import UIKit
 /// scale with a tap, so setup climbs as it goes, and the last step lands on a chord. The
 /// welcome ring's beads ring the same notes when a finger knocks them. The band connecting
 /// lifts from G up to D, and the first index tap answers it: a chord home on G, a success
-/// tap on the phone and a buzz on the band. Waiting is silent. A connected band taps along.
-/// The wrist step has its own cues (`WristCues`).
+/// buzz on the band, and a success tap on the phone a moment after. Waiting is silent.
+/// The phone and the band are given different parts. A connected band taps each step
+/// forward. The phone keeps to what happens under the fingers and to the big moments, where
+/// it answers the band or the band answers it, so the two are felt as a pair and not as
+/// one thing twice. The wrist step has its own cues (`WristCues`).
 @MainActor
 final class OnboardingCues {
     static let shared = OnboardingCues()
@@ -36,17 +39,17 @@ final class OnboardingCues {
         ScoreAudio.shared.cue(.kalimba, pitch: Self.notes[index % Self.notes.count], volume: 0.18 + 0.2 * strength)
     }
 
-    /// Step `index` of `count` arrived. Going back is felt and not heard. A step that
-    /// arrives because something just happened leaves the sound to that.
+    /// Step `index` of `count` arrived. Going back is a light tap on the phone and no
+    /// sound. A step that arrives because something just happened leaves the cue to that.
+    /// The last step is the band's double buzz, then the phone's success tap.
     func step(_ index: Int, of count: Int, forward: Bool) {
         guard forward else { return light.impactOccurred(intensity: 0.5) }
         guard Date().timeIntervalSince(lastMoment) > 0.3 else { return }
         if index == count - 1 {
-            notice.notificationOccurred(.success)
             ScoreAudio.shared.cue(.warm, pitch: 783.99, volume: 0.45)
             ScoreAudio.shared.cue(.bandDouble, volume: 1)
+            after(0.4) { self.notice.notificationOccurred(.success) }
         } else {
-            light.impactOccurred(intensity: 0.7)
             ScoreAudio.shared.cue(.kalimba, pitch: Self.notes[index % Self.notes.count], volume: 0.2)
             ScoreAudio.shared.cue(.bandTap, volume: 1)
         }
@@ -65,23 +68,30 @@ final class OnboardingCues {
         ScoreAudio.shared.cue(.pip, pitch: 587.33, volume: 0.3)
     }
 
-    /// The band connected and is waiting for a tap.
+    /// The band connected and is waiting for a tap: the phone taps, and the band taps back.
     func connected() {
         lastMoment = Date()
         soft.impactOccurred()
         ScoreAudio.shared.cue(.lift, volume: 0.4)
-        ScoreAudio.shared.cue(.bandTap, volume: 1)
+        after(0.2) { ScoreAudio.shared.cue(.bandTap, volume: 1) }
     }
 
     /// The band heard a gesture, but not the one asked for.
     func heard() { light.impactOccurred(intensity: 0.6) }
 
-    /// The index tap arrived.
+    /// The index tap arrived: the band buzzes, and the phone answers.
     func passed() {
         lastMoment = Date()
-        notice.notificationOccurred(.success)
         ScoreAudio.shared.cue(.resolve, volume: 0.5)
         ScoreAudio.shared.cue(.bandBuzz, volume: 1)
+        after(0.25) { self.notice.notificationOccurred(.success) }
+    }
+
+    private func after(_ seconds: Double, _ play: @escaping @MainActor () -> Void) {
+        Task {
+            try? await Task.sleep(for: .seconds(seconds))
+            play()
+        }
     }
 
     /// The wrist step's pulses on the band, for the walkthrough: the real ones only

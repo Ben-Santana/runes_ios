@@ -53,8 +53,10 @@ private extension Plate {
         case .wear: [(BeadTheatre.bandLands, .lands)]
         case .gestures:
             Self.moves.enumerated().flatMap { index, move in
-                BeadTheatre.landings(of: move).map {
-                    ((Double(index) + $0) * BeadTheatre.gestureBeat, move.held ? GuideCues.Cue.hold : .press(finger: move.finger))
+                BeadTheatre.landings(of: move).flatMap { landing -> [(Double, GuideCues.Cue)] in
+                    let touch = (Double(index) + landing) * BeadTheatre.gestureBeat
+                    return [(touch, move.held ? .hold : .press(finger: move.finger)),
+                            (touch + BeadTheatre.signalTime * BeadTheatre.gestureBeat, .answer(held: move.held))]
                 }
             }
         case .button: Self.holds.enumerated().map { (BeadTheatre.holdTime($1.seconds), .held($0)) }
@@ -387,7 +389,7 @@ private struct BeadTheatre: View {
         move.held ? [0.2] : move.twice ? [0.17, 0.51] : [0.24]
     }
     private var landings: [Double] { Self.landings(of: move) }
-    private static let signalTime = 0.1
+    static let signalTime = 0.1
     /// The signal on its way from the finger to the band while it travels, 0…1.
     private var signal: Double? {
         guard !still, settled(on: .gestures) >= 1 else { return nil }
