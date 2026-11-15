@@ -436,4 +436,23 @@ extension Recipe {
                 "Toss the drained pasta through the sauce with a splash of the water and let it rest for 1 minute off the heat.",
                 "Tear in the basil and serve with parmesan."],
         yield: "Serves 4", added: Date(timeIntervalSince1970: 1_762_000_000))
+
+    static let salmonPasta = Recipe(
+        id: "sample-salmon-pasta",
+        title: "Creamy lemon-garlic salmon pasta",
+        ingredients: ["1 lb salmon", "8 oz protein penne, dry", "16 oz 2% cottage cheese", "12 oz frozen broccoli florets",
+                      "8 oz sliced mushrooms", "5 oz baby spinach", "1 cup frozen green peas", "25 g Parmesan, finely grated",
+                      "1 large lemon, zest and 2 tbsp juice", "5 cloves garlic", "½ cup low-sodium vegetable broth",
+                      "1 tsp olive oil, plus cooking spray", "1 tsp smoked paprika", "1 tsp garlic powder", "1 tsp Italian seasoning",
+                      "Salt, black pepper and chilli flakes"],
+        steps: ["Mix 1 tsp smoked paprika, 1 tsp garlic powder, ½ tsp salt, ½ tsp black pepper and the lemon zest with a little cooking spray, and rub it over the salmon. Air fry at 390°F for 8–12 minutes, depending on thickness, until the centre reaches 145°F.",
+                "Boil the penne in salted water, adding the broccoli for the last 3 minutes. Drain, keeping at least 1 cup of the pasta water. Leave the pasta slightly firm so it holds up when reheated.",
+                "Heat 1 tsp olive oil in a wide skillet over a medium-high heat. Cook the mushrooms for 6–8 minutes, until their water has gone and they are deeply browned. Add 3 minced garlic cloves, the peas and the spinach and cook for another 2–3 minutes. Season with the Italian seasoning and chilli flakes.",
+                "Blend the cottage cheese with the Parmesan, 2 garlic cloves, 2 tbsp lemon juice, the broth and black pepper until completely smooth. Loosen with a splash of pasta water if needed.",
+                "Turn the heat off and let the skillet cool slightly; the sauce turns grainy if it boils. Stir in the pasta, broccoli and sauce, adding pasta water a little at a time until silky and coated. Fold in the salmon in large flakes, then taste and adjust the salt, pepper and lemon.",
+                "Divide into four containers, about 620 kcal and 55 g protein each. Refrigerate and eat within 3–4 days, or freeze. Reheat with 1–2 tbsp water, loosely covered, in short bursts."],
+        yield: "Serves 4", added: Date(timeIntervalSince1970: 1_794_700_000))
+
+    /// The premade recipes, newest first.
+    static let samples = [salmonPasta, starter]
 }
