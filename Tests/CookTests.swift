@@ -226,7 +226,13 @@ struct CookTests {
         precondition(cook.step == 0 && cook.count == 6 && cook.position == "Step 1 of 6" && !cook.finished)
         precondition(cook.apply(.previous, at: t0) == nil, "Nothing before the first step")
         precondition(cook.apply(.timer, at: t0) == nil, "The first step mentions no time")
-        precondition(cook.apply(.addMinute, at: t0) == nil, "No timer to extend")
+        // A step with no time gets a minute of its own to count; more minutes go to it.
+        guard case .started(let own)? = cook.apply(.addMinute, at: t0) else { preconditionFailure("A minute should start") }
+        precondition(own.total == 60 && own.label == "Step 1" && own.step == 0 && cook.slots == 1 && cook.selectedTimer?.id == own.id)
+        guard case .extended(let ownMore)? = cook.apply(.addMinute, at: t0.addingTimeInterval(10)) else { preconditionFailure("Should extend") }
+        precondition(ownMore.id == own.id && ownMore.total == 120 && ownMore.end == t0.addingTimeInterval(120))
+        guard case .paused? = cook.apply(.timer, at: t0.addingTimeInterval(20)), case .resumed? = cook.apply(.timer, at: t0.addingTimeInterval(30)) else { preconditionFailure("Its own timer pauses and starts") }
+        precondition(cook.apply(.reset, at: t0) == .reset && cook.timers.isEmpty && cook.slots == 0)
         precondition(cook.apply(.reset, at: t0) == nil && cook.apply(.timerDown, at: t0) == nil && cook.selectedTimer == nil)
         precondition(cook.apply(.next, at: t0) == .step(1))
 
@@ -323,6 +329,38 @@ struct CookTests {
         pan.apply(.previous, at: t0); precondition(pan.slot == 0)
         pan.go(to: 0, slot: 1); precondition(pan.step == 0 && pan.slot == 1)
         precondition(try! JSONDecoder().decode(CookSession.self, from: try! JSONEncoder().encode(pan)) == pan)
+
+        // MARK: Timers on other steps
+        // Up and down move through this step's times and then every other timer still going,
+        // so a pan left on step 1 can be paused, extended or reset from step 4.
+        var hob = CookSession(recipe: .starter, at: t0)
+        guard case .started(let water)? = hob.apply(.addMinute, at: t0) else { preconditionFailure("A minute should start") }
+        hob.apply(.next, at: t0)
+        precondition(hob.slots == 1 && hob.others.map(\.id) == [water.id] && hob.selection == 0 && hob.pickedTimer == nil && hob.selectedTimer == nil)
+        precondition(hob.apply(.timerDown, at: t0) == .selected(1) && hob.pickedTimer?.id == water.id && hob.selectedTimer?.id == water.id && hob.slot == 0)
+        guard case .extended(let waterMore)? = hob.apply(.addMinute, at: t0.addingTimeInterval(5)) else { preconditionFailure("Should extend the other step's timer") }
+        precondition(waterMore.id == water.id && waterMore.total == 120)
+        guard case .paused(let waterHeld)? = hob.apply(.timer, at: t0.addingTimeInterval(10)) else { preconditionFailure("Should pause it") }
+        precondition(waterHeld.id == water.id && hob.timer(step: 1, slot: 0) == nil, "This step's time was not started instead")
+        precondition(hob.apply(.timerDown, at: t0) == .selected(0) && hob.pickedTimer == nil)
+        guard case .started(let garlicHob)? = hob.apply(.timer, at: t0.addingTimeInterval(12)) else { preconditionFailure("Should start this step's") }
+        precondition(garlicHob.step == 1 && hob.apply(.timerUp, at: t0) == .selected(1) && hob.selectedTimer?.id == water.id)
+        precondition(hob.apply(.reset, at: t0) == .reset && hob.timer(step: 0, slot: 0) == nil && hob.selectedTimer?.id == garlicHob.id, "Back to this step's own")
+        precondition(hob.apply(.timerDown, at: t0) == nil, "One timer left: nothing to move between")
+        // On a step with no time, a selected timer takes the minute; without one the step gets its own.
+        hob.go(to: 0)
+        precondition(hob.slots == 0 && hob.apply(.timerDown, at: t0) == nil && hob.selectedTimer == nil, "One timer, and it isn't selected")
+        guard case .started(let rest)? = hob.apply(.addMinute, at: t0.addingTimeInterval(20)) else { preconditionFailure("A minute of its own") }
+        precondition(rest.step == 0 && hob.timer(step: 1, slot: 0)?.total == 120)
+        precondition(hob.apply(.timerDown, at: t0) == .selected(1) && hob.selectedTimer?.id == garlicHob.id)
+        hob.apply(.next, at: t0)
+        precondition(hob.pickedTimer == nil && hob.others.map(\.id) == [rest.id], "Leaving the step lets go of it")
+        hob.pick(rest.id); precondition(hob.selectedTimer?.id == rest.id)
+        hob.go(to: 0); hob.pick(garlicHob.id); hob.pick(rest.id)
+        precondition(hob.pickedTimer == nil && hob.selectedTimer?.id == rest.id, "Picking this step's own timer selects its slot")
+        // A timer that rang and was stopped is no longer in the round.
+        precondition(hob.apply(.timer, at: t0.addingTimeInterval(500)) == .stopped && hob.others.isEmpty && hob.slots == 0)
+        precondition(try! JSONDecoder().decode(CookSession.self, from: try! JSONEncoder().encode(hob)) == hob)
 
         // MARK: Gestures
         var controls = CookControls.standard

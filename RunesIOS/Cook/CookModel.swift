@@ -26,10 +26,10 @@ enum CookCommand: String, Codable, CaseIterable, Identifiable, Sendable {
         case .next: "After the last step, finishes the recipe."
         case .previous: "Goes back a step."
         case .timer: "Starts the selected timer, pauses it, and starts it again. When a timer rings, stops it."
-        case .addMinute: "Gives the selected timer another minute, also after it rang."
+        case .addMinute: "Gives the selected timer another minute, also after it rang. On a step with no time, starts a one-minute timer."
         case .reset: "Puts the selected timer back to its full time, not running."
-        case .timerDown: "On a step with more than one time, selects the next."
-        case .timerUp: "On a step with more than one time, selects the one before."
+        case .timerDown: "Selects the next timer: this step’s times, then any other timer still going."
+        case .timerUp: "Selects the timer before."
         }
     }
 }
@@ -38,7 +38,7 @@ enum CookCommand: String, Codable, CaseIterable, Identifiable, Sendable {
 struct CookControls: Codable, Hashable, Sendable {
     var triggers: [CookCommand: CommandTrigger]
 
-    /// Side swipes turn the page and up and down move between a step's timers, as on
+    /// Side swipes turn the page and up and down move between the timers, as on
     /// screen. The index finger runs the selected timer. Double taps, because one pinch
     /// happens by itself when hands are busy with a knife or a pan.
     static let standard = CookControls(gestures: standardGestures)
@@ -140,7 +140,8 @@ enum CookEvent: Equatable, Sendable {
     case stopped
     case extended(CookTimer)
     case reset
-    /// Another of the step's timers was selected; carries its position.
+    /// Another timer was selected; carries its position among the step's times and the
+    /// other timers still going.
     case selected(Int)
 }
 
@@ -154,6 +155,8 @@ struct CookSession: Codable, Equatable, Sendable {
     var started: Date
     /// Which of the current step's times is selected; nil is the first.
     private var chosen: Int? = nil
+    /// A timer from another step, selected instead; it takes the commands until the step changes.
+    private var picked: String? = nil
 
     init(recipe: Recipe, at now: Date = Date()) { self.recipe = recipe; started = now }
 
@@ -162,14 +165,22 @@ struct CookSession: Codable, Equatable, Sendable {
     var isLast: Bool { step >= count - 1 }
     var durations: [StepDuration] { recipe.durations(step: step) }
 
+    /// The timer a step without a time of its own was given, while it is going.
+    var ownTimer: CookTimer? { timer(step: step, slot: durations.count).flatMap { $0.isLive ? $0 : nil } }
+    /// The times this step has: the ones it mentions, and the one it was given.
+    var slots: Int { durations.count + (ownTimer == nil ? 0 : 1) }
     /// The one of the current step's times that commands act on. Timers are started,
     /// paused, reset and given a minute one at a time; this says which.
-    var slot: Int {
-        let last = durations.count - 1
-        return last < 0 ? 0 : min(max(chosen ?? 0, 0), last)
-    }
-    /// The selected time's timer, once it has been started.
-    var selectedTimer: CookTimer? { durations.isEmpty ? nil : timer(step: step, slot: slot) }
+    var slot: Int { slots == 0 ? 0 : min(max(chosen ?? 0, 0), slots - 1) }
+    /// The other step's timer that was selected, while it is still going.
+    var pickedTimer: CookTimer? { picked.flatMap { id in timers.first { $0.id == id && $0.isLive && $0.step != step } } }
+    /// The timer commands act on, once it has been started.
+    var selectedTimer: CookTimer? { pickedTimer ?? (slots == 0 ? nil : timer(step: step, slot: slot)) }
+    /// Timers still going that belong to other steps, in recipe order. With the step's own
+    /// times they are what up and down move between.
+    var others: [CookTimer] { timers.filter { $0.isLive && $0.step != step }.sorted { ($0.step, $0.slot) < ($1.step, $1.slot) } }
+    /// Where the selection is among the step's times and the others.
+    var selection: Int { pickedTimer.flatMap { timer in others.firstIndex { $0.id == timer.id } }.map { slots + $0 } ?? slot }
 
     func timer(step: Int, slot: Int) -> CookTimer? { timers.last { $0.step == step && $0.slot == slot } }
     func running(at now: Date) -> [CookTimer] { timers.filter { $0.isRunning(at: now) }.sorted { $0.end < $1.end } }
@@ -188,39 +199,49 @@ struct CookSession: Codable, Equatable, Sendable {
         case .next:
             guard !finished else { return nil }
             if isLast { finished = true; return .finished }
-            step += 1; chosen = nil
+            step += 1; chosen = nil; picked = nil
             return .step(step)
         case .previous:
             if finished { finished = false; return .step(step) }
             guard step > 0 else { return nil }
-            step -= 1; chosen = nil
+            step -= 1; chosen = nil; picked = nil
             return .step(step)
         case .timer:
             // A ringing timer is the urgent thing, whichever step is showing.
             if !ringing(at: now).isEmpty { stopRinging(at: now); return .stopped }
-            guard !finished, !durations.isEmpty else { return nil }
+            guard !finished else { return nil }
+            if let other = pickedTimer { return toggle(step: other.step, slot: other.slot, at: now) }
+            guard slots > 0 else { return nil }
             return toggle(step: step, slot: slot, at: now)
         case .addMinute:
-            guard let index = extendable(at: now) else { return nil }
-            return addMinute(to: timers[index].id, at: now).map(CookEvent.extended)
+            if let index = extendable(at: now) { return addMinute(to: timers[index].id, at: now).map(CookEvent.extended) }
+            // A step that mentions no time gets a minute of its own to count.
+            guard !finished, durations.isEmpty else { return nil }
+            timers.removeAll { $0.step == step && $0.slot == 0 }
+            let timer = CookTimer(step: step, slot: 0, label: "Step \(step + 1)", total: 60, end: now.addingTimeInterval(60))
+            timers.append(timer)
+            return .started(timer)
         case .reset:
             guard !finished, let timer = selectedTimer else { return nil }
             cancel(timer.id)
             return .reset
         case .timerDown, .timerUp:
-            let count = durations.count
+            let others = others, count = slots + others.count
             guard !finished, count > 1 else { return nil }
             // Round and round, so two timers swap with either swipe.
-            chosen = (slot + (command == .timerDown ? 1 : -1) + count) % count
-            return .selected(slot)
+            let next = (selection + (command == .timerDown ? 1 : -1) + count) % count
+            if next < slots { chosen = next; picked = nil } else { picked = others[next - slots].id }
+            return .selected(next)
         }
     }
 
     /// The timer another minute goes to: one that is ringing, else the selected one if
-    /// it is counting or paused, else the one with least time left.
+    /// it is counting or paused, else, on a step with times of its own, the one with
+    /// least time left.
     private func extendable(at now: Date) -> Int? {
         if let ringing = timers.lastIndex(where: { $0.isRinging(at: now) }) { return ringing }
         if let selected = selectedTimer, selected.isLive, !finished { return timers.firstIndex { $0.id == selected.id } }
+        guard finished || !durations.isEmpty else { return nil }
         return live(at: now).first.flatMap { soonest in timers.firstIndex { $0.id == soonest.id } }
     }
 
@@ -285,14 +306,20 @@ struct CookSession: Codable, Equatable, Sendable {
 
     /// Selects one of the current step's times.
     mutating func select(slot: Int) {
-        guard durations.indices.contains(slot) else { return }
-        chosen = slot
+        guard (0..<slots).contains(slot) else { return }
+        chosen = slot; picked = nil
+    }
+
+    /// Selects a timer wherever it belongs.
+    mutating func pick(_ id: String) {
+        guard let timer = timers.first(where: { $0.id == id && $0.isLive }) else { return }
+        if timer.step == step { chosen = timer.slot; picked = nil } else { picked = id }
     }
 
     /// Shows a step, with one of its times selected.
     mutating func go(to index: Int, slot: Int? = nil) {
         guard recipe.steps.indices.contains(index) else { return }
-        step = index; finished = false; chosen = slot
+        step = index; finished = false; chosen = slot; picked = nil
     }
 
     mutating func toggle(ingredient index: Int) {
