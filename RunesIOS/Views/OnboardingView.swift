@@ -52,6 +52,8 @@ struct OnboardingActions {
     var cancelWristFeedback: (UUID) -> Void = { _ in }
     /// A finger knocked one of the welcome ring's beads: its index and how hard (0…1).
     var beadStruck: (Int, Double) -> Void = { _, _ in }
+    /// Leaves setup from any step; only the walkthrough offers it.
+    var close: (() -> Void)? = nil
 }
 
 struct OnboardingView: View {
@@ -116,7 +118,11 @@ struct OnboardingView: View {
             }
             .accessibilityElement().accessibilityLabel("Step \(step.rawValue + 1) of \(OnboardingStep.allCases.count)")
             Spacer()
-            Color.clear.frame(width: Metric.tap, height: Metric.tap)
+            if let close = actions.close {
+                IconButton(.x, action: close).accessibilityLabel("Close")
+            } else {
+                Color.clear.frame(width: Metric.tap, height: Metric.tap)
+            }
         }
         .padding(.horizontal, 8).frame(height: 52)
     }
@@ -492,3 +498,76 @@ struct OnboardingFlow: View {
         }
     }
 }
+
+/// Setup played from start to finish with a pretend band, to see, hear and feel every step.
+/// The band is found, connects and taps by itself; nothing reaches the real band or its
+/// settings, apart from the light tap it gets when the test passes.
+struct OnboardingWalkthrough: View {
+    var done: () -> Void
+    @State private var step = OnboardingStep.welcome
+    @State private var devices: [BandDevice] = []
+    @State private var working = false
+    @State private var connected = false
+    @State private var gesture: BandGesture?
+    @State private var hand = HandSetting(confirmed: .left)
+    @Environment(\.scenePhase) private var scenePhase
+
+    private var cues: OnboardingCues { .shared }
+
+    var body: some View {
+        OnboardingView(step: step, context: context, actions: actions)
+            .task(id: step) { try? await play() }
+            .onAppear { cues.setActive(scenePhase == .active) }
+            .onChange(of: scenePhase) { _, phase in cues.setActive(phase == .active) }
+            .onDisappear { cues.setActive(false) }
+    }
+
+    private var context: OnboardingContext {
+        OnboardingContext(bluetooth: .notAsked, devices: devices, searching: step == .pick && devices.isEmpty,
+                          working: working, phase: connected ? .connected : .connecting,
+                          gesture: gesture, testPassed: gesture != nil, handSetting: hand, canChangeHand: true)
+    }
+
+    private var actions: OnboardingActions {
+        OnboardingActions(
+            next: { move(1) }, back: { move(-1) }, allowBluetooth: { move(1) },
+            choose: { _ in step = .signIn },
+            signIn: {
+                working = true
+                Task {
+                    try? await Task.sleep(for: .seconds(1.6))
+                    if step == .signIn { step = .test }
+                }
+            },
+            finish: done,
+            setHand: { wrist in
+                guard hand.change(to: wrist) else { return }
+                Task {
+                    try? await Task.sleep(for: .seconds(0.6))
+                    if hand.wrote() { _ = hand.received(wrist) }
+                }
+            },
+            beadStruck: cues.bead, close: done)
+    }
+
+    private func move(_ by: Int) {
+        if let next = OnboardingStep(rawValue: step.rawValue + by) { step = next }
+    }
+
+    /// What the band would do on the step now showing.
+    private func play() async throws {
+        devices = []; working = false; connected = false; gesture = nil
+        switch step {
+        case .pick:
+            try await Task.sleep(for: .seconds(1.4))
+            devices = [BandDevice(id: UUID(), name: "Meta Neural Band", rssi: -48)]; cues.found()
+        case .test:
+            try await Task.sleep(for: .seconds(1.8))
+            connected = true; cues.connected()
+            try await Task.sleep(for: .seconds(2.6))
+            gesture = BandGesture(id: 1, kind: .tap, finger: 2, at: Date()); cues.passed()
+        default: break
+        }
+    }
+}
+
