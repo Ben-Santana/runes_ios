@@ -5,7 +5,7 @@
 //       RunesIOS/Persistence/IdentityStore.swift RunesIOS/Mappings/MappingModel.swift RunesIOS/Mappings/AirGesture.swift RunesIOS/Mappings/MappingEngine.swift \
 //       RunesIOS/Mappings/TriggerRules.swift RunesIOS/Mappings/CommandTrigger.swift \
 //       Shared/ProfileIcon.swift Shared/SVGPath.swift Shared/LucideData.swift \
-//       RunesIOS/Cook/RecipeParser.swift RunesIOS/Cook/CookModel.swift Tests/CookTests.swift -o /private/tmp/runes-cook-tests && /private/tmp/runes-cook-tests
+//       RunesIOS/Cook/RecipeParser.swift RunesIOS/Cook/Ingredients.swift RunesIOS/Cook/CookModel.swift Tests/CookTests.swift -o /private/tmp/runes-cook-tests && /private/tmp/runes-cook-tests
 import Foundation
 
 @main
@@ -150,6 +150,49 @@ struct CookTests {
         precondition(RecipeParser.link(in: "  https://example.com/recipes/soup \n")?.host() == "example.com")
         precondition(RecipeParser.link(in: "Soup https://example.com") == nil && RecipeParser.link(in: "example.com") == nil)
         precondition(RecipeParser.link(in: "ftp://example.com/soup") == nil)
+
+        // MARK: Amounts
+        func line(_ text: String) -> [String?] { let l = Ingredients.split(text); return [l.amount, l.name, l.short] }
+        precondition(line("400 g spaghetti") == ["400 g", "spaghetti", "spaghetti"])
+        precondition(line("4 cloves garlic, sliced") == ["4 cloves", "garlic, sliced", "garlic"])
+        precondition(line("½ cup low-sodium vegetable broth") == ["½ cup", "low-sodium vegetable broth", "low-sodium vegetable broth"])
+        precondition(line("1 large lemon, zest and 2 tbsp juice") == ["1", "large lemon, zest and 2 tbsp juice", "large lemon"])
+        precondition(line("Parmesan, to serve") == [nil, "Parmesan, to serve", "Parmesan"])
+        precondition(line("2% milk") == [nil, "2% milk", "2% milk"] && line("16 oz 2% cottage cheese")[0] == "16 oz")
+        precondition(line("1 cup of flour") == ["1 cup", "flour", "flour"] && line("2-3 tbsp oil")[0] == "2-3 tbsp" && line("1 1/2 cups sugar")[0] == "1 1/2 cups")
+        precondition(line("400g tin tomatoes")[0] == "400g" && line("2 garlic cloves") == ["2", "garlic cloves", "garlic cloves"])
+        func scaled(_ text: String, _ factor: Double) -> String { Ingredients.scale(text, by: factor) }
+        precondition(scaled("400 g spaghetti", 2) == "800 g spaghetti" && scaled("800 g tinned whole tomatoes", 1.5) == "1200 g tinned whole tomatoes")
+        precondition(scaled("4 cloves garlic, sliced", 0.25) == "1 clove garlic, sliced" && scaled("1 pinch chilli flakes", 2) == "2 pinches chilli flakes")
+        precondition(scaled("½ cup broth", 3) == "1½ cups broth" && scaled("1 tsp salt", 0.5) == "½ tsp salt" && scaled("2-3 tbsp oil", 2) == "4-6 tbsp oil")
+        precondition(scaled("1 large lemon, zest and 2 tbsp juice", 2) == "2 large lemon, zest and 4 tbsp juice", scaled("1 large lemon, zest and 2 tbsp juice", 2))
+        precondition(scaled("Parmesan, to serve", 2) == "Parmesan, to serve" && scaled("1 400 g tin tomatoes", 2) == "2 400 g tin tomatoes")
+        precondition(scaled("1.5 kg potatoes", 2) == "3 kg potatoes" && scaled("1 cup rice", 1.0 / 3) == "⅓ cup rice" && scaled("3 eggs", 1) == "3 eggs")
+        precondition(Ingredients.servings(in: "Serves 4") == 4 && Ingredients.servings(in: "Makes 12 cookies") == 12 && Ingredients.servings(in: "Serves 4-6") == 4)
+        precondition(Ingredients.servings(in: nil) == nil && Ingredients.servings(in: "Serves a crowd") == nil)
+        let doubled = Recipe.starter.scaled(to: 8)
+        precondition(doubled.yield == "Serves 8" && doubled.ingredients[0] == "800 g spaghetti" && doubled.ingredients[7] == "Parmesan, to serve")
+        precondition(doubled.id == Recipe.starter.id && doubled.timerCount == 4 && doubled.steps[2] == Recipe.starter.steps[2], "Times never scale")
+        precondition(Recipe.starter.scaled(to: 4) == Recipe.starter && Recipe(title: "x", ingredients: ["1 egg"], steps: ["Fry."]).scaled(to: 3).ingredients == ["1 egg"])
+
+        // What a step uses: the amounts it doesn't state itself, in the order it names them.
+        func uses(_ recipe: Recipe, _ step: Int) -> [String] { recipe.uses(step: step).map(\.text) }
+        precondition(uses(.starter, 0) == [] && uses(.starter, 4) == [])
+        precondition(uses(.starter, 1) == ["3 tbsp olive oil", "4 cloves garlic", "1 pinch chilli flakes"], "\(uses(.starter, 1))")
+        precondition(uses(.starter, 2) == ["800 g tinned whole tomatoes", "1 tsp salt"], "\(uses(.starter, 2))")
+        precondition(uses(.starter, 3) == ["400 g spaghetti"] && uses(.starter, 5) == ["1 handful basil leaves"], "\(uses(.starter, 5))")
+        precondition(uses(.salmonPasta, 0) == ["1 large lemon", "1 lb salmon"], "\(uses(.salmonPasta, 0))")
+        precondition(uses(.salmonPasta, 1) == ["8 oz protein penne", "12 oz frozen broccoli florets"], "\(uses(.salmonPasta, 1))")
+        precondition(uses(.salmonPasta, 2) == ["8 oz sliced mushrooms", "1 cup frozen green peas", "5 oz baby spinach", "1 tsp Italian seasoning"], "\(uses(.salmonPasta, 2))")
+        precondition(uses(.salmonPasta, 3) == ["16 oz 2% cottage cheese", "25 g Parmesan", "½ cup low-sodium vegetable broth"], "\(uses(.salmonPasta, 3))")
+        // Scaled, a step's own amounts follow; its times and temperatures don't.
+        let big = Recipe.salmonPasta.scaled(by: 2)
+        precondition(big.steps[0].hasPrefix("Mix 2 tsp smoked paprika, 2 tsp garlic powder, 1 tsp salt, 1 tsp black pepper") && big.steps[0].contains("390°F for 8–12 minutes"), big.steps[0])
+        precondition(big.steps[2].contains("Heat 2 tsp olive oil") && big.steps[2].contains("Add 6 minced garlic cloves") && big.steps[2].contains("6–8 minutes"), big.steps[2])
+        precondition(big.steps[1].contains("at least 2 cups of the pasta water") && big.steps[1].contains("last 3 minutes"), big.steps[1])
+        precondition(big.steps[3].contains("4 garlic cloves, 4 tbsp lemon juice"), big.steps[3])
+        precondition(big.ingredients[0] == "2 lb salmon" && big.ingredients[9] == "10 cloves garlic" && big.yield == "Serves 8")
+        precondition(big.notes == Recipe.salmonPasta.notes && (0..<6).map { big.durations(step: $0).map(\.seconds) } == (0..<6).map { Recipe.salmonPasta.durations(step: $0).map(\.seconds) })
 
         // MARK: A web page
         let html = """

@@ -98,14 +98,15 @@ enum DurationFinder {
         "twelve": 12, "fifteen": 15, "twenty": 20, "thirty": 30, "forty": 40, "forty-five": 45, "forty five": 45, "sixty": 60, "ninety": 90,
         "half a": 0.5, "half an": 0.5, "a few": 3, "a couple of": 2,
     ]
-    private static let fractions: [Character: Double] = ["½": 0.5, "¼": 0.25, "¾": 0.75, "⅓": 1.0 / 3, "⅔": 2.0 / 3]
+    private static let fractions: [Character: Double] = ["½": 0.5, "¼": 0.25, "¾": 0.75, "⅓": 1.0 / 3, "⅔": 2.0 / 3, "⅛": 0.125]
 
     /// Seconds in one of a unit, by its first letter.
     private static func scale(_ unit: String) -> Int {
         switch unit.lowercased().first { case "h": 3600; case "m": 60; default: 1 }
     }
 
-    private static func value(_ text: String) -> Double? {
+    /// "1½", "1 1/2", "half a", "2,5" as a number.
+    static func value(_ text: String) -> Double? {
         let t = text.lowercased().trimmingCharacters(in: .whitespaces)
         if let word = words[t] { return word }
         if t.hasSuffix(" and a half") {
