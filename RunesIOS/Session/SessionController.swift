@@ -128,20 +128,8 @@ final class SessionController: ObservableObject {
         CookStore.shared.onDial = { dial.set($0) }
         CookStore.shared.onLive = { ScoreAudio.shared.setLive($0, for: "cook") }
         CookStore.shared.onCue = { cue in
-            let (voice, pitch): (SoundVoice, Double) = switch cue {
-            case .step: (.tick, 392)
-            case .start: (.pip, 523)
-            case .pause: (.soft, 330)
-            case .extend: (.pip, 659)
-            case .stop: (.soft, 392)
-            case .reset: (.tap, 262)
-            case .select: (.tick, 523)
-            case .ring: (.bell, 784)
-            case .soon: (.soft, 523)
-            case .finish: (.resolve, 392)
-            case .nothing: (.tap, 196)
-            }
-            ScoreAudio.shared.cue(voice, pitch: pitch, volume: 0.9)
+            let sound = cue.sound
+            ScoreAudio.shared.cue(sound.voice, pitch: sound.pitch, volume: 0.9)
         }
         CaptureStore.shared.onReserve = { [weak self] in self?.reserve($0, for: .capture) }
         ReelsStore.shared.onReserve = { [weak self] in self?.reserve($0, for: .reels) }

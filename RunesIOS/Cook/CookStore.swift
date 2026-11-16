@@ -3,7 +3,48 @@ import UIKit
 import UserNotifications
 
 /// The sound for something that happened while cooking; the session turns it into a voice.
-enum CookCue: Sendable { case step, start, pause, extend, stop, reset, select, ring, soon, finish, nothing }
+enum CookCue: Sendable {
+    case step, start, pause, extend, stop, reset, select, ring, soon, finish, nothing
+    /// The next sentence of the same step.
+    case beat
+    /// An ingredient ticked off, or back on.
+    case tick, untick
+    /// The dial taken hold of, and each step of it, counted from nothing.
+    case dialOpen, dial(Int)
+    /// Servings changed.
+    case serve
+    /// A question: listening, answered, not answered.
+    case listen, answer, sorry
+
+    /// The voice and pitch it is played with, from the sounds the rest of Runes uses.
+    /// Turning the dial climbs a five-note scale, so a longer time is heard as a higher note.
+    var sound: (voice: SoundVoice, pitch: Double) {
+        switch self {
+        case .step: return (.wood, 392)
+        case .beat: return (.tick, 523)
+        case .start: return (.pip, 523)
+        case .pause: return (.soft, 330)
+        case .extend: return (.pip, 659)
+        case .stop: return (.soft, 392)
+        case .reset: return (.droplet, 330)
+        case .select: return (.tick, 440)
+        case .ring: return (.bell, 784)
+        case .soon: return (.soft, 523)
+        case .finish: return (.resolve, 392)
+        case .nothing: return (.tap, 196)
+        case .tick: return (.pop, 523)
+        case .untick: return (.tap, 330)
+        case .dialOpen: return (.lift, 392)
+        case .dial(let steps):
+            let note = max(0, steps) % 15
+            return (.pluck, 262 * pow(2, Double([0, 2, 4, 7, 9][note % 5]) / 12 + Double(note / 5)))
+        case .serve: return (.marimba, 392)
+        case .listen: return (.blip, 659)
+        case .answer: return (.glass, 784)
+        case .sorry: return (.soft, 262)
+        }
+    }
+}
 
 /// How the recipe list and the cooking screen are drawn. Temporary: each is being tried
 /// on the phone, and the ones not chosen go.
@@ -191,6 +232,10 @@ final class CookStore: ObservableObject {
         decider.configure(controls.mappings)
         assistant.speaks = spoken
         assistant.recipe = { [weak self] in self?.session }
+        assistant.onResult = { [weak self] answered in
+            guard let self, self.sounds else { return }
+            self.onCue?(answered ? .answer : .sorry)
+        }
         NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.woke() }
         }
@@ -321,7 +366,8 @@ final class CookStore: ObservableObject {
         guard session != nil, !previewOnly else { return }
         if assistant.isListening { assistant.finish() } else {
             assistant.listen()
-            if buzz != .off { onBuzz?(.tap) }
+            if sounds { onCue?(.listen) }
+            if buzz != .off { wrist([.tap]) }
         }
     }
 
@@ -355,6 +401,7 @@ final class CookStore: ObservableObject {
         dialTime = DialTime(); servingTurn = 0
         dialing = session.gathering ? session.recipe.servings : session.dialSeconds(at: Date())
         onDial?(true)
+        if sounds { onCue?(.dialOpen) }
         if buzz != .off { onBuzz?(.tap) }
     }
 
@@ -373,7 +420,9 @@ final class CookStore: ObservableObject {
         }
         guard next != showing else { return }
         dialing = next
-        if sounds { onCue?(.select) }
+        if sounds { onCue?(session?.gathering == true ? .dial(next * 2) : .dial(DialTime.steps(for: next))) }
+        // A tap on the wrist for each whole minute passed, like the detents of a real dial.
+        if buzz != .off, session?.gathering != true, next % 60 == 0 { onBuzz?(.tap) }
     }
 
     private func endDial() {
@@ -382,7 +431,9 @@ final class CookStore: ObservableObject {
         onDial?(false)
         guard var current = session else { return }
         if current.gathering {
+            let before = current.recipe.servings
             current.serve(seconds); session = current
+            if current.recipe.servings != before, sounds { onCue?(.serve) }
             changed()
             return
         }
@@ -468,6 +519,7 @@ final class CookStore: ObservableObject {
     func toggle(ingredient index: Int) {
         guard var current = session else { return }
         current.toggle(ingredient: index); session = current
+        if sounds, !previewOnly { onCue?(current.ready.contains(index) ? .tick : .untick) }
         persist()
     }
 
@@ -478,7 +530,10 @@ final class CookStore: ObservableObject {
         let cue: CookCue
         switch event {
         case .step:
-            cue = .step; alert = LiveAlert(title: session.position, body: session.gathering ? session.recipe.title : session.text)
+            // A new step sounds different from the next sentence of the same one.
+            cue = session.step == heard && !session.gathering ? .beat : .step
+            heard = session.gathering ? -1 : session.step
+            alert = LiveAlert(title: session.position, body: session.gathering ? session.recipe.title : session.text)
             if reads, !previewOnly, !session.gathering { assistant.read("Step \(session.step + 1). \(session.text)") }
         case .finished:
             cue = .finish; alert = LiveAlert(title: "Recipe finished", body: session.recipe.title)
@@ -492,7 +547,8 @@ final class CookStore: ObservableObject {
         case .reset:
             cue = .reset; alert = LiveAlert(title: "Timer reset", body: gone.map { "\($0.label) · step \($0.step + 1)" } ?? session.position)
         case .selected(let position):
-            cue = .select
+            // Getting ready, the same event is a tick: the count of things out says which way.
+            cue = !session.gathering || session.ready.count == out ? .select : session.ready.count > out ? .tick : .untick
             let body: String
             if let other = session.pickedTimer {
                 body = "\(other.label) · step \(other.step + 1)"
@@ -509,7 +565,9 @@ final class CookStore: ObservableObject {
             cue = .nothing
         }
         if sounds, !previewOnly { onCue?(cue) }
-        if buzz == .all, let event { wrist([event.wrist]) }
+        out = session.ready.count
+        // The wrist is told about timers always, and about pages too when set to everything.
+        if let event, buzz == .all || (buzz == .timers && event.isTimer) { wrist([event.wrist]) }
         // With Runes open the screen shows the change; an alert is for a locked phone.
         changed(alert: UIApplication.shared.applicationState == .active ? nil : alert)
     }
@@ -523,6 +581,11 @@ final class CookStore: ObservableObject {
     }
 
     // MARK: Timers
+
+    /// The step last announced and the number of ingredients out, to tell a new step from
+    /// a new sentence and a tick from a move.
+    private var heard = -1
+    private var out = 0
 
     /// Timers already given their minute's notice.
     private var warned: Set<String> = []

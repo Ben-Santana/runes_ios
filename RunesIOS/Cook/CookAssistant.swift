@@ -21,6 +21,8 @@ final class CookAssistant: NSObject, ObservableObject, AVSpeechSynthesizerDelega
     @Published private(set) var level: Float = 0
     /// Whether an answer is said aloud as well as shown.
     var speaks = true
+    /// Told once when an answer begins to arrive, or when there will be none.
+    var onResult: ((_ answered: Bool) -> Void)?
     /// The recipe being cooked when the answer is worked out.
     var recipe: () -> CookSession? = { nil }
 
@@ -129,6 +131,7 @@ final class CookAssistant: NSObject, ObservableObject, AVSpeechSynthesizerDelega
             var said = ""
             for try await part in model.streamResponse(to: CookAsk.context(session) + "\n\nQuestion: " + question) {
                 guard !Task.isCancelled else { return }
+                if said.isEmpty, !part.content.isEmpty { onResult?(true) }
                 said = part.content
                 if !said.isEmpty { phase = .answered(question: question, answer: said) }
             }
@@ -145,6 +148,7 @@ final class CookAssistant: NSObject, ObservableObject, AVSpeechSynthesizerDelega
     }
 
     private func fail(_ message: String) {
+        onResult?(false)
         phase = .failed(message)
         clear(after: 8)
     }

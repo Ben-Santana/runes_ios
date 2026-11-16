@@ -158,6 +158,14 @@ enum CookEvent: Equatable, Sendable {
 }
 
 extension CookEvent {
+    /// Whether it is about a timer, as against a page or a selection.
+    var isTimer: Bool {
+        switch self {
+        case .started, .paused, .resumed, .extended, .reset, .stopped: true
+        case .step, .finished, .selected: false
+        }
+    }
+
     /// How it feels on the wrist, so what happened is known without looking: a tap for a
     /// page, a rise for a timer starting, a fade for one pausing, a flutter for one cleared.
     var wrist: BandBuzz {

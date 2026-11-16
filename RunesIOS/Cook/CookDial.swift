@@ -41,6 +41,11 @@ struct WristDial {
 }
 
 extension DialTime {
+    /// Steps of the dial from nothing to a time: what the ring has turned and the note it sounds.
+    static func steps(for seconds: Int) -> Int {
+        seconds < 120 ? seconds / 10 : seconds < 900 ? 12 + (seconds - 120) / 30 : 38 + (seconds - 900) / 60
+    }
+
     /// A time as buzzes on the wrist, for asking how long is left without looking: a long
     /// one for every five minutes, then a tap for each minute over. Part of a minute counts as one.
     static func count(_ seconds: Int) -> [BandBuzz] {
