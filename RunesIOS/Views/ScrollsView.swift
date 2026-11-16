@@ -224,7 +224,8 @@ struct SetPage: View {
                               },
                               release: release,
                               reorder: { store.reorder($0, in: setID) },
-                              floor: zonesTop) { choose($0, in: notes) }
+                              floor: zonesTop,
+                              delete: { store.delete($0) }) { choose($0, in: notes) }
             if reading, let index { reader(notes, index).transition(.move(edge: .trailing)) }
             ScribeDock(trigger: store.controls.trigger, recordingSince: store.shownSince, meter: store.meter, showsCombo: false) { store.toggle() }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
@@ -290,6 +291,7 @@ struct SetPage: View {
 
     /// What can be done to one inscription, from the menu at the top or by holding its bead.
     @ViewBuilder private func actions(_ id: String, confirmDelete: Bool) -> some View {
+        if confirmDelete, let note = store.note(id) { ShareChoices(store: store, note: note) }
         Button { reruning = NoteRef(id: id) } label: {
             Label { Text("Change rune") } icon: { Lucide.circleDot.image(size: 18) }
         }
@@ -470,12 +472,12 @@ private struct InscriptionPane: View {
     @Binding var atTop: Bool
     @Binding var atBottom: Bool
     @State private var title = ""
-    @State private var text = ""
     @State private var loaded = false
     @State private var writing = false
+    @StateObject private var model = InscriptionText()
     @FocusState private var editing: Field?
 
-    private enum Field { case title, text }
+    private enum Field { case title }
     private struct Edges: Equatable { var top: Bool; var bottom: Bool }
     private var naming: Bool { store.naming.contains(note.id) }
 
@@ -500,7 +502,7 @@ private struct InscriptionPane: View {
                         .font(.caption).foregroundStyle(Color.muted)
                     VStack(alignment: .leading, spacing: 10) {
                         words
-                        FocusRule(active: editing == .text)
+                        FocusRule(active: model.focused)
                     }
                     .padding(.top, 10)
                 }
@@ -516,15 +518,19 @@ private struct InscriptionPane: View {
                   bottom: geo.contentOffset.y + geo.containerSize.height >= geo.contentSize.height + geo.contentInsets.bottom - 4)
         } action: { _, edges in atTop = edges.top; atBottom = edges.bottom }
         .toolbar {
-            if editing != nil {
-                ToolbarItemGroup(placement: .keyboard) { Spacer(); Button("Done") { editing = nil }.font(.label) }
+            if editing != nil || model.focused {
+                ToolbarItemGroup(placement: .keyboard) { Spacer(); Button("Done") { editing = nil; model.resign() }.font(.label) }
             }
         }
-        .onAppear { if !loaded { title = note.title ?? ""; text = note.text; loaded = true } }
+        .onAppear { if !loaded { title = note.title ?? ""; model.load(note.text, marks: note.marks); loaded = true } }
         .onDisappear(perform: save)
-        .onChange(of: editing) { _, now in if now == nil { save(); writing = false } }
+        .onChange(of: editing) { _, now in if now == nil { save() } }
+        .onChange(of: model.focused) { _, now in if !now { save(); writing = false } }
+        // While the recording plays (or is paused part way), its words ink as they are said.
+        .onChange(of: player.progress) { follow() }
+        .onChange(of: player.playing) { follow() }
         // Words and a title that arrive while it is open appear, unless they are being edited.
-        .onChange(of: note.text) { _, new in if editing != .text { text = new } }
+        .onChange(of: note.text) { _, new in if !model.focused, new != model.saved.text { model.load(note.text, marks: note.marks) } }
         .onChange(of: note.title) { _, new in if let new, editing != .title { title = new } }
     }
 
@@ -532,30 +538,34 @@ private struct InscriptionPane: View {
     /// swipes for its own scrolling.
     @ViewBuilder private var words: some View {
         let placeholder = note.state == .transcribing ? "Inscribing…" : "No words yet. Type them here."
-        if writing {
-            TextField(placeholder, text: $text, axis: .vertical)
-                .font(.geist(19, relativeTo: .title3)).lineSpacing(6)
-                .focused($editing, equals: .text)
-                .onAppear { editing = .text }
-                .accessibilityLabel("Inscription text")
-        } else {
-            Text(text.isEmpty ? placeholder : text)
-                .font(.geist(19, relativeTo: .title3)).lineSpacing(6)
-                .foregroundStyle(text.isEmpty ? Color.muted : Color.ink)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-                .onTapGesture { writing = true }
-                .breathing(note.state == .transcribing && text.isEmpty)
-                .accessibilityLabel("Inscription text")
-                .accessibilityValue(text)
-                .accessibilityAddTraits(.isButton)
-                .accessibilityHint("Edits the words")
-        }
+        InscriptionTextView(model: model, editable: writing)
+            .overlay(alignment: .topLeading) {
+                if model.isEmpty {
+                    Text(placeholder).font(.geist(19, relativeTo: .title3)).foregroundStyle(Color.muted)
+                        .breathing(note.state == .transcribing)
+                        .allowsHitTesting(false)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture { if !writing { writing = true } }
+            .onChange(of: writing) { _, now in if now { model.focus() } }
+            .accessibilityElement(children: writing ? .contain : .ignore)
+            .accessibilityLabel(writing ? "" : "Inscription text")
+            .accessibilityValue(writing ? "" : model.saved.text)
+            .accessibilityAddTraits(writing ? [] : .isButton)
+            .accessibilityHint(writing ? "" : "Edits the words")
+    }
+
+    private func follow() {
+        let on = player.source == url && (player.playing || player.progress > 0)
+        model.follow(on ? player.progress * note.duration : nil, spoken: note.spoken, duration: note.duration)
     }
 
     private func save() {
         guard store.note(note.id) != nil else { return }
-        store.setText(text.trimmingCharacters(in: .whitespacesAndNewlines), for: note.id)
+        let saved = model.saved
+        store.setText(saved.text, marks: saved.marks, for: note.id)
         store.setTitle(title, for: note.id)
     }
 }
@@ -564,6 +574,9 @@ private struct InscriptionPane: View {
 /// While nothing is being read the string hangs nearer the middle with each inscription's title
 /// and first words beside its bead, and a light wind crosses it; the beads only drift a little.
 /// While one is read it steps aside to the left edge and the air goes still.
+/// Each row's swipe, by inscription.
+private final class SwipedRows { var x: [String: CGFloat] = [:] }
+
 struct InscriptionString: View {
     let notes: [CaptureNote]
     let selected: Int?
@@ -581,7 +594,11 @@ struct InscriptionString: View {
     var reorder: ([String]) -> Void = { _ in }
     /// Where on the screen the page's own drop zones begin; the page doesn't scroll over them.
     var floor: CGFloat = .infinity
+    /// A bead swiped off its row; nil leaves the rows unswipeable.
+    var delete: ((String) -> Void)? = nil
     let select: (Int) -> Void
+    /// How far each row is swiped, read by the drawing every frame rather than redrawing the page.
+    @State private var swiped = SwipedRows()
     @State private var dragID: String?
     @State private var dragY = 0.0
     /// Past the string's end a lifted bead comes off it and follows the finger anywhere.
@@ -641,6 +658,8 @@ struct InscriptionString: View {
                                     if let point { dragPoint = point } else { dragMoved = true }
                                     letGo(note.id)
                                 }))
+                                .swipeToDelete(enabled: delete != nil && !reading && dragID == nil,
+                                               offset: { [swiped] in swiped.x[note.id] = $0 }) { delete?(note.id) }
                                 .id(note.id)
                                 .accessibilityElement(children: .ignore)
                                 .accessibilityLabel("\(note.heading). \(note.summary)")
@@ -804,6 +823,8 @@ struct InscriptionString: View {
             let drop = (1 - min(1, grown(index))) * -18
             return CGPoint(x: x + sway, y: Self.lead + Double(index) * Self.pitch + Self.pitch / 2 + drop)
         }
+        // A swiped row takes its bead with it, still on the string, which bends out after it.
+        for (index, note) in notes.enumerated() { centres[index].x += min(0, swiped.x[note.id] ?? 0) }
 
         // A lifted bead follows the finger, off the string.
         let liftedAt = dragID.flatMap { id in notes.firstIndex { $0.id == id } }

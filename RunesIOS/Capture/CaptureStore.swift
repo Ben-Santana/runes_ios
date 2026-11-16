@@ -95,6 +95,12 @@ final class CaptureStore: ObservableObject {
     private var recordingInto: String?
 
     private let recorder = CaptureRecorder()
+    private let live = CaptureLiveWords()
+    /// Shows the recording on the Lock Screen, or takes it away with nil.
+    var onActivity: ((CaptureActivityState?) -> Void)?
+    private var activity: CaptureActivityState?
+    private var activitySent = ContinuousClock.now
+    private var activityTask: Task<Void, Never>?
     private let folder: URL
     private var previewOnly = false
     private var limit: Task<Void, Never>?
@@ -128,6 +134,8 @@ final class CaptureStore: ObservableObject {
             Task { @MainActor in meter.level = value }
         }
         recorder.onRouteChange = { [weak self] in self?.routeChanged() }
+        recorder.onKept = { [live] in live.feed($0) }
+        live.onWords = { [weak self] in self?.heard($0) }
         let center = NotificationCenter.default
         center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
             let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
@@ -201,6 +209,9 @@ final class CaptureStore: ObservableObject {
         }
         problem = nil
         recordingSince = Date()
+        activity = CaptureActivityState(since: recordingSince ?? Date())
+        onActivity?(activity)
+        live.start()
         if stopAsked { finish(); return true }
         cue(.start)
         limit?.cancel()
@@ -217,6 +228,9 @@ final class CaptureStore: ObservableObject {
         limit?.cancel(); limit = nil
         let clip = recorder.end()
         recordingSince = nil
+        live.stop()
+        activityTask?.cancel(); activityTask = nil
+        if activity != nil { activity = nil; onActivity?(nil) }
         shownSince = nil
         endRelease = nil
         meter.level = 0
@@ -236,6 +250,22 @@ final class CaptureStore: ObservableObject {
         persist()
         cue(.saved, duration: clip.duration)
         transcribe(note.id)
+    }
+
+    /// New words while recording go to the Lock Screen at most once a second, to keep
+    /// within what iOS lets an activity update.
+    private func heard(_ words: String) {
+        guard activity != nil else { return }
+        activity?.words = CaptureRules.latest(words)
+        guard activityTask == nil else { return }
+        let wait = max(.zero, .seconds(1) - (ContinuousClock.now - activitySent))
+        activityTask = Task { [weak self] in
+            try? await Task.sleep(for: wait)
+            guard let self, !Task.isCancelled, let activity = self.activity else { return }
+            self.activityTask = nil
+            self.activitySent = .now
+            self.onActivity?(activity)
+        }
     }
 
     /// Takes the band's gestures that belong to the trigger while Capture can record, and
@@ -474,8 +504,11 @@ final class CaptureStore: ObservableObject {
         let url = folder.appendingPathComponent(notes[index].file)
         let background = UIApplication.shared.beginBackgroundTask(withName: "Capture transcription")
         Task {
-            var text = "", state = CaptureNote.State.done
-            do { text = try await CaptureTranscriber.transcribe(url) }
+            var text = "", spoken: [SpokenWord] = [], state = CaptureNote.State.done
+            do {
+                let transcript = try await CaptureTranscriber.transcribe(url)
+                text = transcript.text; spoken = transcript.words
+            }
             catch CaptureTranscriber.Failure.unsupported { state = .unavailable }
             catch {
                 // In the background iOS may refuse; try once more when Runes is opened.
@@ -487,7 +520,7 @@ final class CaptureStore: ObservableObject {
                 #endif
             }
             if let index = notes.firstIndex(where: { $0.id == id }) {
-                notes[index].text = text; notes[index].state = state
+                notes[index].text = text; notes[index].marks = nil; notes[index].spoken = spoken.isEmpty ? nil : spoken; notes[index].state = state
                 persist()
                 if !text.isEmpty, notes[index].title == nil { scribe(id, titling: true) }
             }
@@ -664,9 +697,11 @@ final class CaptureStore: ObservableObject {
     func note(_ id: String) -> CaptureNote? { notes.first { $0.id == id } }
     func url(for note: CaptureNote) -> URL { folder.appendingPathComponent(note.file) }
 
-    func setText(_ text: String, for id: String) {
-        guard let index = notes.firstIndex(where: { $0.id == id }), notes[index].text != text else { return }
+    func setText(_ text: String, marks: [TextMark]?, for id: String) {
+        let marks = marks?.isEmpty == true ? nil : marks
+        guard let index = notes.firstIndex(where: { $0.id == id }), notes[index].text != text || notes[index].marks != marks else { return }
         notes[index].text = text
+        notes[index].marks = marks
         if notes[index].state != .transcribing { notes[index].state = .done }
         persist()
     }

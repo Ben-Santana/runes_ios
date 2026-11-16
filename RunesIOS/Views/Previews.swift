@@ -83,7 +83,9 @@ extension PreviewFixtures {
 struct SnapshotGallery: View {
     let name: String
     var body: some View {
-        if let home = PreviewFixtures.home.first(where: { "home-\($0.0)" == name }) {
+        if name == "home-cycle" {
+            HomeCycle()
+        } else if let home = PreviewFixtures.home.first(where: { "home-\($0.0)" == name }) {
             HomeView(status: home.1)
         } else if let step = PreviewFixtures.onboarding.first(where: { "onboarding-\($0.0)" == name }) {
             OnboardingView(step: step.1, context: step.2)
@@ -94,7 +96,7 @@ struct SnapshotGallery: View {
         } else if name.hasPrefix("wrist") {
             WristPreview(name: name)
         } else if name == "settings" {
-            SettingsView(values: SettingsValues(battery: 82, handSetting: HandSetting(confirmed: .left), version: "0.2.0 (2)")) { EmptyView() }
+            SettingsView(values: SettingsValues(battery: 82, handSetting: HandSetting(confirmed: .left), linked: true, version: "0.2.0 (2)")) { EmptyView() }
         } else if name == "runes-lab" {
             NavigationStack { RunesLabScreen(store: PreviewFixtures.mappings) }
         } else if name == "mappings" {
@@ -152,6 +154,17 @@ struct SnapshotGallery: View {
             ScrollEditor(mode: .edit(PreviewFixtures.scrolls[1]), scribe: true) { _, _, _ in }
         } else if name == "capture-note" {
             NavigationStack { NoteScreen(store: PreviewFixtures.capture(), noteID: "note-34") }
+        } else if name == "activity-capture" {
+            // Raises the Live Activity as a recording would; lock the phone to see it.
+            Text("Recording activity raised").task {
+                let live = LiveActivityController()
+                live.show(capture: CaptureActivityState(since: Date().addingTimeInterval(-14),
+                                                        words: CaptureRules.latest("Ask Maya whether the relay test can move to Thursday, and send her the locked-phone numbers first")))
+                try? await Task.sleep(for: .seconds(600))
+                _ = live
+            }
+        } else if name == "capture-note-empty" || name == "capture-note-styled" {
+            NavigationStack { NoteScreen(store: PreviewFixtures.formatted(empty: name == "capture-note-empty"), noteID: "note-34") }
         } else if name == "capture-note-loose" {
             NavigationStack { NoteScreen(store: PreviewFixtures.capture(), noteID: "note-1800") }
         } else if name == "capture-settings" {
@@ -267,3 +280,18 @@ private struct WristPreview: View {
                                                MacLinks.Mac(id: UUID(), name: "MacBook Air", state: .notNearby)])) { EmptyView() }
 }
 #endif
+
+/// The home screen stepping through connected, connecting and disconnected, for watching the corner change.
+private struct HomeCycle: View {
+    @State private var index = 0
+    private let states = [PreviewFixtures.home[2].1, PreviewFixtures.home[1].1, PreviewFixtures.home[3].1]
+    var body: some View {
+        HomeView(status: states[index])
+            .task {
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(2.5))
+                    index = (index + 1) % states.count
+                }
+            }
+    }
+}

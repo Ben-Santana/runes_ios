@@ -85,6 +85,8 @@ enum RelayWire {
         case lease = 0x15, ping = 0x16, pong = 0x17, bye = 0x18
         /// Either direction: one chunk of the sender's gesture assignments. Older peers ignore this kind.
         case bindings = 0x19
+        /// Mac to phone: vibrate the band with a named pattern (`BandBuzz` raw value). Older phones ignore it.
+        case buzz = 0x1A
 
         var sealed: Bool { rawValue >= 0x10 }
     }
@@ -142,6 +144,8 @@ enum RelayWire {
         enum Band: UInt8, Sendable { case disconnected = 0, connecting = 1, streaming = 2 }
         var app: App
         var band: Band
+        /// The band's battery, 0–100, when the phone knows it. Sent as an optional trailing byte.
+        var battery: Int? = nil
         static let unknown = Self(app: .unknown, band: .disconnected)
     }
 
@@ -159,6 +163,7 @@ enum RelayWire {
         case pong(UInt16, PhoneState)
         case bye(ByeReason)
         case bindings(BindingsChunk)
+        case buzz(String)
     }
 
     // MARK: - Gesture assignments shared between the two apps
@@ -608,10 +613,16 @@ enum RelayWire {
         return UInt16(clamping: Int(max(0, (now - event.phoneUptime) * 1000).rounded()))
     }
 
-    private static func state(_ w: inout Writer, _ s: PhoneState) { w.u8(s.app.rawValue); w.u8(s.band.rawValue) }
+    private static func state(_ w: inout Writer, _ s: PhoneState) {
+        w.u8(s.app.rawValue); w.u8(s.band.rawValue)
+        if let battery = s.battery { w.u8(UInt8(clamping: min(100, max(0, battery)))) }
+    }
 
+    /// Always the last field of its message, so the battery byte is read only when present.
     private static func state(_ r: inout Reader) throws -> PhoneState {
-        PhoneState(app: PhoneState.App(rawValue: try r.u8()) ?? .unknown, band: PhoneState.Band(rawValue: try r.u8()) ?? .disconnected)
+        let app = PhoneState.App(rawValue: try r.u8()) ?? .unknown, band = PhoneState.Band(rawValue: try r.u8()) ?? .disconnected
+        let battery = r.remaining >= 1 ? Int(min(100, try r.u8())) : nil
+        return PhoneState(app: app, band: band, battery: battery)
     }
 
     static func encode(_ message: Message, now: TimeInterval) throws -> (Kind, Data) {
@@ -639,6 +650,9 @@ enum RelayWire {
             guard chunk.data.count <= bindingsChunkSize else { throw Failure.invalidPacket }
             w.u16(chunk.generation); w.u8(chunk.index); w.u8(chunk.count); w.bytes(chunk.data)
             return (.bindings, w.data)
+        case .buzz(let pattern):
+            w.text(pattern, max: 24)
+            return (.buzz, w.data)
         case .event(let event):
             w.u32(UInt32(truncatingIfNeeded: event.sequence)); w.u64(event.timestamp); w.u16(ageMilliseconds(event, now: now))
             switch event.kind {
@@ -678,6 +692,8 @@ enum RelayWire {
         case .bindings:
             let generation = try r.u16(), index = try r.u8(), count = try r.u8()
             message = .bindings(BindingsChunk(generation: generation, index: index, count: count, data: try r.bytes(r.remaining)))
+        case .buzz:
+            message = .buzz(try r.text())
         case .gesture, .gyro, .orientation:
             let sequence = UInt64(try r.u32()), timestamp = try r.u64()
             let age = TimeInterval(try r.u16()) / 1000

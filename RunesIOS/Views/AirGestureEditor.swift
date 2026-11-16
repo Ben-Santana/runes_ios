@@ -1,92 +1,52 @@
 import SwiftUI
 
-/// Draws or records an air gesture's shape, like the Mac's AirGestureEditor: draw one stroke
-/// with a finger, or act it out with the band. Saved as the Mac's 64-point normalized path.
+/// Draws or records an air gesture's shape in the space under the bead string: draw one stroke
+/// with a finger, or record it with the band. Saved as the Mac's 64-point normalized path.
 struct AirGestureEditor: View {
     @ObservedObject var store: MappingStore
     let initial: AirShape?
     let onSave: (AirShape) -> Void
-    @Environment(\.dismiss) private var dismiss
+    let onCancel: () -> Void
 
-    private enum Mode: String, CaseIterable { case draw = "Draw", band = "Use band" }
-    private static let pad = CGSize(width: 400, height: 280)
+    /// Pad coordinates.
+    private static let pad = CGSize(width: 400, height: 220)
 
-    /// Pad coordinates (400 × 280).
     @State private var points: [CGPoint] = []
-    @State private var name = ""
-    @State private var minSimilarity = 75.0
-    @State private var durationMs = 2000.0
-    @State private var mode: Mode = .draw
-    @State private var message = "Draw one continuous stroke. The dot marks where it starts."
+    @State private var message = "Draw one stroke, or record it with your band."
     @State private var latest: (q: [Double], at: Date)?
     @State private var capture: (reference: [Double], points: [AirShape.Point], end: Date, last: Date)?
     @State private var now = Date()
+    @State private var padWidth: CGFloat = 400
+    @State private var drawing = false
     private let clock = Timer.publish(every: 0.05, on: .main, in: .common).autoconnect()
 
     private var recording: Bool { capture != nil }
     private var fresh: Bool { latest.map { now.timeIntervalSince($0.at) < 0.5 } ?? false }
+    private var durationMs: Int { initial?.durationMs ?? 2000 }
     private var shape: AirShape {
         AirShape(points: AirMatcher.normalize(points.map { [Double($0.x), Double($0.y)] }),
-                 minSimilarity: Int(minSimilarity), durationMs: Int(durationMs),
-                 name: name.trimmingCharacters(in: .whitespaces).isEmpty ? nil : String(name.prefix(40)))
+                 minSimilarity: initial?.minSimilarity ?? 75, durationMs: durationMs, name: initial?.name)
     }
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: 24) {
-                    Picker("Capture method", selection: $mode) {
-                        ForEach(Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                    }
-                    .pickerStyle(.segmented).disabled(recording)
-                    padView
-                    HStack {
-                        if mode == .band {
-                            Button(recording ? "Stop · \(String(format: "%.1f", max(0, capture!.end.timeIntervalSince(now)))) s"
-                                   : fresh ? "Start recording" : "Waiting for band…") { recording ? stop() : start() }
-                                .disabled(!fresh && !recording)
-                        } else {
-                            Button("Clear drawing") { points = [] }.disabled(points.isEmpty)
-                        }
-                        Spacer()
-                        Text("One continuous stroke").font(.caption).foregroundStyle(Color.muted)
-                    }
-                    .font(.bodyText)
-                    Text(message).font(.caption).foregroundStyle(Color.muted).frame(maxWidth: .infinity, alignment: .leading)
-                    MappingGroup("Settings", caption: "The gesture before this step starts recording. Shapes that compete are compared after their windows close; the highest similarity above its minimum wins. Works best with your elbow still and forearm pointing forward.") {
-                        TextField("Shape name (optional)", text: $name)
-                            .font(.bodyText).padding(.horizontal, Metric.inset).frame(minHeight: Metric.row)
-                        RowDivider()
-                        slider("Minimum similarity", value: $minSimilarity, range: 1...100, step: 1, text: "\(Int(minSimilarity))%")
-                        RowDivider()
-                        slider("Time to perform", value: $durationMs, range: 500...10_000, step: 100, text: String(format: "%.1f s", durationMs / 1000))
-                    }
-                    .disabled(recording)
-                }
-                .padding(Metric.gutter)
-            }
-            .page()
-            .navigationTitle("Air gesture")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.font(.label) }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { onSave(shape); dismiss() }.font(.label).disabled(recording || !shape.isValid)
-                }
+        VStack(alignment: .leading, spacing: 10) {
+            padView
+            Text(message).font(.caption).foregroundStyle(Color.muted)
+                .lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 6) {
+                key(.x, "Cancel") { onCancel() }
+                key(.rotateCcw, "Clear", enabled: !points.isEmpty && !recording) { points = [] }
+                key(recording ? .circleDot : .circle,
+                    recording ? String(format: "%.1f s", max(0, capture!.end.timeIntervalSince(now))) : "Record",
+                    enabled: fresh || recording) { recording ? stop() : start() }
+                key(.check, "Save", enabled: !recording && shape.isValid) { onSave(shape) }
             }
         }
         .onAppear {
-            if let initial {
-                points = display(initial.points); name = initial.name ?? ""
-                minSimilarity = Double(initial.minSimilarity); durationMs = Double(initial.durationMs)
-            }
+            if let initial { points = display(initial.points) }
+            store.onOrientation = { q in sample(q) }
         }
-        .onChange(of: mode) { _, mode in
-            message = mode == .draw ? "Draw one continuous stroke. The dot marks where it starts."
-                                    : "Hold your forearm forward, palm down. Start recording, then act out the shape."
-            listen(mode == .band)
-        }
-        .onDisappear { listen(false) }
+        .onDisappear { store.onOrientation = nil; capture = nil; latest = nil }
         .onReceive(clock) { date in
             now = date
             guard let c = capture else { return }
@@ -110,14 +70,16 @@ struct AirGestureEditor: View {
         .aspectRatio(Self.pad.width / Self.pad.height, contentMode: .fit)
         .overlay {
             if points.count < 2 {
-                Text(mode == .draw ? "Draw your shape here" : "Your motion appears here").font(.bodyText).foregroundStyle(Color.faint)
+                Text("Draw the shape here").font(.bodyText).foregroundStyle(Color.faint)
             }
         }
+        .background(Color.paper, in: RoundedRectangle(cornerRadius: Metric.control))
         .overlay(RoundedRectangle(cornerRadius: Metric.control)
             .strokeBorder(recording ? Color.ink : Color.rule, lineWidth: recording ? 1.5 : Metric.hairline))
+        .clipShape(RoundedRectangle(cornerRadius: Metric.control))
         .contentShape(Rectangle())
         .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .local).onChanged { value in
-            guard mode == .draw, !recording else { return }
+            guard !recording else { return }
             // Each new touch starts a new stroke.
             if !drawing { drawing = true; points = [] }
             let scale = Self.pad.width / max(1, padWidth)
@@ -125,35 +87,35 @@ struct AirGestureEditor: View {
                             y: min(Self.pad.height, max(0, value.location.y * scale)))
             if points.count < 4096 { points.append(p) }
         }.onEnded { _ in drawing = false })
-        .background(GeometryReader { geo in Color.clear.preference(key: PadWidth.self, value: geo.size.width) })
-        .onPreferenceChange(PadWidth.self) { padWidth = $0 }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { padWidth = $0 }
         .accessibilityLabel("Air gesture drawing")
     }
-    @State private var padWidth: CGFloat = 400
-    @State private var drawing = false
 
-    private func slider(_ title: String, value: Binding<Double>, range: ClosedRange<Double>, step: Double, text: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack { Text(title).font(.bodyText); Spacer(); Text(text).font(.bodyText).foregroundStyle(Color.muted).monospacedDigit() }
-            Slider(value: value, in: range, step: step).accessibilityLabel(title)
+    private func key(_ icon: Lucide, _ label: String, enabled: Bool = true, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                LucideIcon(icon, size: 16)
+                Text(label).font(.caption).lineLimit(1).minimumScaleFactor(0.8).monospacedDigit()
+            }
+            .foregroundStyle(Color.ink)
+            .frame(maxWidth: .infinity).frame(height: 44)
+            .background(Color.paper, in: RoundedRectangle(cornerRadius: Metric.control))
+            .overlay(RoundedRectangle(cornerRadius: Metric.control).strokeBorder(Color.rule, lineWidth: Metric.hairline))
+            .opacity(enabled ? 1 : 0.3)
+            .contentShape(Rectangle())
         }
-        .padding(.horizontal, Metric.inset).padding(.vertical, 10)
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .accessibilityLabel(label)
     }
 
     /// A saved normalized path, centered on the pad.
     private func display(_ normalized: [AirShape.Point]) -> [CGPoint] {
-        AirMatcher.normalize(normalized).map { CGPoint(x: 200 + $0[0] * 240, y: 140 + $0[1] * 240) }
+        AirMatcher.normalize(normalized).map { CGPoint(x: 200 + $0[0] * 190, y: 110 + $0[1] * 190) }
     }
 
     // MARK: Band recording
 
-    private func listen(_ on: Bool) {
-        if on {
-            store.onOrientation = { q in sample(q) }
-        } else {
-            store.onOrientation = nil; capture = nil; latest = nil
-        }
-    }
     private func sample(_ q: [Double]) {
         let norm = sqrt(q.reduce(0) { $0 + $1 * $1 })
         guard q.count == 4, q.allSatisfy(\.isFinite), norm > 1e-8 else { return }
@@ -169,26 +131,21 @@ struct AirGestureEditor: View {
     }
     private func start() {
         guard let q = latest, Date().timeIntervalSince(q.at) < 0.5 else { return }
-        capture = (q.q, [], Date().addingTimeInterval(durationMs / 1000), Date())
+        capture = (q.q, [], Date().addingTimeInterval(Double(durationMs) / 1000), Date())
         points = []
-        message = "Recording your wrist motion…"
+        message = "Recording. Forearm forward, elbow still: act out the shape."
     }
     private func stop() {
         guard let c = capture else { return }
         capture = nil
         if c.points.count >= AirMatcher.minimumPoints, AirMatcher.pathLength(c.points) >= AirMatcher.minimumPath {
-            points = display(c.points); message = "Recorded. Save this shape, or record again."
+            points = display(c.points); message = "Recorded. Save it, or record again."
         } else {
-            points = []; message = "Too little motion. Keep your elbow still and move your hand through a larger shape."
+            points = []; message = "Too little motion. Move your hand through a larger shape."
         }
     }
     private func interrupted() {
         capture = nil; points = []
-        message = "Orientation interrupted. Please record again."
+        message = "The band's orientation dropped out. Record again."
     }
-}
-
-private struct PadWidth: PreferenceKey {
-    static let defaultValue: CGFloat = 400
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }

@@ -52,6 +52,8 @@ final class CaptureRecorder: @unchecked Sendable {
         get { lock.withLock { metering } }
         set { lock.withLock { metering = newValue } }
     }
+    /// Each buffer as it is kept, on the audio thread, for the live words.
+    var onKept: (@Sendable (AVAudioPCMBuffer) -> Void)?
     /// The route changed (headphones in or out) and the engine stopped. Called on the main thread.
     var onRouteChange: (@MainActor () -> Void)?
 
@@ -192,6 +194,7 @@ final class CaptureRecorder: @unchecked Sendable {
         target[0].update(from: base, count: samples.count)
         buffer.frameLength = AVAudioFrameCount(samples.count)
         guard (try? file.write(from: buffer)) != nil else { return }
+        onKept?(buffer)
         frames += samples.count
         let slice = max(1, Int(rate / 20))
         for sample in samples {

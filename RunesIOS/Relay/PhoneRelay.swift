@@ -13,6 +13,7 @@ final class WakeProbe: @unchecked Sendable {
     private var lastTick: TimeInterval?
     private var applicationState = "launching"
     private var bandState = "disconnected"
+    private var battery: Int?
     private var lastBandData: TimeInterval?
 
     /// Counts device sleep. `systemUptime` stops while the phone sleeps and would hide the gaps.
@@ -43,6 +44,7 @@ final class WakeProbe: @unchecked Sendable {
 
     func setApplicationState(_ state: String) { lock.lock(); applicationState = state; lock.unlock() }
     func setBandState(_ state: String) { lock.lock(); bandState = state; lock.unlock() }
+    func setBattery(_ level: Int?) { lock.lock(); battery = level; lock.unlock() }
     func noteBandData() { lock.lock(); lastBandData = Self.now; lock.unlock() }
 
     var phoneState: RelayWire.PhoneState {
@@ -60,7 +62,7 @@ final class WakeProbe: @unchecked Sendable {
         case "disconnected", "failed", "enrollmentRequired": band = .disconnected
         default: band = .connecting
         }
-        return .init(app: app, band: band)
+        return .init(app: app, band: band, battery: band == .streaming ? battery : nil)
     }
 }
 
@@ -164,6 +166,8 @@ final class PhoneRelay: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     private var cables: [Cable] = []
 
     var onDemand: ((Demand) -> Void)?
+    /// The Mac asked for the band to vibrate (a sound set to a band vibration).
+    var onBuzz: ((BandBuzz) -> Void)?
     var onStatus: ((String) -> Void)?
     var onDiagnostic: ((String) -> Void)?
 
@@ -651,6 +655,8 @@ final class PhoneRelay: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
             enqueue(link, .message(.pong(id, WakeProbe.shared.phoneState), nil))
         case .bindings(let chunk):
             if let list = link.assembler.add(chunk) { MacLinks.shared.publish(bindings: list, for: link.record.id) }
+        case .buzz(let pattern):
+            if let buzz = BandBuzz(rawValue: pattern) { onBuzz?(buzz) }
         case .bye(let reason):
             onDiagnostic?("Mac relay goodbye from \(link.record.name): \(reason)")
             switch reason {

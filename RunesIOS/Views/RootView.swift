@@ -8,9 +8,12 @@ struct RootView: View {
     @State private var showApplications = false
     /// The app shown full screen, kept while its cover slides away so it doesn't go blank.
     @State private var openedApp: RunesApp = .workouts
+    /// The screens it opens at, and a new value each time it is opened afresh.
+    @State private var openedPath: [AppRoute] = []
+    @State private var opening = UUID()
     @State private var showApp = false
     /// An app a widget asked for while another full-screen page was up; shown once that page has gone.
-    @State private var queuedApp: RunesApp?
+    @State private var queuedApp: AppLinkRouter.Request?
     @State private var showSetup = false
     @State private var restartBandSetup: UUID?
     @ObservedObject private var links = AppLinkRouter.shared
@@ -25,7 +28,6 @@ struct RootView: View {
             if controller.setupComplete && !showSetup {
                 HomeView(status: status, actions: HomeActions(
                     connect: { controller.connect() },
-                    disconnect: controller.disconnect,
                     setUp: { showSetup = true },
                     openSettings: { showSettings = true },
                     openMappings: { showMappings = true },
@@ -55,9 +57,9 @@ struct RootView: View {
             ApplicationsScreen(workouts: .shared, done: { showApplications = false })
         }
         .fullScreenCover(isPresented: $showApp) {
-            // A widget can swap the app while it is up; the new id starts it from its first screen.
-            ApplicationsScreen(workouts: .shared, initialRoute: openedApp.route, done: { showApp = false })
-                .id(openedApp)
+            // A link can swap the app while it is up; the new id starts it from its first screen.
+            ApplicationsScreen(workouts: .shared, initialPath: openedPath, done: { showApp = false })
+                .id(opening)
         }
         .sheet(item: Binding(get: { controller.loginRequest }, set: { if $0 == nil { controller.loginSheetDismissed() } }),
                onDismiss: controller.loginSheetDismissed) { request in
@@ -71,32 +73,39 @@ struct RootView: View {
             Button("OK", role: .cancel) { controller.uiError = nil }
         } message: { Text(controller.uiError ?? "") }
         .onOpenURL { links.open(url: $0) }
-        .onChange(of: links.pending, initial: true) { _, app in
-            guard let app else { return }
+        .onChange(of: links.pending, initial: true) { _, request in
+            guard let request else { return }
             links.pending = nil
-            open(app)
+            open(request)
         }
     }
 
-    /// Shows an app a widget asked for, whatever full-screen page was open.
-    private func open(_ app: RunesApp) {
+    /// Shows an app a widget or Live Activity asked for, whatever full-screen page was open.
+    private func open(_ request: AppLinkRouter.Request) {
         guard controller.setupComplete, !showSetup, !controller.isSigningIn, restartBandSetup == nil else { return }
         if showApp {
-            // Already showing an app: change it in place. Leave the same app where it was.
-            if openedApp != app { openedApp = app }
+            // Already showing an app: change it in place. A widget leaves the same app where
+            // it was; the Live Activity always goes to what is running.
+            if openedApp != request.app || request.running { place(request) }
         } else if showSettings || showMappings || showApplications {
             // A cover can't come up while another leaves, so wait for its onDismiss.
-            queuedApp = app
+            queuedApp = request
             showSettings = false; showMappings = false; showApplications = false
         } else {
-            openedApp = app; showApp = true
+            place(request); showApp = true
         }
+    }
+
+    private func place(_ request: AppLinkRouter.Request) {
+        openedApp = request.app
+        openedPath = request.running ? request.app.runningPath : [request.app.route]
+        opening = UUID()
     }
 
     private func showQueuedApp() {
-        guard let app = queuedApp else { return }
+        guard let request = queuedApp else { return }
         queuedApp = nil
-        openedApp = app; showApp = true
+        place(request); showApp = true
     }
 
     private func resolve(_ action: SessionIssue.Action) {

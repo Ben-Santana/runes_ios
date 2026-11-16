@@ -6,6 +6,8 @@ struct SettingsValues {
     var handSetting = HandSetting()
     var band: UUID?
     var canChangeHand = false
+    /// Connected or trying to connect, so there is something to disconnect.
+    var linked = false
     var macs: [MacLinks.Mac] = []
     var macPairing: MacLinks.Pairing = .idle
     var version = "\(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "–") (\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "–"))"
@@ -13,6 +15,7 @@ struct SettingsValues {
 
 struct SettingsActions {
     var forget: () -> Void = {}
+    var disconnect: () -> Void = {}
     var setHand: (Handedness) -> Void = { _ in }
     var wristFeedback: (WristFeedbackPhase, Handedness, UUID) -> Void = { _, _, _ in }
     var cancelWristFeedback: (UUID) -> Void = { _ in }
@@ -34,6 +37,7 @@ struct SettingsView<Advanced: View>: View {
     @AppStorage(Preferences.developerMode) private var developerMode = false
     @State private var versionTaps = 0
     @State private var confirmForget = false
+    @State private var confirmDisconnect = false
     @State private var scanningMac = false
     @State private var macToRemove: MacLinks.Mac?
     @State private var scanProblem: String?
@@ -123,8 +127,20 @@ struct SettingsView<Advanced: View>: View {
                                 .padding(.horizontal, Metric.inset).padding(.vertical, 10)
                         }
                     }
+                    if values.linked {
+                        Button { confirmDisconnect = true } label: {
+                            Text("Disconnect band").font(.label).foregroundStyle(Color.destructive)
+                                .frame(maxWidth: .infinity, minHeight: Metric.row)
+                                .background(Color.soft, in: RoundedRectangle(cornerRadius: Metric.panel))
+                                .overlay(RoundedRectangle(cornerRadius: Metric.panel).strokeBorder(Color.rule, lineWidth: Metric.hairline))
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .transition(.opacity)
+                    }
                 }
                 .padding(Metric.gutter)
+                .animation(.entrance, value: values.linked)
             }
             .animation(.entrance, value: values.macs.map(\.id))
             .page()
@@ -137,6 +153,11 @@ struct SettingsView<Advanced: View>: View {
                 Button("Remove Mac", role: .destructive) { actions.removeMac(mac.id) }
             } message: { _ in
                 Text("This Mac stops receiving your gestures until you pair it again.")
+            }
+            .confirmationDialog("Disconnect your band?", isPresented: $confirmDisconnect, titleVisibility: .visible) {
+                Button("Disconnect", role: .destructive, action: actions.disconnect)
+            } message: {
+                Text("Runes will stop listening for gestures until you connect again.")
             }
             .confirmationDialog("Forget this band?", isPresented: $confirmForget, titleVisibility: .visible) {
                 Button("Forget band", role: .destructive, action: actions.forget)
@@ -185,9 +206,11 @@ struct SettingsScreen: View {
                                             handSetting: controller.snapshot.handSetting,
                                             band: controller.snapshot.selected,
                                             canChangeHand: controller.snapshot.state == .streaming,
+                                            linked: controller.snapshot.state == .streaming || controller.snapshot.wantsConnection,
                                             macs: links.macs, macPairing: links.pairing),
                      actions: SettingsActions(
                         forget: { controller.forgetBand(); dismiss() },
+                        disconnect: { controller.disconnect() },
                         setHand: controller.setHand,
                         wristFeedback: controller.wristFeedback,
                         cancelWristFeedback: controller.cancelWristFeedback,

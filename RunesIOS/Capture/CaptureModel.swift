@@ -22,6 +22,10 @@ struct CaptureNote: Codable, Identifiable, Hashable, Sendable {
     /// Seconds of sound.
     var duration: Double
     var text = ""
+    /// Bold, italic, highlight and colour over parts of the text, typed by hand.
+    var marks: [TextMark]?
+    /// Each word as it was said, from the transcription; it follows the words through later edits.
+    var spoken: [SpokenWord]?
     var state = State.transcribing
     /// The sound file's name in Capture's folder.
     var file: String
@@ -60,6 +64,64 @@ struct CaptureNote: Codable, Identifiable, Hashable, Sendable {
     var isLoose: Bool { scroll == nil && filed != .hand }
     /// The rune its bead carries, drawn for it once and the same ever after.
     var mark: InscriptionRune { glyph ?? .drawn(for: id) }
+}
+
+/// A word of the recording and when it starts, in seconds from the start of the file.
+struct SpokenWord: Codable, Hashable, Sendable {
+    var word: String
+    var at: Double
+
+    /// The words of one piece of a transcript said between `start` and `end`, spread across it.
+    static func split(_ piece: String, from start: Double, to end: Double) -> [SpokenWord] {
+        let words = Self.words(in: piece)
+        let length = max(1, (piece as NSString).length)
+        return words.map { SpokenWord(word: Self.key($0.word), at: start + (end - start) * Double($0.range.location) / Double(length)) }
+    }
+
+    /// When each word of `text` is said, as the UTF-16 range it covers. Words are matched to
+    /// the transcript in order, looking a few ahead, so edits to the text don't lose the rest;
+    /// a word that matches nothing is said with the word before it. With no transcript the
+    /// words are spread evenly over `duration`.
+    static func timeline(of text: String, spoken: [SpokenWord]?, duration: Double) -> [(range: NSRange, at: Double)] {
+        let words = Self.words(in: text)
+        guard let spoken, !spoken.isEmpty else {
+            let length = max(1, Double((text as NSString).length))
+            return words.map { ($0.range, duration * Double($0.range.location) / length) }
+        }
+        var next = 0, last = 0.0
+        return words.map { word in
+            let key = Self.key(word.word)
+            if let found = (next..<min(next + 6, spoken.count)).first(where: { spoken[$0].word == key }) {
+                last = max(last, spoken[found].at)
+                next = found + 1
+            }
+            return (word.range, last)
+        }
+    }
+
+    private static func words(in text: String) -> [(word: String, range: NSRange)] {
+        var found: [(String, NSRange)] = []
+        let string = text as NSString
+        string.enumerateSubstrings(in: NSRange(location: 0, length: string.length), options: .byWords) { word, range, _, _ in
+            if let word { found.append((word, range)) }
+        }
+        return found
+    }
+
+    private static func key(_ word: String) -> String { word.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil) }
+}
+
+/// Formatting over one run of an inscription's text, as a UTF-16 range.
+struct TextMark: Codable, Hashable, Sendable {
+    enum Ink: String, Codable, CaseIterable, Sendable {
+        case yellow, orange, red, pink, purple, blue, green
+    }
+    var start: Int
+    var length: Int
+    var bold = false
+    var italic = false
+    var highlight: Ink?
+    var color: Ink?
 }
 
 /// The Runes glyphs (Documentation/rune-icons): the gestures' and the everyday ones. Each set
@@ -297,6 +359,13 @@ struct CaptureControls: Codable, Hashable, Sendable {
 }
 
 enum CaptureRules {
+    /// The last couple of lines' worth of `words`, starting at a word, for the Lock Screen.
+    static func latest(_ words: String, limit: Int = 70) -> String {
+        guard words.count > limit else { return words }
+        let tail = words.suffix(limit)
+        let start = tail.firstIndex(of: " ").map { tail.index(after: $0) } ?? tail.startIndex
+        return "…" + tail[start...]
+    }
     /// A hold shorter than this was a slip, not a note.
     static let minimum = 0.6
     /// A hold whose release never arrives (the band went out of range) stops here.

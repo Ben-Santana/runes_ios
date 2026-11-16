@@ -20,8 +20,17 @@ struct BandActivityAttributes: ActivityAttributes {
         var cook: CookActivityState? = nil
         /// Present while an alarm rings or is snoozed (shown over everything), or is set.
         var alarm: AlarmActivityState? = nil
+        /// Present while Capture records; shown over everything but a ringing alarm.
+        var capture: CaptureActivityState? = nil
     }
     let startedAt: Date
+}
+
+/// A recording under way: since when, and the words heard so far.
+struct CaptureActivityState: Codable, Hashable {
+    var since: Date
+    /// The latest words, a couple of lines' worth; empty until some are heard.
+    var words: String = ""
 }
 
 /// A recipe being cooked: which step, and its timers. Nothing else: the step's words

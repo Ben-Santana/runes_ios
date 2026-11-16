@@ -559,6 +559,18 @@ struct WorkoutSettingsScreen: View {
                     } footer: {
                         Note("Lower needs a bigger movement for each rep. Only exercises marked with a waveform are counted; the rest log your target. Detection hasn’t been tuned on a real band yet.")
                     }
+                    Block {
+                        Toggle(isOn: Binding(get: { store.endsAtTarget }, set: store.setEndsAtTarget)) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("End sets at target").font(.bodyText)
+                                Text("Logs a set once the band counts its target reps, or a timed set reaches its time, without waiting for Stop.")
+                                    .font(.caption).foregroundStyle(Color.muted)
+                            }
+                        }
+                        .padding(.vertical, 12)
+                    } header: {
+                        Heading("Sets")
+                    }
                     soundsBlock
                     Block {
                         HairlineSegments(selection: Binding(get: { store.unit }, set: store.setUnit),

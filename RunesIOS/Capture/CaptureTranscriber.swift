@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreMedia
 import Speech
 
 /// Turns a recording into words on the phone. Nothing is sent anywhere: this uses the
@@ -11,17 +12,25 @@ enum CaptureTranscriber {
         case unreadable
     }
 
-    static func transcribe(_ url: URL, locale: Locale = .current) async throws -> String {
+    struct Transcript: Sendable {
+        var text: String
+        var words: [SpokenWord]
+    }
+
+    static func transcribe(_ url: URL, locale: Locale = .current) async throws -> Transcript {
         let file = try AVAudioFile(forReading: url)
         // The newer model reads long, natural speech best; the dictation model covers more languages.
         if SpeechTranscriber.isAvailable, let supported = await SpeechTranscriber.supportedLocale(equivalentTo: locale) {
-            let transcriber = SpeechTranscriber(locale: supported, preset: .transcription)
-            do { return try await run(transcriber, on: file) { String($0.text.characters) } }
+            let preset = SpeechTranscriber.Preset.transcription
+            let transcriber = SpeechTranscriber(locale: supported, transcriptionOptions: preset.transcriptionOptions,
+                                                reportingOptions: preset.reportingOptions,
+                                                attributeOptions: preset.attributeOptions.union([.audioTimeRange]))
+            do { return try await run(transcriber, on: file) { $0.text } }
             catch Failure.unsupported { file.framePosition = 0 }
         }
         if let supported = await DictationTranscriber.supportedLocale(equivalentTo: locale) {
-            let transcriber = DictationTranscriber(locale: supported, preset: .longDictation)
-            return try await run(transcriber, on: file) { String($0.text.characters) }
+            let transcriber = DictationTranscriber(locale: supported, preset: .timeIndexedLongDictation)
+            return try await run(transcriber, on: file) { $0.text }
         }
         #if DEBUG
         NSLog("Capture transcription: no speech model for %@ (transcriber available: %d, its locales: %d, dictation locales: %d)", locale.identifier,
@@ -31,7 +40,7 @@ enum CaptureTranscriber {
     }
 
     private static func run<Module: SpeechModule>(_ module: Module, on file: AVAudioFile,
-                                                  text: @escaping @Sendable (Module.Result) -> String) async throws -> String {
+                                                  text: @escaping @Sendable (Module.Result) -> AttributedString) async throws -> Transcript {
         if let request = try await AssetInventory.assetInstallationRequest(supporting: [module]) {
             try await request.downloadAndInstall()
         }
@@ -47,9 +56,18 @@ enum CaptureTranscriber {
         let inputs = try convert(file, to: format)
         let analyzer = SpeechAnalyzer(modules: [module])
         let words = Task {
-            var pieces: [String] = []
-            for try await result in module.results { pieces.append(text(result)) }
-            return pieces.joined()
+            var whole = "", spoken: [SpokenWord] = []
+            for try await result in module.results {
+                let piece = text(result)
+                for run in piece.runs {
+                    let said = String(piece[run.range].characters)
+                    whole += said
+                    if let time = run[AttributeScopes.SpeechAttributes.TimeRangeAttribute.self] {
+                        spoken += SpokenWord.split(said, from: time.start.seconds, to: time.end.seconds)
+                    }
+                }
+            }
+            return Transcript(text: whole.trimmingCharacters(in: .whitespacesAndNewlines), words: spoken)
         }
         do {
             let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
@@ -64,7 +82,7 @@ enum CaptureTranscriber {
             words.cancel()
             throw error
         }
-        return try await words.value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return try await words.value
     }
 
     /// The whole recording in the model's format, a third of a second at a time. A note is
