@@ -37,16 +37,14 @@ final class BandTests: ObservableObject {
 /// band gives by itself when it hears a gesture, and how to take that over from the phone.
 /// Acknowledging gestures, stored patterns, stop, reading the named settings and the band's
 /// own patterns leave nothing behind. The one write here is the band's `haptics` setting,
-/// which the band keeps, and which has needed a restart of the band to take effect.
+/// which the band keeps: 3 lets the band buzz by itself on gestures and 2 stops that, while
+/// vibrations the phone sends play either way. Its third value, 1, turns the motor off
+/// until the band is restarted, so it is not offered.
 struct BandTestsScreen: View {
     @ObservedObject private var tests = BandTests.shared
     @ObservedObject private var controller = SessionController.shared
     @State private var copied = false
     @State private var acknowledging = false
-    /// A haptics value was written and the band has not been restarted since.
-    @State private var awaitingRestart = false
-    /// The value `haptics` had the first time it was read on this phone, to put back. Negative until then.
-    @AppStorage("bandTests.haptics.first") private var firstHaptics = -1
 
     private var ready: Bool { controller.snapshot.state == .streaming }
     private var haptics: NamedSettings.Setting? { tests.named["haptics"] }
@@ -116,37 +114,22 @@ struct BandTestsScreen: View {
         .page()
         .navigationTitle("Band tests")
         .navigationBarTitleDisplayMode(.inline)
-        .onChange(of: ready) { _, now in
-            tests.interrupted()
-            // The band came back, so a written value has been through a restart: read it afresh.
-            guard now, awaitingRestart else { return }
-            awaitingRestart = false
-            tests.startReading(); controller.readNamedSettings()
-        }
+        .onChange(of: ready) { _, _ in tests.interrupted() }
         .onChange(of: acknowledging) { _, on in controller.acknowledgeGestures(on) }
         .onDisappear { acknowledging = false }
-        .onChange(of: haptics?.value) { _, value in
-            if firstHaptics < 0, let value { firstHaptics = Int(value) }
-        }
     }
 
-    /// The band's `haptics` setting: choose a value, do a gesture to feel whether the band still
-    /// buzzes by itself, then send a pulse to check that ours still plays.
+    /// The band's `haptics` setting, as a choice between the band buzzing by itself on
+    /// gestures and staying quiet, with a pulse from the phone to check that ours still plays.
     @ViewBuilder private var ownBuzz: some View {
         if let setting = haptics, let value = setting.value, setting.writable {
-            let range = setting.range.map { $0.lowerBound...min($0.upperBound, $0.lowerBound + 7) } ?? 0...3
-            PanelGroup("The band's own buzz", caption: awaitingRestart
-                       ? "Restart the band now: hold its button 8 seconds until the light goes dark, then 2 seconds to turn it on. When it reconnects, do a gesture and send a pulse."
-                       : "Kept on the band. A change has only taken effect after the band is restarted, so change one value, restart, then test. It was \(firstHaptics < 0 ? Int(value) : firstHaptics) when first read: choose that and restart to put it back.") {
-                ValueRow("haptics") { Text("\(value)").monospacedDigit() }
-                Rule()
+            PanelGroup("The band's own buzz", caption: "Kept on the band, and changes at once. Quiet stops the band buzzing by itself when it hears a gesture; vibrations Runes sends still play. If the band ever goes silent altogether, restart it.") {
                 ChipRow(selection: Binding(get: { value }, set: { chosen in
                     guard chosen != value else { return }
                     tests.startWriting(); controller.writeNamedSetting(setting, value: chosen)
-                    awaitingRestart = true
-                }), options: Array(range)) { String($0) }
+                }), options: Self.buzzChoices) { $0 == 2 ? "Quiet on gestures" : "Buzzes on gestures" }
                 .padding(.vertical, 12)
-                .disabled(!ready || tests.busy || awaitingRestart)
+                .disabled(!ready || tests.busy)
                 Rule()
                 ActionRow("Send a pulse from the phone") { controller.vibrate([BandPulse(duration: 150, amplitude: 230)]) }
                     .disabled(!ready)
@@ -157,6 +140,9 @@ struct BandTestsScreen: View {
             }
         }
     }
+
+    /// The two values of `haptics` worth choosing: 3, the band buzzes on gestures, and 2, it does not.
+    private static let buzzChoices: [UInt64] = [3, 2]
 
     /// A pattern to store on the band: two heartbeats with a rest between them.
     private static let sample = [BandPulse(duration: 60, amplitude: 190, gap: 90), BandPulse(duration: 110, amplitude: 245, gap: 260),
