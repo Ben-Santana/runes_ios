@@ -31,6 +31,8 @@ struct CookActions {
     var dismissAnswer: () -> Void = {}
     /// Ticks an ingredient off, or back on.
     var tick: (Int) -> Void = { _ in }
+    /// Selects a timer without starting or pausing it.
+    var pick: (String) -> Void = { _ in }
     var go: (_ step: Int, _ slot: Int?) -> Void = { _, _ in }
     var stop: () -> Void = {}
     var done: () -> Void = {}
@@ -53,12 +55,12 @@ struct CookingScreen: View {
         Group {
             if let session = store.session {
                 CookingView(session: session, controls: store.controls, look: store.cookingLook, dial: store.dial, dialing: store.dialing,
-                            asking: assistant.phase, voice: assistant.level, actions: CookActions(
+                            asking: assistant.phase, voice: assistant.level, pulse: store.pulse, actions: CookActions(
                     perform: store.perform, toggle: { store.toggleTimer(slot: $0) }, reset: store.resetTimer, addMinute: store.addMinute,
                     toggleTimer: { store.toggleTimer($0) }, cancelTimer: store.cancelTimer,
                     select: store.select, stopRinging: store.stopRinging,
                     addNote: { store.addNote($0, to: session.recipe.id) },
-                    dismissAnswer: assistant.dismiss, tick: store.toggle,
+                    dismissAnswer: assistant.dismiss, tick: store.toggle, pick: store.pick,
                     go: { store.go(to: $0, slot: $1) },
                     stop: { store.end(); dismiss() },
                     done: { store.end(); dismiss() }))
@@ -105,6 +107,7 @@ struct CookingView: View {
     /// A question being asked or answered, which takes the page's place meanwhile.
     var asking = CookAssistant.Phase.idle
     var voice: Float = 0
+    var pulse = CookStore.Pulse()
     var actions = CookActions()
     @State private var drag: CGFloat = 0
     @State private var confirmStop = false
@@ -121,11 +124,11 @@ struct CookingView: View {
             // The hob look draws the recipe as its line of time, so a long wait ahead is seen coming.
             // The rail look keeps its place down the side instead.
             Group {
-                if look == .hob { TimeLine(recipe: session.recipe, step: session.gathering ? -1 : session.step, finished: session.finished) }
+                if look == .hob || look == .focus { TimeLine(recipe: session.recipe, step: session.gathering ? -1 : session.step, finished: session.finished) }
                 else if look != .rail { StepProgress(count: session.count, step: session.gathering ? -1 : session.step, finished: session.finished, height: look == .poster ? 2 : 3) }
             }
             .padding(.horizontal, Metric.gutter).padding(.top, 4)
-            if let first = rung.first {
+            if let first = rung.first, look != .focus {
                 let durations = session.recipe.durations(step: first.step)
                 let cue = durations.indices.contains(first.slot) ? StepDetails.cue(for: durations[first.slot], in: session.recipe.steps[first.step]) : nil
                 TimeUpBand(timer: first, others: rung.count - 1, cue: cue, controls: controls, stop: actions.stopRinging)
@@ -151,7 +154,16 @@ struct CookingView: View {
                 }
                 if session.finished { finished.transition(.opacity.combined(with: .scale(scale: 0.96))) }
                 else if session.gathering { gather.transition(.opacity) }
+                else if look == .focus { focus.transition(.opacity) }
                 else { pages.transition(.opacity) }
+                // In the focus look a timer whose time is up takes the page: ink from edge to
+                // edge, seen from across the kitchen, and still until it is stopped.
+                if look == .focus, let first = rung.first {
+                    let durations = session.recipe.durations(step: first.step)
+                    let cue = durations.indices.contains(first.slot) ? StepDetails.cue(for: durations[first.slot], in: session.recipe.steps[first.step]) : nil
+                    TimeUpPanel(timer: first, others: rung.count - 1, cue: cue, controls: controls, stop: actions.stopRinging)
+                        .transition(reduceMotion ? .opacity : .wipe)
+                }
                 if asking != .idle { AskCard(phase: asking, level: voice, dismiss: actions.dismissAnswer).transition(.opacity) }
                 if let dialing {
                     if session.gathering {
@@ -177,6 +189,7 @@ struct CookingView: View {
             case .hob: Hob(session: session, actions: actions)
             case .numbers: TimerShelf(session: session, actions: actions)
             case .rail, .poster: TimerBars(session: session, actions: actions)
+            case .focus: TimerSlab(session: session, actions: actions)
             }
             legend(ringing: ringing, now: now).padding(.top, 16).padding(.bottom, 10).padding(.horizontal, 12)
             if session.finished {
@@ -192,6 +205,7 @@ struct CookingView: View {
                 Button("Stop cooking", role: .destructive, action: actions.stop)
             } message: { Text("Timers that are running are cancelled.") }
         }
+        .overlay(alignment: .topTrailing) { BuzzMark(pulse: pulse).padding(.trailing, Metric.gutter).padding(.top, 26) }
         .animation(reduceMotion ? nil : .entrance, value: session.finished)
         .animation(.entrance, value: ringing)
         .sensoryFeedback(.selection, trigger: session.step)
@@ -235,6 +249,17 @@ struct CookingView: View {
                     }
                 })
         }
+    }
+
+    /// One sentence of the step, as large as it goes. Swipes turn it, as the band's do.
+    private var focus: some View {
+        FocusPage(session: session)
+            .contentShape(Rectangle())
+            .simultaneousGesture(DragGesture(minimumDistance: 14).onEnded { value in
+                let dx = value.translation.width
+                guard abs(dx) > 60, abs(dx) > abs(value.translation.height) * 1.2 else { return }
+                actions.perform(dx < 0 ? .next : .previous)
+            })
     }
 
     /// The ingredients, before step one. A swipe on, like the band's, begins.
@@ -818,7 +843,8 @@ extension PreviewFixtures {
             session.apply(.timerDown, at: now)
         }
         if name == "cooking-salmon-done" { session.go(to: session.count - 1); session.apply(.next, at: now) }
-        let look: CookingLook = name.hasSuffix("numbers") ? .numbers : name.hasSuffix("rail") ? .rail : name.hasSuffix("poster") ? .poster : .hob
+        let look: CookingLook = name.hasSuffix("numbers") ? .numbers : name.hasSuffix("rail") ? .rail : name.hasSuffix("poster") ? .poster
+            : name.hasSuffix("focus") ? .focus : .hob
         if name.hasPrefix("demo") { session = CookSession(recipe: .salmonPasta, at: now, gather: true) }
         return CookStore(preview: Recipe.samples, session: session, cookingLook: look,
                          dialing: name == "cooking-dial" ? 450 : name == "cooking-servings" ? 6 : nil,
@@ -837,10 +863,15 @@ extension PreviewFixtures {
         for _ in 0..<2 { store.turn(15); await wait(0.5) }
         await wait(0.5); store.demoDial(false); await wait(1.2)
         store.perform(.next); await wait(1.6)
+        // In the focus look a step is several sentences; page through them to the next step.
+        func nextStep() async {
+            let from = store.session?.step
+            repeat { store.perform(.next); await wait(1.1) } while store.session?.step == from && store.session?.finished == false
+        }
         store.perform(.timer); await wait(1.2)
-        store.perform(.next); await wait(1.4)
+        await nextStep()
         store.perform(.timer); await wait(1.2)
-        store.perform(.next); await wait(1.6)
+        await nextStep()
         store.perform(.timer); await wait(1)
         store.perform(.timerDown); await wait(0.9)
         store.perform(.timerDown); await wait(0.9)

@@ -199,6 +199,201 @@ struct StepRail: View {
     }
 }
 
+// MARK: Focus
+
+/// One thing to do at a time: a sentence of the step, set as large as it goes, with the
+/// amounts it calls for under it. The rest of the step waits its turn; marks at the top
+/// say how many sentences the step has and which this is.
+struct FocusPage: View {
+    let session: CookSession
+
+    var body: some View {
+        let beats = session.beats, index = session.beatIndex
+        let sentence = beats[index]
+        let uses = Ingredients.uses(in: sentence, of: session.recipe.ingredients).map(\.text)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                Text("Step \(session.step + 1)").font(.label)
+                Text("of \(session.count)").font(.caption).foregroundStyle(Color.muted)
+                Spacer()
+                if beats.count > 1 {
+                    HStack(spacing: 4) {
+                        ForEach(beats.indices, id: \.self) { beat in
+                            Capsule().fill(beat == index ? Color.ink : beat < index ? Color.ink.opacity(0.45) : Color.faint)
+                                .frame(width: beat == index ? 18 : 6, height: 3)
+                        }
+                    }
+                    .animation(.standard, value: index)
+                    .accessibilityHidden(true)
+                }
+            }
+            .padding(.bottom, 22)
+            VStack(alignment: .leading, spacing: 22) {
+                Text(words(sentence))
+                    .font(.geist(size(sentence), .medium, relativeTo: .title)).tracking(-0.9).lineSpacing(1)
+                    .minimumScaleFactor(0.55).fixedSize(horizontal: false, vertical: false)
+                if !uses.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) { ForEach(uses, id: \.self) { Text($0) } }
+                        .font(.geist(22, relativeTo: .title3)).foregroundStyle(Color.muted)
+                }
+            }
+            .id("\(session.step).\(index)")
+            .transition(.opacity)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, Metric.gutter).padding(.top, 22)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .animation(.entrance, value: index)
+        .animation(.entrance, value: session.step)
+        .accessibilityElement(children: .combine)
+    }
+
+    private func size(_ text: String) -> CGFloat {
+        switch text.count { case ..<45: 50; case ..<80: 42; case ..<130: 34; default: 28 }
+    }
+
+    /// The sentence with how hot underlined, as on the other pages.
+    private func words(_ sentence: String) -> AttributedString {
+        var result = AttributedString(sentence)
+        for heat in StepDetails.heat(in: sentence) {
+            if let range = Range(heat, in: result) { result[range].underlineStyle = Text.LineStyle(pattern: .solid, color: Color.muted) }
+        }
+        return result
+    }
+}
+
+/// The one timer that matters now, as a slab across the bottom: an outline while it
+/// waits to be started, solid ink while it counts, with its time as large as the slab.
+/// The others are a line of names and times above it; a tap on one brings it down.
+struct TimerSlab: View {
+    let session: CookSession
+    let actions: CookActions
+
+    var body: some View {
+        let hob = Hob(session: session, actions: actions)
+        TimelineView(.periodic(from: .now, by: 0.5)) { context in
+            let pots = hob.pots, now = context.date
+            let main = pots.first(where: hob.selected) ?? pots.first { $0.timer?.isRinging(at: now) == true }
+                ?? pots.filter { $0.timer != nil }.min { ($0.timer?.remaining(at: now) ?? .max) < ($1.timer?.remaining(at: now) ?? .max) } ?? pots.first
+            VStack(alignment: .leading, spacing: 10) {
+                let others = pots.filter { $0.id != main?.id }
+                if !others.isEmpty {
+                    HStack(spacing: 16) {
+                        ForEach(others.prefix(3)) { pot in
+                            Button { if let timer = pot.timer { actions.pick(timer.id) } else { actions.select(pot.slot) } } label: {
+                                HStack(spacing: 6) {
+                                    Text(pot.label).foregroundStyle(Color.muted)
+                                    Text(DurationFinder.clock(pot.timer.map { $0.isRinging(at: now) ? 0 : $0.remaining(at: now) } ?? pot.seconds))
+                                        .monospacedDigit().foregroundStyle(pot.timer == nil ? Color.muted : Color.ink)
+                                }
+                                .font(.label).frame(minHeight: 28).contentShape(Rectangle())
+                            }
+                            .buttonStyle(PressRow())
+                        }
+                        Spacer(minLength: 0)
+                    }
+                }
+                if let main { slab(main, now: now) }
+            }
+            .padding(.horizontal, Metric.gutter).padding(.top, pots.isEmpty ? 0 : 6)
+            .animation(.standard, value: pots.map(\.id))
+            .animation(.standard, value: main?.id)
+        }
+    }
+
+    private func slab(_ pot: Hob.Pot, now: Date) -> some View {
+        let timer = pot.timer
+        let ringing = timer?.isRinging(at: now) ?? false, paused = timer?.isPaused ?? false
+        let counting = timer != nil && !paused
+        let left = ringing ? 0 : timer?.remaining(at: now) ?? pot.seconds
+        let remaining = timer.map { 1 - $0.progress(at: now) } ?? 1
+        let own = pot.step == session.step && !session.finished
+        return HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(pot.label).font(.heading).lineLimit(1)
+                Text(ringing ? "Time’s up" : paused ? "Paused" : timer == nil ? "Ready" : own ? "Counting" : "Step \(pot.step + 1)")
+                    .font(.caption).opacity(0.7)
+            }
+            Spacer(minLength: 8)
+            Text(DurationFinder.clock(left))
+                .font(.geist(58, .medium, relativeTo: .largeTitle)).monospacedDigit().tracking(-2.5)
+                .lineLimit(1).minimumScaleFactor(0.5)
+                .contentTransition(.numericText(countsDown: true)).animation(.standard, value: left)
+        }
+        .foregroundStyle(counting ? Color.paper : Color.ink)
+        .padding(.horizontal, 18).frame(height: 104)
+        .background {
+            RoundedRectangle(cornerRadius: Metric.panel).fill(counting ? Color.ink : Color.clear)
+            RoundedRectangle(cornerRadius: Metric.panel).strokeBorder(Color.ink, lineWidth: 1.5)
+        }
+        // The time left, as a line along the foot of the slab that shortens.
+        .overlay(alignment: .bottomLeading) {
+            GeometryReader { geo in
+                Rectangle().fill(counting ? Color.paper : Color.ink).frame(width: max(0, (geo.size.width - 36) * remaining), height: 2)
+                    .frame(maxHeight: .infinity, alignment: .bottom).padding(.horizontal, 18).padding(.bottom, 12)
+                    .animation(.linear(duration: 0.5), value: remaining)
+            }
+            .opacity(timer == nil || ringing ? 0 : 1)
+        }
+        .animation(.standard, value: counting)
+        .contentShape(Rectangle())
+        .onTapGesture { if let timer { actions.toggleTimer(timer.id) } else { actions.toggle(pot.slot) } }
+        .onLongPressGesture(minimumDuration: 0.5) { if let timer { actions.cancelTimer(timer.id) } }
+        .simultaneousGesture(DragGesture(minimumDistance: 20).onEnded { value in
+            let t = value.translation
+            if let timer, t.height < -30, abs(t.height) > abs(t.width) * 1.2 { actions.addMinute(timer.id) }
+        })
+        .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel("\(pot.label), \(ringing ? "time’s up" : paused ? "paused at \(DurationFinder.short(left))" : timer == nil ? "\(DurationFinder.short(left)), not started" : "\(DurationFinder.short(left)) left")")
+    }
+}
+
+/// What the band was just told to do, drawn as the same rhythm: a dot for a tap, a dash
+/// for a long buzz, bars that climb or fall for a rise or a fade. It shows once and goes,
+/// so the wrist and the screen say the same thing at the same moment.
+struct BuzzMark: View {
+    let pulse: CookStore.Pulse
+    @State private var shown = false
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 4) {
+            ForEach(Array(pulse.pattern.prefix(12).enumerated()), id: \.offset) { _, buzz in
+                HStack(alignment: .bottom, spacing: 2) {
+                    ForEach(Array(Self.bars(buzz).enumerated()), id: \.offset) { _, bar in
+                        Capsule().fill(Color.ink).frame(width: bar.width, height: bar.height)
+                    }
+                }
+            }
+        }
+        .frame(height: 12, alignment: .bottom)
+        .opacity(shown ? 1 : 0)
+        .animation(.standard, value: shown)
+        .task(id: pulse.id) {
+            guard pulse.id > 0 else { return }
+            shown = true
+            try? await Task.sleep(for: .milliseconds(1400))
+            shown = false
+        }
+        .accessibilityHidden(true)
+    }
+
+    private static func bars(_ buzz: BandBuzz) -> [CGSize] {
+        let dot = CGSize(width: 4, height: 4)
+        switch buzz {
+        case .tap: return [dot]
+        case .double: return [dot, dot]
+        case .triple: return [dot, dot, dot]
+        case .long: return [CGSize(width: 16, height: 4)]
+        case .buzz: return [CGSize(width: 9, height: 4)]
+        case .rise: return [CGSize(width: 3, height: 4), CGSize(width: 3, height: 8), CGSize(width: 3, height: 12)]
+        case .fade: return [CGSize(width: 3, height: 12), CGSize(width: 3, height: 8), CGSize(width: 3, height: 4)]
+        case .flutter: return Array(repeating: CGSize(width: 2, height: 6), count: 5)
+        case .heartbeat: return [dot, dot, CGSize(width: 6, height: 0), dot, dot]
+        }
+    }
+}
+
 // MARK: Getting ready
 
 /// Before step one: everything the recipe needs, in type large enough to read from across
@@ -217,6 +412,20 @@ struct GatherPage: View {
                     Text(["\(session.ready.count) of \(items.count) out", session.recipe.yield].compactMap { $0 }.joined(separator: " · "))
                         .font(.caption).monospacedDigit().foregroundStyle(Color.muted)
                         .contentTransition(.numericText()).padding(.top, 8).padding(.bottom, 18)
+                    // What a later step needs ready, said now while there is time.
+                    let first = StepDetails.headStarts(in: session.recipe.steps)
+                    if !first.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Start first").font(.label)
+                            ForEach(first, id: \.self) { line in
+                                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                                    Circle().fill(Color.ink).frame(width: 6, height: 6).alignmentGuide(.firstTextBaseline) { $0[.bottom] + 5 }
+                                    Text(line).font(.geist(20, relativeTo: .title3)).fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                        }
+                        .padding(.bottom, 20)
+                    }
                     ForEach(Array(items.enumerated()), id: \.offset) { index, item in
                         Hairline(delay: 0.02 * Double(index))
                         row(index, item).id(index)
@@ -514,6 +723,53 @@ struct TimeUpBand: View {
                 Text(word).font(.caption).lineLimit(1).fixedSize()
             }
         }
+    }
+}
+
+/// The focus look's time's up: the page given over to it. What it was for, as large as
+/// the page allows, what to check, and how to stop it. A tap stops the timer.
+struct TimeUpPanel: View {
+    let timer: CookTimer
+    let others: Int
+    var cue: String? = nil
+    let controls: CookControls
+    let stop: () -> Void
+
+    var body: some View {
+        Button(action: stop) {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 10) {
+                    LucideIcon(.bellRing, size: 18)
+                    Text("Time’s up").font(.label)
+                    Spacer()
+                    Text("step \(timer.step + 1)" + (others > 0 ? " · and \(others) more" : "")).font(.caption).opacity(0.7)
+                }
+                Spacer(minLength: 12)
+                Text(timer.label).font(.geist(68, .medium, relativeTo: .largeTitle)).tracking(-2.5).lineLimit(2).minimumScaleFactor(0.5)
+                if let cue {
+                    Text("Check: \(cue)").font(.geist(24, relativeTo: .title2)).lineSpacing(2).padding(.top, 10)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 12)
+                HStack(spacing: 18) {
+                    ForEach([(CookCommand.timer, "Stop"), (.addMinute, "+1")], id: \.1) { command, word in
+                        if let trigger = controls.trigger(for: command) {
+                            HStack(spacing: 5) { TriggerGlyphs(steps: trigger.steps, size: 16); Text(word).font(.label) }
+                        }
+                    }
+                }
+            }
+            .foregroundStyle(Color.paper)
+            .padding(22)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            .background(Color.ink, in: RoundedRectangle(cornerRadius: Metric.panel))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressRow())
+        .padding(.horizontal, Metric.gutter).padding(.vertical, 8)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Time’s up for \(timer.label), step \(timer.step + 1)" + (cue.map { ". Check: \($0)" } ?? ""))
+        .accessibilityHint("Stops the timer.")
     }
 }
 
