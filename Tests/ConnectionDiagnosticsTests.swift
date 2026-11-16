@@ -431,37 +431,67 @@ struct ConnectionDiagnosticsTests {
         precondition(BandCapability.code(from: named(3, PB.field(1, 3) + PB.field(3, 2))) == 2)
         precondition(BandCapability.code(from: named(3, PB.field(1, 3))) == nil && BandCapability.code(from: Data()) == nil)
 
-        // The check is asked with an action the band lists other than a read, or a write when it lists none.
-        var capability = trigger!
-        precondition(BandTightness.actions(capability) == [1] && BandTightness.values(capability) == nil)
-        capability.actions = [2, 0, 2]; precondition(BandTightness.actions(capability) == [2])
-        capability.actions = [0]; precondition(BandTightness.actions(capability).isEmpty)
-        capability.actions = []; precondition(BandTightness.actions(capability) == [1])
-        capability.kind = nil; precondition(BandTightness.values(capability) == nil)
-        precondition(BandTightness.values(haptics!) == [0, 1, 2, 3] && BandTightness.values(choice!) == [0, 2])
-        precondition(BandTightness.values(signed!) == [-5, 200] && BandTightness.values(described(PB.field(9, Data()))!) == [])
-        var wide = haptics!; wide.high = 100; wide.current = 20
-        precondition(BandTightness.values(wide) == [0, 20, 100])
-        var yesNo = trigger!; yesNo.kind = .yesNo
-        precondition(BandTightness.values(yesNo) == [0, 1])
-
-        // The request itself. Only the setting that starts the check can be asked, and only as its description allows.
+        // The band's real description of the check: a whole number 0 to 100 and actions 2, 3 and 4.
         let name = BandTightness.trigger
-        precondition(BandTightness.start(id: 3, name: name, capability: trigger!, action: 1, value: nil) == Data([0x1a, 0x04, 0x08, 0x03, 0x10, 0x01]))
-        precondition(BandTightness.start(id: 3, name: name, capability: trigger!, action: 0, value: nil) == nil)
-        precondition(BandTightness.start(id: 3, name: name, capability: trigger!, action: 2, value: nil) == nil)
-        precondition(BandTightness.start(id: 3, name: name, capability: trigger!, action: 1, value: 1) == nil)
-        precondition(BandTightness.start(id: 2, name: "band-tightness-threshold", capability: haptics!, action: 1, value: 2) == nil)
-        precondition(BandTightness.start(id: 22, name: "haptics", capability: haptics!, action: 1, value: 2) == nil)
-        precondition(BandTightness.start(id: 3, name: name, capability: haptics!, action: 1, value: 2) == Data([0x1a, 0x08, 0x08, 0x03, 0x10, 0x01, 0x1a, 0x02, 0x08, 0x02]))
-        precondition(BandTightness.start(id: 3, name: name, capability: haptics!, action: 1, value: 4) == nil)
-        precondition(BandTightness.start(id: 3, name: name, capability: haptics!, action: 1, value: nil) == nil)
-        yesNo.actions = [5]
-        precondition(BandTightness.start(id: 3, name: name, capability: yesNo, action: 5, value: 1) == Data([0x1a, 0x08, 0x08, 0x03, 0x10, 0x05, 0x3a, 0x02, 0x08, 0x01]))
-        var chosen = choice!; chosen.actions = [1]
-        precondition(BandTightness.start(id: 3, name: name, capability: chosen, action: 1, value: 2) == Data([0x1a, 0x08, 0x08, 0x03, 0x10, 0x01, 0x52, 0x02, 0x08, 0x02]))
-        precondition(BandTightness.start(id: 3, name: name, capability: chosen, action: 1, value: 1) == nil)
-        precondition(BandTightness.start(id: 3, name: name, capability: described(PB.field(9, Data()))!, action: 1, value: 0) == nil)
+        let real = described(PB.field(3, Data(name.utf8)) + PB.field(4, 3) + PB.field(6, Data([2, 3, 4])) + PB.field(7, PB.field(3, 100)))!
+        precondition(real.summary == "whole number 0 to 100, now 0; actions 2 3 4")
+        // The ways are tried least first, and each needs the action the band lists for it.
+        precondition(BandTightness.plan(real)! == [
+            .worn, .run(value: nil, way: "run alone"), .listen(5),
+            .act(3), .listen(3), .run(value: nil, way: "after action 3"), .listen(8),
+            .run(value: 0, way: "after action 3, with value 0"), .listen(8),
+            .streams(22), .run(value: nil, way: "with setting updates on"), .listen(8),
+            .streams(27), .run(value: nil, way: "with detector updates on"), .listen(8)])
+        var plain = trigger!; plain.actions = [2]
+        precondition(BandTightness.plan(plain)! == [
+            .worn, .run(value: nil, way: "run alone"), .listen(5),
+            .streams(22), .run(value: nil, way: "with setting updates on"), .listen(8),
+            .streams(27), .run(value: nil, way: "with detector updates on"), .listen(8)])
+        precondition(BandTightness.plan(trigger!) == nil && BandTightness.plan(haptics!) == nil)
+
+        // The requests. Only the check's own setting is asked, never with a read or a write, and only as the band lists.
+        precondition(BandTightness.request(id: 3, name: name, capability: real, action: 2, value: nil) == Data([0x1a, 0x04, 0x08, 0x03, 0x10, 0x02]))
+        precondition(BandTightness.request(id: 3, name: name, capability: real, action: 3, value: nil) == Data([0x1a, 0x04, 0x08, 0x03, 0x10, 0x03]))
+        precondition(BandTightness.request(id: 3, name: name, capability: real, action: 4, value: nil) == Data([0x1a, 0x04, 0x08, 0x03, 0x10, 0x04]))
+        precondition(BandTightness.request(id: 3, name: name, capability: real, action: 2, value: 0) == Data([0x1a, 0x08, 0x08, 0x03, 0x10, 0x02, 0x1a, 0x02, 0x08, 0x00]))
+        precondition(BandTightness.request(id: 3, name: name, capability: real, action: 2, value: 100) != nil)
+        precondition(BandTightness.request(id: 3, name: name, capability: real, action: 2, value: 101) == nil)
+        precondition(BandTightness.request(id: 3, name: name, capability: real, action: 2, value: -1) == nil)
+        precondition(BandTightness.request(id: 3, name: name, capability: real, action: 3, value: 0) == nil)
+        var everything = real; everything.actions = [0, 1, 2, 3, 4, 5]
+        for action: UInt64 in [0, 1, 5] { precondition(BandTightness.request(id: 3, name: name, capability: everything, action: action, value: nil) == nil) }
+        precondition(BandTightness.request(id: 3, name: name, capability: plain, action: 3, value: nil) == nil)
+        precondition(BandTightness.request(id: 3, name: name, capability: plain, action: 2, value: 0) == nil)
+        precondition(BandTightness.request(id: 2, name: "band-tightness-threshold", capability: everything, action: 2, value: nil) == nil)
+        precondition(BandTightness.request(id: 22, name: "haptics", capability: everything, action: 2, value: 2) == nil)
+
+        // Stream requests keep the usual flags and add to them, and the band has to say each extra one back.
+        let usual = BandProtocol.streamFlags(gyro: true, orientation: false)
+        precondition(BandTightness.flags(usual, with: []) == usual)
+        precondition(BandTightness.flags(usual, with: [27, 22]) == usual + Data([0xb0, 0x01, 0x01, 0xd8, 0x01, 0x01]))
+        let both = PB.field(1, 9) + PB.field(2, 1) + PB.field(5, BandTightness.flags(usual, with: [22]))
+        precondition(BandTightness.streams(both, extra: [22]).taken && BandTightness.streams(both, extra: []).taken)
+        precondition(BandTightness.streams(both, extra: [22]).line == "Stream answer status 1 [2=0 3=1 6=1 8=0 22=1]")
+        precondition(!BandTightness.streams(both, extra: [22, 27]).taken)
+        precondition(BandTightness.streams(PB.field(2, 1) + PB.field(5, usual), extra: [22]).line == "Stream answer status 1, not taken [2=0 3=1 6=1 8=0]")
+        precondition(!BandTightness.streams(PB.field(2, 0) + PB.field(5, BandTightness.flags(usual, with: [22])), extra: [22]).taken)
+        precondition(BandTightness.streams(PB.field(2, 0), extra: []) == (false, "Stream answer status 0, no flags."))
+        precondition(BandTightness.streams(Data(), extra: []) == (false, "No stream answer: the band stayed silent or closed the request."))
+        precondition(BandTightness.streams(Data([0xff]), extra: []).line == "Stream answer unreadable.")
+
+        // A number in an answer counts only for this setting and only when the band did not refuse.
+        precondition(BandTightness.number(inAnswer: named(3, PB.field(1, 3) + PB.field(2, 2)), id: 3) == nil)
+        precondition(BandTightness.number(inAnswer: named(3, PB.field(1, 3) + PB.field(2, 2) + PB.field(4, PB.field(1, 37))), id: 3) == 37)
+        precondition(BandTightness.number(inAnswer: named(3, PB.field(1, 3) + PB.field(4, Data())), id: 3) == 0)
+        precondition(BandTightness.number(inAnswer: named(3, PB.field(1, 4) + PB.field(4, PB.field(1, 37))), id: 3) == nil)
+        precondition(BandTightness.number(inAnswer: named(3, PB.field(1, 3) + PB.field(3, 1) + PB.field(4, PB.field(1, 37))), id: 3) == nil)
+        precondition(BandTightness.number(inAnswer: named(3, PB.field(1, 3) + PB.field(4, PB.field(1, 37)), status: 0), id: 3) == nil)
+        precondition(BandTightness.number(inAnswer: Data(), id: 3) == nil)
+        // Whether the band says it is on a wrist.
+        precondition(BandTightness.worn(named(3, PB.field(1, 17) + PB.field(8, PB.field(1, 1))), id: 17) == "On wrist: yes.")
+        precondition(BandTightness.worn(named(3, PB.field(1, 17) + PB.field(8, Data())), id: 17) == "On wrist: no.")
+        precondition(BandTightness.worn(named(3, PB.field(1, 17) + PB.field(3, 1)), id: 17) == "On wrist: not readable.")
+        precondition(BandTightness.worn(Data(), id: 17) == "On wrist: not readable.")
 
         // What the band says back: the setting, the action, a result and a value of some kind.
         func said(_ message: Data) -> BandTightness.Answer { BandTightness.answer(try! Fields(message)) }
@@ -487,8 +517,9 @@ struct ConnectionDiagnosticsTests {
         // Messages the band sends without being asked, each written as what is known and then as numbers.
         let event = Data(repeating: 0xff, count: 16)
         let detector = PB.field(21, PB.field(1, event) + PB.field(2, 4) + PB.field(3, 2))
-        precondition(BandTightness.reading(fromUpdate: detector) == 2 && BandTightness.reading(fromUpdate: PB.field(21, PB.field(2, 4))) == nil)
-        precondition(BandTightness.reading(fromUpdate: Data()) == nil)
+        precondition(BandTightness.number(kind: BandTightness.update, payload: detector, id: 3) == 2)
+        precondition(BandTightness.number(kind: BandTightness.update, payload: PB.field(21, PB.field(2, 4)), id: 3) == nil)
+        precondition(BandTightness.number(kind: 0x0200020d, payload: detector, id: 3) == nil && BandTightness.number(kind: BandTightness.update, payload: Data(), id: 3) == nil)
         precondition(BandTightness.describe(kind: BandTightness.update, channel: 0x8005, payload: detector)
             == "Frame 2000316 channel 5, 25 bytes: detector update 4 tightness 2 [21={1=bytes(16) 2=4 3=2}]")
         var ratio = PB.varint(UInt64(2 << 3 | 5)); ratio.append(half)
@@ -498,6 +529,8 @@ struct ConnectionDiagnosticsTests {
         let pushed = PB.field(15, PB.field(1, PB.field(1, 3) + PB.field(4, PB.field(1, 17))))
         precondition(BandTightness.describe(kind: BandTightness.update, channel: 1, payload: pushed)
             == "Frame 2000316 channel 1, 10 bytes: setting update: setting 3 action 0 result 0 kind 4 value 17 [15={1={1=3 4={1=17}}}]")
+        precondition(BandTightness.number(kind: BandTightness.update, payload: pushed, id: 3) == 17 && BandTightness.number(kind: BandTightness.update, payload: pushed, id: 2) == nil)
+        precondition(BandTightness.number(kind: BandTightness.update, payload: PB.field(15, PB.field(1, PB.field(1, 3) + PB.field(2, 3))), id: 3) == nil)
         let other = PB.field(9, PB.field(1, 500) + PB.field(2, 6)) + PB.field(1, PB.field(1, 2) + PB.field(5, 1))
         precondition(BandTightness.describe(kind: BandTightness.update, channel: 5, payload: other)
             == "Frame 2000316 channel 5, 13 bytes: quality check, dead channels 6; device state 2 on wrist 1 reason 0 [1={1=2 5=1} 9={1=500 2=6}]")
@@ -512,7 +545,7 @@ struct ConnectionDiagnosticsTests {
         func isAnswer(_ signals: [BandProtocol.Signal], empty: Bool) -> Bool {
             signals.contains { if case .reply("named_trigger", let payload) = $0 { return payload.isEmpty == empty }; return false }
         }
-        let ask = BandTightness.start(id: 3, name: name, capability: trigger!, action: 1, value: nil)!
+        let ask = BandTightness.request(id: 3, name: name, capability: real, action: 2, value: nil)!
         func asked(_ fixture: TrustFixture, now: TimeInterval) throws -> UInt64 {
             let output = try fixture.host.request("named_trigger", channel: NamedSettings.channel, field: NamedSettings.field, payload: ask, now: now)
             let fields = try Fields(DataXReceiver().feed(fixture.bandRx.feed(output)[0])[0].payload)
@@ -547,6 +580,29 @@ struct ConnectionDiagnosticsTests {
         precondition(isAnswer(closed.1, empty: true))
         _ = try asked(live, now: 22)
         precondition(live.host.stage == "ready")
-        print("Band tightness checks passed: descriptions, the request and its limits, answers, unasked messages, refusal, silence and late answers.")
+        // A stream request the test makes is as optional: refused, unanswered or closed, the connection stays up and gestures go on.
+        func streamsAsked(_ now: TimeInterval) throws -> UInt64 {
+            let wanted = BandTightness.flags(BandProtocol.streamFlags(gyro: false, orientation: false), with: [22])
+            let output = try live.host.request("named_streams", channel: 5, field: 4, payload: wanted, now: now)
+            let fields = try Fields(DataXReceiver().feed(live.bandRx.feed(output)[0])[0].payload)
+            let sent = try fields.bytes(4)
+            precondition(sent == wanted)
+            return try fields.integer(1)
+        }
+        func isStreams(_ signals: [BandProtocol.Signal], empty: Bool) -> Bool {
+            signals.contains { if case .reply("named_streams", let payload) = $0 { return payload.isEmpty == empty }; return false }
+        }
+        id = try streamsAsked(23)
+        let refusedStreams = try live.send(Frame(channel: 5, words: [0x02000315], payload: PB.field(1, id) + PB.field(2, 0)), now: 24)
+        precondition(isStreams(refusedStreams.1, empty: false))
+        _ = try streamsAsked(25)
+        let silentStreams = try live.host.tick(now: 33)
+        precondition(isStreams(silentStreams, empty: true))
+        _ = try streamsAsked(34)
+        let closedStreams = try live.send(Frame(channel: 5, words: [0x0300c001], payload: Data()), now: 35)
+        precondition(isStreams(closedStreams.1, empty: true))
+        let still = try live.send(Frame(channel: 0x8005, words: [0x0200020d], payload: PB.field(1, 2) + PB.field(2, 200) + PB.field(3, 2) + PB.field(4, 1)), now: 36)
+        precondition(still.1.contains { if case .gesture = $0 { return true }; return false } && live.host.stage == "ready")
+        print("Band tightness checks passed: descriptions, the plan, requests and their limits, stream flags, answers, unasked messages, refusal, silence and late answers.")
     }
 }

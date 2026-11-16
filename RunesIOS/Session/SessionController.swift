@@ -303,8 +303,8 @@ final class SessionController: ObservableObject {
     func writeNamedSetting(_ setting: NamedSettings.Setting, value: UInt64) {
         core.transport.perform { [core] in core.writeNamedSetting(setting, value: value) }
     }
-    func checkBandTightness(_ setting: NamedSettings.Setting, action: UInt64, value: Int64?) {
-        core.transport.perform { [core] in core.checkTightness(setting, action: action, value: value) }
+    func checkBandTightness(_ setting: NamedSettings.Setting, worn: UInt64?) {
+        core.transport.perform { [core] in core.checkTightness(setting, worn: worn) }
     }
     func cancelWristFeedback(change: UUID) {
         core.transport.perform { [core] in core.cancelWristFeedback(change: change) }
