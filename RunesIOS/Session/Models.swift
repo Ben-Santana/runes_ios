@@ -379,7 +379,7 @@ enum BandSettings {
         return describe(config, depth: 0)
     }
 
-    private static func describe(_ fields: Fields, depth: Int) -> String {
+    static func describe(_ fields: Fields, depth: Int) -> String {
         fields.values.keys.sorted().flatMap { number in
             (fields.values[number] ?? []).map { value in
                 switch value {
@@ -391,6 +391,36 @@ enum BandSettings {
                 }
             }
         }.joined(separator: " ")
+    }
+}
+
+/// The band's own list of settings, which it can name. Each is asked for by its place in a
+/// group, described, and then read. Nothing here writes to the band.
+enum NamedSettings {
+    static let channel: UInt16 = 1, field = 14
+    static let groups: ClosedRange<UInt64> = 1...4
+
+    static func count(group: UInt64) -> Data { PB.field(1, PB.field(1, group)) }
+    static func describe(group: UInt64, index: UInt64) -> Data { PB.field(2, PB.field(1, group) + PB.field(2, index)) }
+    static func read(id: UInt64) -> Data { PB.field(3, PB.field(1, id) + PB.field(2, 0)) }
+
+    /// How many settings a group holds, from the answer to `count`. Nil for no answer, a refusal or a count that cannot be right.
+    static func count(from reply: Data) -> UInt64? {
+        guard let inner = part(1, of: reply), let count = try? inner.integer(1), count > 0, count < 256 else { return nil }
+        return count
+    }
+    /// A setting's number and name, from the answer to `describe`. The name is cut to 48 plain characters.
+    static func name(from reply: Data) -> (id: UInt64, name: String)? {
+        guard let info = part(2, of: reply), let id = try? info.integer(4), let raw = try? info.bytes(3) else { return nil }
+        let name = String(decoding: raw.prefix(48), as: UTF8.self).filter { $0.isLetter || $0.isNumber || "-_. ".contains($0) }
+        return (id, name)
+    }
+    /// A setting's value written as numbers (`BandSettings`), from the answer to `read`.
+    static func value(from reply: Data) -> String? { part(3, of: reply).map { BandSettings.describe($0, depth: 0) } }
+
+    private static func part(_ number: Int, of reply: Data) -> Fields? {
+        guard let fields = try? Fields(reply), (try? fields.integer(2)) == 1 else { return nil }
+        return try? Fields(Fields(fields.bytes(field)).bytes(number))
     }
 }
 

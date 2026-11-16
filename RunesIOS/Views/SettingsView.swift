@@ -104,6 +104,8 @@ struct SettingsView<Advanced: View>: View {
                         Rule()
                         LinkRow("Vibration lab") { VibrationLabScreen() }
                         Rule()
+                        LinkRow("Band tests") { BandTestsScreen() }
+                        Rule()
                         LinkRow("Advanced") { advanced() }
                     }
                 }
