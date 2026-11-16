@@ -17,6 +17,8 @@ struct SessionSnapshot: Sendable {
     var identityAccount: UUID?
     var identityFingerprint: String?
     var battery: Int?
+    /// Whether the band is set to stay quiet on gestures, which leaves the buzz to Runes. Nil until the band has said.
+    var bandQuietOnGestures: Bool?
     var handSetting = HandSetting()
     var hand: Handedness? {
         get { handSetting.confirmed }
@@ -545,14 +547,15 @@ enum BandTrial {
 
 extension BandGesture.Kind {
     /// What Runes plays on the band in answer to this gesture, in place of the buzz the band
-    /// gives by itself: a tick for a tap, which a double tap repeats, a firmer one as a hold
-    /// begins and a light one as it ends, and one in between for a swipe.
+    /// gives by itself. All but the end of a hold are at full strength and differ in length:
+    /// a tap, which a double tap repeats, a longer one as a hold begins, one in between for
+    /// a swipe, and a softer, shorter one as a hold ends.
     var answer: [BandPulse] {
         switch self {
-        case .tap, .doubleTap: [BandPulse(duration: 40, amplitude: 200)]
-        case .holdBegan: [BandPulse(duration: 70, amplitude: 230)]
-        case .holdEnded: [BandPulse(duration: 30, amplitude: 150)]
-        case .swipe: [BandPulse(duration: 50, amplitude: 210)]
+        case .tap, .doubleTap: [BandPulse(duration: 70, amplitude: 255)]
+        case .holdBegan: [BandPulse(duration: 130, amplitude: 255)]
+        case .holdEnded: [BandPulse(duration: 50, amplitude: 220)]
+        case .swipe: [BandPulse(duration: 95, amplitude: 255)]
         }
     }
 }

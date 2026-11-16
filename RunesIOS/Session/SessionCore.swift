@@ -93,10 +93,11 @@ final class SessionCore: @unchecked Sendable {
     private var buzzGeneration = 0
     private var pulseSentAt: TimeInterval?
     private var patternInFlight: UInt64?
+    /// When the gesture now being answered reached the phone, and the delays of the answers since the last report.
+    private var answerHeardAt: TimeInterval?
+    private var answerDelays: [TimeInterval] = []
     /// Whether the pattern playing is one to show on the screen edge.
     private var buzzShown = true
-    /// Whether the band is set to stay quiet on gestures. Nil until the band has said.
-    private var bandQuietOnGestures: Bool?
     /// Where the read of the named settings has got to: how many there are, the place in the list, and the setting just described.
     private var settingRead: (count: UInt64, index: UInt64, setting: NamedSettings.Setting?)?
     /// The named setting being written, until its value has been read back.
@@ -499,17 +500,31 @@ final class SessionCore: @unchecked Sendable {
 
     /// Buzzes the band in answer to a gesture, in place of the buzz the band gives by itself.
     /// Sent only while the band is known to stay quiet on gestures, so nothing is felt twice.
-    func answer(_ gesture: BandGesture.Kind) {
+    func answer(_ gesture: BandGesture.Kind, heardAt: Date) {
         // An answer that cannot go out at once is dropped: a late one would feel wrong.
-        guard bandQuietOnGestures == true, proto?.canSendWristFeedback == true else { return }
+        guard snapshot.bandQuietOnGestures == true, proto?.canSendWristFeedback == true else { return }
+        answerHeardAt = heardAt.timeIntervalSince1970
         play(gesture.answer, name: nil)
+    }
+
+    /// Notes how long one answer took, from the gesture reaching the phone to the band saying it
+    /// had the pulse, and reports every twenty. That round trip is about what the answer adds
+    /// over the band buzzing by itself: one leg in for the gesture and one leg out for the pulse.
+    private func timed(answer delay: TimeInterval) {
+        guard delay >= 0, delay < 2 else { return }
+        answerDelays.append(delay)
+        guard answerDelays.count >= 20 else { return }
+        let sorted = answerDelays.sorted()
+        answerDelays = []
+        func milliseconds(_ seconds: Double) -> Int { Int((seconds * 1000).rounded()) }
+        trial("gesture answers: 20 sent; gesture heard to pulse taken was \(milliseconds(sorted[10])) ms in the middle, \(milliseconds(sorted[0])) ms fastest, \(milliseconds(sorted[19])) ms slowest.")
     }
 
     /// Notes what the band's haptics setting is, as read on connecting or after it was written.
     private func heard(haptics value: UInt64) {
         let quiet = value == 2
-        guard quiet != bandQuietOnGestures else { return }
-        bandQuietOnGestures = quiet
+        guard quiet != snapshot.bandQuietOnGestures else { return }
+        snapshot.bandQuietOnGestures = quiet; publish()
         record("band_buzz", quiet ? "The band stays quiet on gestures; Runes answers them." : "Band haptics setting \(value); Runes does not answer gestures.")
     }
 
@@ -874,7 +889,9 @@ final class SessionCore: @unchecked Sendable {
             } else {
                 if result != .accepted { record("band_buzz", "Pulse \(result.rawValue): \(proto?.feedbackNote ?? "").") }
                 if let sent = pulseSentAt { onPulse?(result, receipt.uptime - sent) }
+                if let heard = answerHeardAt, result == .accepted { timed(answer: receipt.wallTime.timeIntervalSince1970 - heard) }
             }
+            answerHeardAt = nil
             pulseSentAt = nil; patternInFlight = nil
             feedbackInFlight = nil
             sendPendingHand(); sendNextPulse(); publish()

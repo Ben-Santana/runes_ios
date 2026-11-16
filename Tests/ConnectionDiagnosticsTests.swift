@@ -167,10 +167,10 @@ struct ConnectionDiagnosticsTests {
         // The band's haptics setting as it reports it, and what Runes plays in answer to each gesture.
         precondition(BandSettings.haptics(PB.field(6, PB.field(10, 0) + PB.field(11, 2))) == 2)
         precondition(BandSettings.haptics(PB.field(6, PB.field(10, 0))) == nil)
-        precondition(BandGesture.Kind.tap.answer == [BandPulse(duration: 40, amplitude: 200)])
+        precondition(BandGesture.Kind.tap.answer == [BandPulse(duration: 70, amplitude: 255)])
         precondition(BandGesture.Kind.doubleTap.answer == BandGesture.Kind.tap.answer)
         precondition(BandGesture.Kind.holdBegan.answer.first!.duration > BandGesture.Kind.holdEnded.answer.first!.duration)
-        precondition([BandGesture.Kind.tap, .holdBegan, .holdEnded, .swipe(.left)].allSatisfy { $0.answer.count == 1 && $0.answer[0].duration <= 80 })
+        precondition([BandGesture.Kind.tap, .holdBegan, .holdEnded, .swipe(.left)].allSatisfy { $0.answer.count == 1 && $0.answer[0].duration <= 150 })
         // Band tests: a gesture's acknowledgement, a stored pattern with its gap as a still segment, and stop.
         precondition(BandTrial.acknowledge(gesture: 7) == Data([0x08, 0x07, 0x10, 0x02, 0x18, 0x00]))
         let stored = BandTrial.pattern(named: "ab", [BandPulse(duration: 60, amplitude: 190, gap: 90), BandPulse(duration: 110, amplitude: 245)])
