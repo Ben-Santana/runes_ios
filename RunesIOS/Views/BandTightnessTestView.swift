@@ -81,17 +81,23 @@ struct BandTightnessPanel: View {
 
 #if DEBUG
 extension BandTightnessTest {
-    /// Stands in for a band that has described the check and answered it once.
-    func preview() {
+    /// Stands in for a band that has described the check and answers it over a few seconds.
+    func preview() async {
         let described = PB.field(2, 1) + PB.field(NamedSettings.field, PB.field(2, PB.field(3, Data(BandTightness.trigger.utf8)) + PB.field(4, 3)
             + PB.field(6, Data([1])) + PB.field(17, Data()) + PB.field(18, 1)))
         guard let setting = NamedSettings.setting(from: described), let capability = BandCapability(describing: described) else { return }
         self.described(setting, capability)
-        start()
-        heard("Asked: setting 3 action 1. Listening for 30 seconds.")
-        heard("+0.1s " + BandTightness.reply(PB.field(2, 1) + PB.field(NamedSettings.field, PB.field(3, PB.field(1, 3) + PB.field(2, 1)))))
-        heard("+2.4s " + BandTightness.describe(kind: BandTightness.update, channel: 5, payload: PB.field(21, PB.field(2, 1) + PB.field(3, 2))))
-        heard("+30.0s Stopped listening. 1 other messages.")
+        let steps: [(Double, String)] = [
+            (3, "Asked: setting 3 action 1. Listening for 30 seconds."),
+            (0.4, "+0.1s " + BandTightness.reply(PB.field(2, 1) + PB.field(NamedSettings.field, PB.field(3, PB.field(1, 3) + PB.field(2, 1))))),
+            (2.3, "+2.4s " + BandTightness.describe(kind: BandTightness.update, channel: 5, payload: PB.field(21, PB.field(2, 1) + PB.field(3, 2)))),
+            (3, "+30.0s Stopped listening. 1 other messages.")
+        ]
+        for (index, step) in steps.enumerated() {
+            try? await Task.sleep(for: .seconds(step.0))
+            if index == 0 { start() }
+            heard(step.1)
+        }
         heard("")
     }
 }

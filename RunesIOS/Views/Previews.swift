@@ -104,7 +104,7 @@ struct SnapshotGallery: View {
                     }
                 }
         } else if name == "band-tests" {
-            NavigationStack { BandTestsScreen() }.task { BandTightnessTest.shared.preview() }
+            NavigationStack { BandTestsScreen() }.task { await BandTightnessTest.shared.preview() }
         } else if name == "settings" {
             SettingsView(values: SettingsValues(battery: 82, handSetting: HandSetting(confirmed: .left), version: "0.2.0 (2)")) { EmptyView() }
         } else if name == "mappings" {
