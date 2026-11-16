@@ -10,6 +10,10 @@ struct CookScreen: View {
     @ObservedObject var store: CookStore
     @Binding var path: [AppRoute]
     @State private var adding = false
+    /// A link is on the clipboard, and whether the editor should take it by itself.
+    @State private var copied = false
+    @State private var fromClipboard = false
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showSettings = false
     @State private var deleting: Recipe?
 
@@ -20,7 +24,12 @@ struct CookScreen: View {
                 case .contents: contents
                 case .ledger: ledger
                 }
-                AddRow(title: "Add a recipe") { adding = true }
+                // A link copied in a browser or from a reel is one tap from being a recipe.
+                if copied {
+                    AddRow(title: "Add the link you copied") { fromClipboard = true; adding = true }
+                    Hairline()
+                }
+                AddRow(title: "Add a recipe") { fromClipboard = false; adding = true }
                 Note("Paste any recipe or a link to one. Runes sorts it into ingredients and steps, and the times in them become timers.")
                     .padding(.top, 8)
             }
@@ -36,9 +45,13 @@ struct CookScreen: View {
             }
         }
         .sheet(isPresented: $adding) {
-            RecipeEditor(store: store, recipe: nil) { saved in path.append(.recipe(saved.id)) }
+            RecipeEditor(store: store, recipe: nil, pastes: fromClipboard) { saved in path.append(.recipe(saved.id)) }
+                .onDisappear { copied = false }
         }
         .sheet(isPresented: $showSettings) { CookSettingsScreen(store: store) }
+        // Knowing a link is there doesn't read it, so iOS asks nothing until it is used.
+        .onAppear { copied = UIPasteboard.general.hasURLs }
+        .onChange(of: scenePhase) { _, phase in if phase == .active { copied = UIPasteboard.general.hasURLs } }
         .confirmationDialog("Delete \(deleting?.title ?? "this recipe")?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
                             titleVisibility: .visible) {
             Button("Delete recipe", role: .destructive) { if let deleting { store.delete(deleting.id) } }
@@ -64,6 +77,13 @@ struct CookScreen: View {
 
     /// A cookbook's contents page: what is cooking, what was cooked lately, and the rest.
     @ViewBuilder private var contents: some View {
+        // With a few to choose from, the one cooked longest ago is put forward.
+        if store.session == nil, store.recipes.count > 2,
+           let pick = store.recipes.filter(\.isUsable).min(by: { ($0.lastCooked ?? .distantPast) < ($1.lastCooked ?? .distantPast) }) {
+            Heading("Tonight?")
+            ContentsRow(recipe: pick, note: RecipeBrief.reason(pick)) { path.append(.recipe(pick.id)) }
+                .padding(.bottom, 24)
+        }
         let recent = Array(store.recipes.filter { $0.lastCooked != nil }.sorted { ($0.lastCooked ?? .distantPast) > ($1.lastCooked ?? .distantPast) }.prefix(3))
         let rest = store.recipes.filter { recipe in !recent.contains { $0.id == recipe.id } }
         if let session = store.session {
@@ -174,6 +194,8 @@ private struct RecipeRow: View {
 private struct ContentsRow: View {
     let recipe: Recipe
     var session: CookSession? = nil
+    /// Said in place of the usual line under the name.
+    var note: String? = nil
     let open: () -> Void
 
     var body: some View {
@@ -216,6 +238,7 @@ private struct ContentsRow: View {
 
     private var caption: String {
         if let session { return session.finished ? "Finished" : session.position }
+        if let note { return note }
         var parts = [recipe.yield, recipe.steps.count == 1 ? "1 step" : "\(recipe.steps.count) steps"].compactMap { $0 }
         if recipe.cooked > 0 { parts.append(recipe.cooked == 1 ? "cooked once" : "cooked \(recipe.cooked) times") }
         return parts.joined(separator: " · ")
@@ -336,6 +359,8 @@ struct RecipeScreen: View {
     /// Ingredients ticked off before cooking starts.
     @State private var ready: Set<Int> = []
     @State private var noting = false
+    /// The model's one line about what goes wrong with this recipe.
+    @State private var tip: String?
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -385,6 +410,19 @@ struct RecipeScreen: View {
                     TimeLine(recipe: recipe).padding(.top, 6)
                     Text(recipe.timeSummary).font(.caption).foregroundStyle(Color.muted)
                 }
+                // What catches cooks out, said before the heat is on: found by rules, and
+                // one line more from the model on the phone when it has something to add.
+                let brief = RecipeBrief.lines(recipe) + (tip.map { [$0] } ?? [])
+                if !brief.isEmpty {
+                    Block {
+                        ForEach(Array(brief.enumerated()), id: \.offset) { index, line in
+                            if index > 0 { Hairline(delay: 0.03 * Double(index)) }
+                            Text(line).font(.bodyText).lineSpacing(3).fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 12)
+                        }
+                    } header: { Heading("Before you start") }
+                    .animation(.standard, value: tip)
+                }
                 if !shown.ingredients.isEmpty {
                     Block {
                         if let base, session == nil {
@@ -426,6 +464,7 @@ struct RecipeScreen: View {
             .animation(.standard, value: recipe.notes)
         }
         .scrollDismissesKeyboard(.interactively)
+        .task(id: recipe.id) { if RunesIOSApp.snapshotName == nil { tip = await RecipeModel.tip(for: recipe) } }
         .toolbar {
             ToolbarItemGroup(placement: .keyboard) {
                 Spacer()
@@ -626,8 +665,12 @@ struct RecipeEditor: View {
     @FocusState private var focused: Bool
     @Environment(\.dismiss) private var dismiss
 
-    init(store: CookStore, recipe: Recipe?, text: String? = nil, original: String? = nil, saved: @escaping (Recipe) -> Void) {
-        self.store = store; self.recipe = recipe; self.saved = saved
+    /// Whether the editor takes what is on the clipboard as it opens, and saves by itself a
+    /// recipe that came whole from a page's own data.
+    private let pastes: Bool
+
+    init(store: CookStore, recipe: Recipe?, text: String? = nil, original: String? = nil, pastes: Bool = false, saved: @escaping (Recipe) -> Void) {
+        self.store = store; self.recipe = recipe; self.saved = saved; self.pastes = pastes
         _text = State(initialValue: text ?? recipe?.text ?? "")
         _source = State(initialValue: recipe?.source)
         _original = State(initialValue: original)
@@ -710,6 +753,7 @@ struct RecipeEditor: View {
         .tint(Color.ink)
         .onAppear {
             issues = findIssues()
+            if pastes, text.isEmpty { paste(); return }
             if recipe == nil, text.isEmpty { focused = true }
         }
     }
@@ -813,6 +857,8 @@ struct RecipeEditor: View {
                 case .recipe(let fetched):
                     source = fetched.source
                     place(fetched.text)
+                    // The publisher's own structure needs no checking: it is saved as it is.
+                    if pastes, parsed.isUsable { fetching = false; save(); return }
                 case .page(let page):
                     // No recipe data on the page: its words, sorted by the model when
                     // there is one, by the rules when there isn't.

@@ -687,6 +687,14 @@ struct GatherPage: View {
                         }
                         .padding(.bottom, 20)
                     }
+                    // What was written down the last time, read before it is too late to use.
+                    if let notes = session.recipe.notes, !notes.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Remember").font(.label)
+                            ForEach(notes.suffix(2), id: \.self) { Text($0).font(.bodyText).foregroundStyle(Color.muted).fixedSize(horizontal: false, vertical: true) }
+                        }
+                        .padding(.bottom, 20)
+                    }
                     ForEach(Array(items.enumerated()), id: \.offset) { index, item in
                         Hairline(delay: 0.02 * Double(index))
                         row(index, item).id(index)
