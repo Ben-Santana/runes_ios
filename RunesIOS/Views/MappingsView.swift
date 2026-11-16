@@ -881,6 +881,7 @@ extension MappingAction {
         case .spotify(.play), .spotify(.playPause): .play
         case .spotify(.pause): .square
         case .spotify(.saveTrack): .heart
+        case .spotify(.nextDevice): .headphones
         case .spotify(.toggleShuffle), .spotify(.cycleRepeat): .rotateCcw
         default: kind.icon
         }

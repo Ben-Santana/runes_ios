@@ -219,19 +219,30 @@ final class SpotifyClient: ObservableObject {
                 // Authentication/access failures must keep their original reason, not be masked by a fallback.
                 try check(result, endpoint: "/v1/me/library")
             }
+        case .nextDevice:
+            guard let device = SpotifyDevices.next(in: try await devices(token)) else {
+                throw SpotifyError.message("No other Spotify device is available. Open Spotify on the device you want to switch to.")
+            }
+            // Without "play" in the request, what was playing keeps playing and what was paused stays paused.
+            let body = try JSONSerialization.data(withJSONObject: ["device_ids": [device.id]])
+            try check(try await send("PUT", Self.player, token: token, body: body), endpoint: "/v1/me/player")
         }
     }
 
     /// Resumes; with no active device, wakes the first available one.
     private func play(_ token: String) async throws {
         do { try await call("PUT", "/play", token) } catch SpotifyError.noDevice {
-            let (data, status) = try await send("GET", Self.player + "/devices", token: token)
-            try check((data, status), endpoint: "/v1/me/player/devices")
-            let devices = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["devices"] as? [[String: Any]] ?? []
-            guard let id = devices.first?["id"] as? String else { throw SpotifyError.noDevice }
+            guard let id = try await devices(token).first?["id"] as? String else { throw SpotifyError.noDevice }
             let body = try JSONSerialization.data(withJSONObject: ["device_ids": [id], "play": true])
             try check(try await send("PUT", Self.player, token: token, body: body), endpoint: "/v1/me/player")
         }
+    }
+
+    /// The person's Spotify devices that are open now.
+    private func devices(_ token: String) async throws -> [[String: Any]] {
+        let (data, status) = try await send("GET", Self.player + "/devices", token: token)
+        try check((data, status), endpoint: "/v1/me/player/devices")
+        return (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["devices"] as? [[String: Any]] ?? []
     }
 
     private func playback(_ token: String) async throws -> [String: Any]? {
