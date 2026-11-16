@@ -117,12 +117,17 @@ struct Frame {
 
 final class DataXReceiver {
     var pending = Data()
+    /// Newer firmware pads every record, with a whole block when its frames end on one, and can
+    /// split a frame across records. The end of a record is then always padding.
+    var everyRecordPadded = false
     func feed(_ input: Data, padded: Bool = true) throws -> [Frame] {
         var data = input
         if padded {
             guard !data.isEmpty, data.count % 16 == 0 else { throw BandError.wire("Unaligned DataX record.") }
             let padding = Int(data.octet(data.count - 1)) - 0xc0
-            if (1...15).contains(padding), data.suffix(padding).allSatisfy({ $0 == UInt8(0xc0 + padding) }), !endsAtBoundary(data) { data.removeLast(padding) }
+            if everyRecordPadded {
+                if (1...16).contains(padding), data.suffix(padding).allSatisfy({ $0 == UInt8(0xc0 + padding) }) { data.removeLast(padding) }
+            } else if (1...15).contains(padding), data.suffix(padding).allSatisfy({ $0 == UInt8(0xc0 + padding) }), !endsAtBoundary(data) { data.removeLast(padding) }
         }
         guard pending.count + data.count <= 1 << 20 else { throw BandError.wire("DataX buffer overflow.") }
         pending.append(data); var result: [Frame] = []

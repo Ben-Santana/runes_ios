@@ -28,6 +28,10 @@ final class BandProtocol {
     private var point: Data { Data(ephemeral.publicKey.x963Representation.dropFirst()) }
     private var peerPoint: Data?, peerChallenge: Data?, peerSeed: Data?
     private var tx: AirShieldCipher?, rx: AirShieldReceiver?
+    /// The link rules for the firmware this band runs, taken from its encryption request.
+    private var link = BandLink.original
+    /// What the band offered and which rules were chosen, for the journal.
+    private(set) var linkNote = ""
     private let clear = DataXReceiver(), frames = DataXReceiver()
     private var types: [UInt16: UInt32] = [:], pending: [UInt16: Pending] = [:], opened: Set<UInt16> = []
     private var nextID: UInt64 = 0
@@ -71,7 +75,7 @@ final class BandProtocol {
     func encrypt(_ data: Data) throws -> Data {
         guard let tx else { throw BandError.wire("Encryption is not established.") }
         var output = Data(), offset = 0
-        while offset < data.count { let end = min(offset + 4096, data.count); output.append(try tx.encrypt(data.portion(offset..<end))); offset = end }
+        while offset < data.count { let end = min(offset + link.recordLimit, data.count); output.append(try tx.encrypt(data.portion(offset..<end))); offset = end }
         return output
     }
     func resume(_ completion: PairCompletion) throws -> Data {
@@ -117,15 +121,21 @@ final class BandProtocol {
         let f = try Fields(packet.payload), peer = try f.bytes(1, count: 64)
         let publicKey = try P256.KeyAgreement.PublicKey(x963Representation: Data([4]) + peer)
         if kind == 0x02000001 {
-            guard packet.channel == 0x8001, peerPoint == nil, try f.integer(3) == 0, try f.integer(4) == 3 else { throw BandError.wire("Unsupported encryption request.") }
+            let schemes = try f.integer(4)
+            linkNote = "offered \(schemes)"
+            guard BandLink.route(packet.channel) == 0x8001, peerPoint == nil, try f.integer(3) == 0, let offered = BandLink.offered(schemes) else { throw BandError.wire("Unsupported encryption request (schemes \(schemes)).") }
+            link = offered; linkNote += ", using \(link.scheme)"
             peerPoint = peer; peerChallenge = try f.bytes(2, count: 16)
-            return try frame(1, [0x02000002], PB.field(1, point) + PB.field(2, seed) + PB.field(3, iv) + PB.field(4, counter) + PB.field(5, 3))
+            return try frame(1, [0x02000002], PB.field(1, point) + PB.field(2, seed) + PB.field(3, iv) + PB.field(4, counter) + PB.field(5, link.scheme))
         }
-        guard kind == 0x02000002, packet.channel == 1, peer == peerPoint, let peerChallenge, try f.integer(5) == 3 else { throw BandError.wire("Unexpected encryption response.") }
+        let named = try f.integer(5, default: 0)
+        linkNote += ", band named \(named)"
+        guard kind == 0x02000002, BandLink.route(packet.channel) == 1, peer == peerPoint, let peerChallenge, named == link.scheme else { throw BandError.wire("Unexpected encryption response (scheme \(named)).") }
         let peerSeed = try f.bytes(2, count: 32); self.peerSeed = peerSeed
         let secret = try ephemeral.sharedSecretFromKeyAgreement(with: publicKey).withUnsafeBytes { Data($0) }
-        tx = try AirShieldCipher(key: BandCrypto.key(secret: secret, challenge: peerChallenge, seed: seed), iv: iv, counter: counter)
-        rx = try AirShieldReceiver(AirShieldCipher(key: BandCrypto.key(secret: secret, challenge: challenge, seed: peerSeed), iv: f.bytes(3, count: 16), counter: f.integer(4)))
+        tx = try AirShieldCipher(key: link.key(secret: secret, challenge: peerChallenge, seed: seed), iv: iv, counter: counter, link: link)
+        rx = try AirShieldReceiver(AirShieldCipher(key: link.key(secret: secret, challenge: challenge, seed: peerSeed), iv: f.bytes(3, count: 16), counter: f.integer(4), link: link))
+        frames.everyRecordPadded = link.padsEveryRecord
         if let ceremony { stage = "ceremony"; deadline = now + 180; return try encrypt(ceremony.start()) }
         stage = "trust"; deadline = now + 15; return try enableTrust()
     }
@@ -143,15 +153,15 @@ final class BandProtocol {
         return Data()
     }
     private func receive(_ packet: Frame, now: TimeInterval) throws -> (Data, [Signal]) {
-        let kind: UInt32
+        let kind: UInt32, channel = BandLink.route(packet.channel)
         if let word = packet.words.last {
             if word & 0xff000000 == 0x03000000 { return try result(packet, kind: word) }
-            guard types.count < 1024 || types[packet.channel] != nil else { throw BandError.wire("Too many protocol channels.") }
-            types[packet.channel] = word; kind = word
-        } else if let word = types[packet.channel] { kind = word } else { return (Data(), []) }
+            guard types.count < 1024 || types[channel] != nil else { throw BandError.wire("Too many protocol channels.") }
+            types[channel] = word; kind = word
+        } else if let word = types[channel] { kind = word } else { return (Data(), []) }
         if kind == 0x02001001 && bandTrusted { throw BandError.authentication("Duplicate band proof.") }
         if stage == "ceremony", let ceremony {
-            guard packet.channel & 0x7fff == 2 else { return (Data(), []) }
+            guard channel & 0x7fff == 2 else { return (Data(), []) }
             let step = try ceremony.receive(kind: kind, payload: packet.payload)
             switch step {
             case .write(let bytes): return (try encrypt(bytes), [])
@@ -173,7 +183,7 @@ final class BandProtocol {
                 bandTrusted = true
                 return (try encrypt(frame(packet.channel & 0x7fff, [0x03001000])) + maybeEnd(), [])
             }
-            if kind == 0x02001000, packet.channel == 0x8001, endSent {
+            if kind == 0x02001000, channel == 0x8001, endSent {
                 let f = try Fields(packet.payload)
                 guard try f.integer(1) == 1 else { throw BandError.wire("Invalid setup acknowledgement.") }
                 _ = try f.bytes(2, count: 16); stage = "device_info"; deadline = now + 8
@@ -181,10 +191,10 @@ final class BandProtocol {
             }
             return (Data(), [])
         }
-        if kind == 0x02000315, packet.channel & 0x8000 == 0 {
+        if kind == 0x02000315, channel & 0x8000 == 0 {
             let f = try Fields(packet.payload), id = try f.integer(1)
-            guard let p = pending[packet.channel], p.id == id else { return (Data(), []) }
-            pending[packet.channel] = nil
+            guard let p = pending[channel], p.id == id else { return (Data(), []) }
+            pending[channel] = nil
             // EMG is optional: a refused configuration read is reported, never fatal.
             if p.operation == "emg_configuration" || p.isOptional { return (Data(), [.reply(operation: p.operation, payload: packet.payload)]) }
             if p.isWristFeedback {
@@ -211,7 +221,8 @@ final class BandProtocol {
                 if try wanted.integer(2) == 1, try accepted.integer(2, default: 0) != 1 {
                     return (Data(), [.emgUnavailable("Band acknowledged streams without EMG.")])
                 }
-                for n in [2, 3, 6, 8] { guard try accepted.integer(n) == wanted.integer(n) else { throw BandError.wire("Band stream acknowledgement differs from request.") } }
+                // A flag the band leaves out of its answer is off.
+                for n in [2, 3, 6, 8] { guard try accepted.integer(n, default: 0) == wanted.integer(n) else { throw BandError.wire("Band stream acknowledgement differs from request.") } }
                 gesturesEnabled = try wanted.integer(3) == 1
                 gyroEnabled = try wanted.integer(6) == 1
                 orientationEnabled = try wanted.integer(8) == 1
@@ -239,7 +250,7 @@ final class BandProtocol {
         return (Data(), [])
     }
     private func result(_ packet: Frame, kind: UInt32) throws -> (Data, [Signal]) {
-        let channel = packet.channel & 0x7fff
+        let channel = BandLink.route(packet.channel) & 0x7fff
         if stage == "trust", channel == 2 {
             guard kind == 0x03001000 else { throw BandError.trust(.rejected(result: kind, channel: packet.channel)) }
             guard !hostTrusted else { throw BandError.wire("Duplicate host authentication acknowledgement (channel \(packet.channel)).") }

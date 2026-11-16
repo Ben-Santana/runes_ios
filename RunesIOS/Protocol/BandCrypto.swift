@@ -29,15 +29,14 @@ final class AirShieldCipher {
     private var iv: Data
     private var counter: UInt32
     private var records: UInt64 = 0
-    init(key: Data, iv: Data, counter: UInt64) throws {
+    private let link: BandLink
+    init(key: Data, iv: Data, counter: UInt64, link: BandLink = .original) throws {
         guard key.count == 32, iv.count == 16, counter <= UInt32.max else { throw BandError.wire("Invalid AirShield parameters.") }
-        self.key = key; self.iv = iv; self.counter = UInt32(counter)
+        self.key = key; self.iv = iv; self.counter = UInt32(counter); self.link = link
     }
     private func tag(_ body: Data) throws -> Data {
         guard records < 1 << 32 else { throw BandError.authentication("Encryption counter exhausted; reconnect.") }
-        var count = counter.littleEndian
-        let prefix = Swift.withUnsafeBytes(of: &count) { Data($0) }
-        return Data(HMAC<SHA256>.authenticationCode(for: prefix + body, using: SymmetricKey(data: key)).prefix(8))
+        return link.tag(body, counter: counter, key: key)
     }
     private func crypt(_ input: Data, operation: CCOperation) throws -> Data {
         var output = [UInt8](repeating: 0, count: input.count + 16), written = 0
@@ -49,7 +48,7 @@ final class AirShieldCipher {
     }
     private func advance(_ ciphertext: Data) { iv = Data(ciphertext.suffix(16)); counter &+= 1; records += 1 }
     func encrypt(_ data: Data) throws -> Data {
-        var plain = data; let padding = (16 - plain.count % 16) % 16
+        var plain = data; let padding = link.padding(for: plain.count)
         plain.append(contentsOf: repeatElement(UInt8(0xc0 + padding), count: padding))
         guard !plain.isEmpty, plain.count <= 4096 else { throw BandError.wire("Invalid record length.") }
         let ciphertext = try crypt(plain, operation: CCOperation(kCCEncrypt))
