@@ -781,6 +781,24 @@ struct GestureInterpreter: Sendable {
         return out
     }
 
+    /// The gesture a packet means for an answer on the wrist, known the moment it arrives:
+    /// each tap as it lands, without the wait that tells a double tap from two taps (the
+    /// second tap of a double is a tap here too), a hold beginning or ending, and a swipe.
+    /// Nil for the raw layer and for packets that are parts of a gesture.
+    static func immediate(_ event: GestureEvent) -> BandGesture.Kind? {
+        guard event.stream == .derived, !event.synthetic else { return nil }
+        switch event.derivedActionCode {
+        case 1: return .tap
+        case 3: return .holdBegan
+        case 10: return .holdEnded
+        case 5: return .swipe(.up)
+        case 6: return .swipe(.down)
+        case 7: return .swipe(.left)
+        case 8: return .swipe(.right)
+        default: return nil
+        }
+    }
+
     /// Releases a waiting single tap once `settle` has passed.
     mutating func flush(now: TimeInterval) -> [BandGesture] {
         var out: [BandGesture] = []

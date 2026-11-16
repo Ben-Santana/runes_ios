@@ -90,6 +90,9 @@ final class SessionCore: @unchecked Sendable {
     /// When the gesture now being answered reached the phone, and the delays of the answers since the last report.
     private var answerHeardAt: TimeInterval?
     private var answerDelays: [TimeInterval] = []
+    private var answersUntimed = 0
+    /// The sequence number of the last packet answered, since the band can deliver one twice.
+    private var lastAnswered: UInt64?
     /// Whether the pattern playing is one to show on the screen edge.
     private var buzzShown = true
     /// Where the read of the named settings has got to: how many there are, the place in the list, and the setting just described.
@@ -471,12 +474,22 @@ final class SessionCore: @unchecked Sendable {
     }
 
     /// Buzzes the band in answer to a gesture, in place of the buzz the band gives by itself.
-    /// Sent only while the band is known to stay quiet on gestures, so nothing is felt twice.
-    func answer(_ gesture: BandGesture.Kind, heardAt: Date) {
-        // An answer that cannot go out at once is dropped: a late one would feel wrong.
-        guard snapshot.bandQuietOnGestures == true, proto?.canSendWristFeedback == true else { return }
-        answerHeardAt = heardAt.timeIntervalSince1970
-        play(gesture.answer, name: nil)
+    /// Sent only while the band is known to stay quiet on gestures, so nothing is felt twice,
+    /// and straight from where the packet arrives, so no time is lost on the way. When
+    /// nothing else is waiting on the band the answer is timed; otherwise it is sent
+    /// without waiting for a reply, so an answer is never skipped.
+    private func answer(_ event: GestureEvent) {
+        guard snapshot.state == .streaming, snapshot.bandQuietOnGestures == true, let proto,
+              event.sequence != lastAnswered, let gesture = GestureInterpreter.immediate(event),
+              UserDefaults.standard.object(forKey: Preferences.bandAnswers) as? Bool ?? true else { return }
+        lastAnswered = event.sequence
+        if proto.canSendWristFeedback {
+            answerHeardAt = event.received.wallTime.timeIntervalSince1970
+            play(gesture.answer, name: nil)
+        } else if let pulse = gesture.answer.first, let frame = try? proto.post(channel: 6, field: 17, payload: pulse.payload) {
+            try? transport.write(frame)
+            answersUntimed += 1
+        }
     }
 
     /// Notes how long one answer took, from the gesture reaching the phone to the band saying it
@@ -486,10 +499,10 @@ final class SessionCore: @unchecked Sendable {
         guard delay >= 0, delay < 2 else { return }
         answerDelays.append(delay)
         guard answerDelays.count >= 20 else { return }
-        let sorted = answerDelays.sorted()
-        answerDelays = []
+        let sorted = answerDelays.sorted(), untimed = answersUntimed
+        answerDelays = []; answersUntimed = 0
         func milliseconds(_ seconds: Double) -> Int { Int((seconds * 1000).rounded()) }
-        trial("gesture answers: 20 sent; gesture heard to pulse taken was \(milliseconds(sorted[10])) ms in the middle, \(milliseconds(sorted[0])) ms fastest, \(milliseconds(sorted[19])) ms slowest.")
+        trial("gesture answers: 20 timed, \(untimed) more sent without waiting; gesture heard to pulse taken was \(milliseconds(sorted[10])) ms in the middle, \(milliseconds(sorted[0])) ms fastest, \(milliseconds(sorted[19])) ms slowest.")
     }
 
     /// Notes what the band's haptics setting is, as read on connecting or after it was written.
@@ -676,7 +689,7 @@ final class SessionCore: @unchecked Sendable {
                         snapshot.startedAt = Date()
                         transition(.streaming, candidate?.bandPoint == nil ? "Receiving band gestures. Compatibility mode: band identity is unverified." : "Receiving band gestures.")
                         // A read or write of a named setting cut off by a lost link is not carried over.
-                        settingRead = nil; settingWrite = nil
+                        settingRead = nil; settingWrite = nil; lastAnswered = nil
                         requestHand()
                     }
                     try reconcileStreams()
@@ -758,6 +771,7 @@ final class SessionCore: @unchecked Sendable {
                                               phoneUptime: receipt.uptime, phoneTime: receipt.wallTime,
                                               gesture: [finger, action, derived, synthetic ? 1 : 0]))
             }
+            answer(event)
             record("gesture", event: event, receipt: receipt)
             if acknowledgesGestures, !synthetic { tryOnBand("acknowledge", field: 11, BandTrial.acknowledge(gesture: sequence)) }
             snapshot.eventCount += 1; snapshot.events.insert(event, at: 0)

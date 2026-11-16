@@ -168,6 +168,18 @@ struct ConnectionDiagnosticsTests {
         precondition(BandSettings.haptics(PB.field(6, PB.field(10, 0))) == nil)
         precondition(BandGesture.Kind.tap.answer == [BandPulse(duration: 70, amplitude: 255)])
         precondition(BandGesture.Kind.doubleTap.answer == BandGesture.Kind.tap.answer)
+        // A packet is answered as it arrives: taps, holds and swipes of the derived layer, and nothing else.
+        func packet(action: UInt64 = 0, derived: UInt64, synthetic: Bool = false) -> GestureEvent {
+            GestureEvent(id: UUID(), sessionID: UUID(), fingerCode: 2, actionCode: action, derivedActionCode: derived, synthetic: synthetic, sequence: 1, deviceTimestamp: 0,
+                         received: ReceiptContext(wallTime: Date(), uptime: 0, applicationState: "foreground"))
+        }
+        precondition(GestureInterpreter.immediate(packet(derived: 1)) == .tap)
+        precondition(GestureInterpreter.immediate(packet(derived: 3)) == .holdBegan)
+        precondition(GestureInterpreter.immediate(packet(derived: 10)) == .holdEnded)
+        precondition(GestureInterpreter.immediate(packet(derived: 7)) == .swipe(.left))
+        precondition(GestureInterpreter.immediate(packet(derived: 2)) == nil)
+        precondition(GestureInterpreter.immediate(packet(action: 3, derived: 0)) == nil)
+        precondition(GestureInterpreter.immediate(packet(derived: 1, synthetic: true)) == nil)
         precondition(BandGesture.Kind.holdBegan.answer.first!.duration > BandGesture.Kind.holdEnded.answer.first!.duration)
         precondition([BandGesture.Kind.tap, .holdBegan, .holdEnded, .swipe(.left)].allSatisfy { $0.answer.count == 1 && $0.answer[0].duration <= 150 })
         // Band tests: a gesture's acknowledgement, a stored pattern with its gap as a still segment, and stop.

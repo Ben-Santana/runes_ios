@@ -87,6 +87,14 @@ final class BandProtocol {
         pending[channel] = Pending(operation: operation, id: nextID, deadline: now + (["wrist_feedback", "band_pattern"].contains(operation) ? 5 : 8), flags: ["start_streams", "stop_streams"].contains(operation) ? payload : nil)
         return try encrypt(frame(channel | 0x8000, words, PB.field(1, nextID) + PB.field(field, payload)))
     }
+    /// A request sent without waiting for its answer, on a channel already in use: for a buzz
+    /// that must go out at once even while another request there is unanswered. The band's
+    /// reply matches no waiting request and is dropped.
+    func post(channel: UInt16, field: Int, payload: Data) throws -> Data {
+        guard stage == "ready", opened.contains(channel) else { throw BandError.wire("Request is invalid for this protocol state.") }
+        nextID += 1
+        return try encrypt(frame(channel | 0x8000, [], PB.field(1, nextID) + PB.field(field, payload)))
+    }
     func feed(_ input: Data, now: TimeInterval) throws -> (Data, [Signal]) {
         var signals = try tick(now: now)
         var output = Data(), data = input
