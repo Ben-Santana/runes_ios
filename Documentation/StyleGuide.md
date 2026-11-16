@@ -134,6 +134,7 @@ one sentence, one hairline button.
 | `GatherPage` | CookingLayouts | The ingredients before step one, large, with an ink mark at the leading edge on the line the band is on |
 | `AskCard` | CookingLayouts | A question and its answer in the step's place: what was heard, a hairline, the answer in large type |
 | `TimeUpBand` | CookingLayouts | Ink across the top while a timer's time is up; draws in from the leading edge and holds still |
+| `Bead` | CookBeads | The ring's pod laid flat, for where the ring itself would be too small: paper in a hairline, a dot in the middle for here or done, full of ink for a time counting, the ink running down to the dot. Rings spread from one that is counting and one whose time is up rattles; Reduce Motion holds both still. A second ring marks the one the band's gestures act on. Always eight in a picture |
 | `HairlineSwitch` | CaptureView | A switch in ink and hairline (outline and open knob off, filled on); reads in both appearances |
 | `TriggerComposer` | TriggerComposer | The one way to set a gesture or build a combo: a track of step tiles (the selected one in ink, a dashed slot for the next, an ink line under steps made with a finger held) over a four-column pad of gesture keys. Inline on a page it opens the pad when a step is touched |
 | `TriggerSheet` | TriggerComposer | The composer over a draft, with Cancel and Save; `TriggerRules` says whether it takes one gesture, a combo or either |
