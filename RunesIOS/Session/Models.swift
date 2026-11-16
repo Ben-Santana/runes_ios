@@ -370,6 +370,30 @@ enum BandBuzz: String, Codable, CaseIterable, Sendable {
     }
 }
 
+/// What the band reports of its own settings, written out to find ones the app does not
+/// know yet. Numbers only: each field with its value, a nested message as its own fields,
+/// and any other bytes as a length, so no name or identifier is written down.
+enum BandSettings {
+    static func describe(_ payload: Data) -> String? {
+        guard let config = try? Fields(Fields(payload).bytes(6)) else { return nil }
+        return describe(config, depth: 0)
+    }
+
+    private static func describe(_ fields: Fields, depth: Int) -> String {
+        fields.values.keys.sorted().flatMap { number in
+            (fields.values[number] ?? []).map { value in
+                switch value {
+                case .integer(let integer): return "\(number)=\(integer)"
+                case .bytes(let wire, let data):
+                    guard wire == 2 else { return "\(number)=fixed(\(data.count))" }
+                    if depth < 2, !data.isEmpty, let inner = try? Fields(data) { return "\(number)={\(describe(inner, depth: depth + 1))}" }
+                    return "\(number)=bytes(\(data.count))"
+                }
+            }
+        }.joined(separator: " ")
+    }
+}
+
 enum WristFeedbackResult: String, Sendable {
     case accepted, rejected, unconfirmed
     init(_ payload: Data) {
@@ -378,6 +402,16 @@ enum WristFeedbackResult: String, Sendable {
         guard let response = try? Fields(fields.bytes(18)), (try? response.bytes(2)) != nil,
               let result = try? response.integer(1) else { self = .unconfirmed; return }
         self = result == 0 ? .accepted : .rejected
+    }
+
+    /// The answer to one of the band's own patterns. Its reply is not known as well as a
+    /// vibration's, so this asks only that the request was taken and that no result says it failed.
+    static func pattern(_ payload: Data) -> Self {
+        guard let fields = try? Fields(payload), let status = try? fields.integer(2) else { return .unconfirmed }
+        guard status == 1 else { return .rejected }
+        guard let response = try? Fields(fields.bytes(18)) else { return .unconfirmed }
+        guard response.values[1] != nil else { return .accepted }
+        return (try? response.integer(1)) == 0 ? .accepted : .rejected
     }
 
     /// Which fields a reply carried and its status numbers, for the journal. No payload bytes.

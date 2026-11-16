@@ -153,6 +153,16 @@ struct ConnectionDiagnosticsTests {
         precondition(WristFeedbackPhase.wrap.payload == Data([0x0a, 0x05, 0x08, 0x46, 0x18, 0xc8, 0x01]))
         precondition(WristFeedbackPhase.settle.payload == Data([0x0a, 0x05, 0x08, 0x64, 0x18, 0xe6, 0x01]))
         let nestedSuccess = PB.field(18, PB.field(1, 0) + PB.field(2, Data()))
+        // One of the band's own patterns: taken unless the request or its result says otherwise.
+        precondition(WristFeedbackResult.pattern(PB.field(2, 1) + PB.field(18, PB.field(1, 0) + PB.field(3, Data()))) == .accepted)
+        precondition(WristFeedbackResult.pattern(PB.field(2, 1) + PB.field(18, Data())) == .accepted)
+        precondition(WristFeedbackResult.pattern(PB.field(2, 1) + PB.field(18, PB.field(1, 2))) == .rejected)
+        precondition(WristFeedbackResult.pattern(PB.field(2, 0) + nestedSuccess) == .rejected)
+        precondition(WristFeedbackResult.pattern(PB.field(2, 1)) == .unconfirmed)
+        // The band's settings are written out as numbers, and bytes that are not a message as a length.
+        let settings = PB.field(6, PB.field(6, 2) + PB.field(10, 1) + PB.field(46, PB.field(3, 1)) + PB.field(9, Data([0xff, 0xff])))
+        precondition(BandSettings.describe(settings) == "6=2 9=bytes(2) 10=1 46={3=1}")
+        precondition(BandSettings.describe(PB.field(2, 1)) == nil)
         let responses: [(Data, WristFeedbackResult)] = [
             (PB.field(2, 1) + nestedSuccess, .accepted),
             (PB.field(2, 0) + nestedSuccess, .rejected),

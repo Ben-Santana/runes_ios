@@ -34,6 +34,9 @@ final class VibrationLab: ObservableObject {
     @Published private(set) var answers: [Answer] = []
     @Published private(set) var tapeRunning = false
     @Published private(set) var last: [BandPulse] = []
+    /// The band's settings as it last reported them, and its answer to the last of its own patterns.
+    @Published var settings: String?
+    @Published var patternAnswer: String?
 
     /// Plays on the band when it is connected; the ring and tape always show it.
     func play(_ pulses: [BandPulse], name: String, onBand: Bool, loop: Loop? = nil) {
@@ -164,6 +167,7 @@ struct VibrationLabScreen: View {
                 draw
                 edge
                 keep
+                own
             }
             .padding(.horizontal, Metric.gutter).padding(.bottom, 28)
         }
@@ -339,6 +343,24 @@ struct VibrationLabScreen: View {
             ChipRow(selection: $edgeStyle, options: EdgeStyle.allCases.map(\.rawValue)) { EdgeStyle(rawValue: $0)?.label ?? $0 }
                 .padding(.vertical, 12)
                 .onChange(of: edgeStyle) { _, _ in BandBuzzFeed.shared.sample() }
+        }
+    }
+
+    /// What the band does without being told: its own two patterns, to compare with the buzz
+    /// it gives when it hears a gesture, and the settings it reports, to look for the one behind that buzz.
+    private var own: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            PanelGroup("The band's own patterns", caption: lab.patternAnswer ?? "The band keeps these itself. Play each and compare it with the buzz you feel when it hears a gesture.") {
+                ActionRow("Play pattern 1") { controller.performBandPattern(1) }
+                Rule()
+                ActionRow("Play pattern 2") { controller.performBandPattern(2) }
+            }
+            .disabled(!ready)
+            PanelGroup("The band's settings", caption: "Read from the band when it connects. Nothing here is changed.") {
+                Text(lab.settings ?? "Not read yet. Connect the band.").font(.code).foregroundStyle(Color.muted)
+                    .textSelection(.enabled)
+                    .padding(.horizontal, Metric.inset).padding(.vertical, 12).frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
     }
 

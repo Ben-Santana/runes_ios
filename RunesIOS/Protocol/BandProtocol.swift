@@ -17,7 +17,7 @@ final class BandProtocol {
     private struct Pending {
         let operation: String; let id: UInt64; let deadline: TimeInterval; let flags: Data?
         var isHandRequest: Bool { operation == "read_hand" || operation == "set_hand" }
-        var isWristFeedback: Bool { operation == "wrist_feedback" }
+        var isWristFeedback: Bool { operation == "wrist_feedback" || operation == "band_pattern" }
     }
     private var identity: BandIdentity?
     private let ceremony: OwnershipCeremony?
@@ -79,7 +79,7 @@ final class BandProtocol {
         let words: [UInt32] = opened.contains(channel) ? [] : [0x8100ce56, 0x02000314]
         if !words.isEmpty { types[channel] = nil; types[channel | 0x8000] = nil }
         opened.insert(channel)
-        pending[channel] = Pending(operation: operation, id: nextID, deadline: now + (operation == "wrist_feedback" ? 5 : 8), flags: ["start_streams", "stop_streams"].contains(operation) ? payload : nil)
+        pending[channel] = Pending(operation: operation, id: nextID, deadline: now + (["wrist_feedback", "band_pattern"].contains(operation) ? 5 : 8), flags: ["start_streams", "stop_streams"].contains(operation) ? payload : nil)
         return try encrypt(frame(channel | 0x8000, words, PB.field(1, nextID) + PB.field(field, payload)))
     }
     func feed(_ input: Data, now: TimeInterval) throws -> (Data, [Signal]) {
@@ -184,7 +184,7 @@ final class BandProtocol {
             if p.operation == "emg_configuration" { return (Data(), [.reply(operation: p.operation, payload: packet.payload)]) }
             if p.isWristFeedback {
                 feedbackNote = WristFeedbackResult.shape(packet.payload)
-                return (Data(), [.wristFeedback(WristFeedbackResult(packet.payload))])
+                return (Data(), [.wristFeedback(p.operation == "band_pattern" ? .pattern(packet.payload) : WristFeedbackResult(packet.payload))])
             }
             if p.isHandRequest {
                 guard let status = try? f.integer(2), status == 1 else {

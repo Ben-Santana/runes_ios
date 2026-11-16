@@ -114,6 +114,10 @@ final class SessionController: ObservableObject {
         ScoreAudio.shared.onBandBuzz = { [core] buzz in core.transport.perform { core.buzzBand(buzz) } }
         core.onPulse = { result, latency in Task { @MainActor in VibrationLab.shared.answered(result, latency: latency) } }
         core.onPulseSent = { pulse in Task { @MainActor in BandBuzzFeed.shared.sent(pulse) } }
+        core.onSettings = { settings in Task { @MainActor in VibrationLab.shared.settings = settings } }
+        core.onPattern = { pattern, result, note in
+            Task { @MainActor in VibrationLab.shared.patternAnswer = "Pattern \(pattern): \(result.rawValue). \(note)" }
+        }
         WorkoutStore.shared.onSound = { voice, volume in ScoreAudio.shared.cue(voice, volume: volume) }
         WorkoutStore.shared.onSoundsLive = { ScoreAudio.shared.setLive($0, for: "workout") }
         ScoreStore.shared.onReserve = { [weak self] in self?.reserve($0, for: .score) }
@@ -281,6 +285,7 @@ final class SessionController: ObservableObject {
         core.transport.perform { [core] in core.wristFeedback(phase, for: hand, change: change, band: band, attempt: attempt) }
     }
     func vibrate(_ pulses: [BandPulse]) { core.transport.perform { [core] in core.play(pulses, name: "lab") } }
+    func performBandPattern(_ pattern: UInt64) { core.transport.perform { [core] in core.perform(pattern: pattern) } }
     func cancelWristFeedback(change: UUID) {
         core.transport.perform { [core] in core.cancelWristFeedback(change: change) }
     }
