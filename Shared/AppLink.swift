@@ -40,6 +40,12 @@ enum AppLink: String, CaseIterable, Sendable {
 
     static func isFromActivity(_ url: URL) -> Bool { url.query?.contains("from=activity") == true }
 
+    /// Opens the app at what is running in it (the workout under way, the recipe being
+    /// cooked), for a tap on the Live Activity.
+    var running: URL { URL(string: "\(Self.scheme)://app/\(rawValue)?screen=running")! }
+
+    static func isRunning(_ url: URL) -> Bool { url.query?.contains("screen=running") == true }
+
     /// The app a `runes://app/<id>` link opens, or nil for any other link.
     init?(url: URL) {
         guard url.scheme == Self.scheme, url.host == "app", let id = url.pathComponents.dropFirst().first else { return nil }

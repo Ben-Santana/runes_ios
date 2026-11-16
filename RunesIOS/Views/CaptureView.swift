@@ -429,19 +429,39 @@ private struct RecordingRune: View {
 
 // MARK: An inscription
 
+/// Sharing an inscription's recording, and its words once it has some.
+struct ShareChoices: View {
+    let store: CaptureStore
+    let note: CaptureNote
+
+    var body: some View {
+        let url = store.url(for: note)
+        if FileManager.default.fileExists(atPath: url.path) {
+            ShareLink(item: url, preview: SharePreview(note.heading)) {
+                Label { Text("Share audio") } icon: { Lucide.audioWaveform.image(size: 18) }
+            }
+        }
+        if note.hasWords {
+            ShareLink(item: note.text, preview: SharePreview(note.heading)) {
+                Label { Text("Share text") } icon: { Lucide.share.image(size: 18) }
+            }
+        }
+    }
+}
+
 struct NoteScreen: View {
     @ObservedObject var store: CaptureStore
     let noteID: String
-    @State private var text = ""
     @State private var title = ""
     @State private var loaded = false
     @State private var confirmDelete = false
     @State private var makingSet = false
     @StateObject private var player = NotePlayer()
+    @StateObject private var words = InscriptionText()
     @FocusState private var editing: Field?
     @Environment(\.dismiss) private var dismiss
 
-    private enum Field { case title, text }
+    private enum Field { case title }
 
     var body: some View {
         Group {
@@ -451,14 +471,14 @@ struct NoteScreen: View {
         .page()
         .navigationTitle("Inscription").navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            if editing != nil {
-                ToolbarItem(placement: .confirmationAction) { Button("Done") { editing = nil }.font(.label) }
+            if editing != nil || words.focused {
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { editing = nil; words.resign() }.font(.label) }
             } else if let note = store.note(noteID) {
                 ToolbarItem(placement: .primaryAction) {
                     Menu {
+                        ShareChoices(store: store, note: note)
                         if note.hasWords {
                             menuItem("Copy", .copy) { UIPasteboard.general.string = note.text }
-                            ShareLink(item: note.text) { Label { Text("Share") } icon: { Lucide.share.image(size: 18) } }
                             if store.controls.scribe, store.scribeStatus == .ready { menuItem("Name it again", .penTool) { store.nameAgain(noteID) } }
                         }
                         if note.state != .transcribing { menuItem("Inscribe it again", .rotateCcw) { store.transcribeAgain(noteID) } }
@@ -485,21 +505,35 @@ struct NoteScreen: View {
                 store.move(noteID, to: scroll.id)
             }
         }
-        .onAppear { if !loaded, let note = store.note(noteID) { text = note.text; title = note.title ?? ""; loaded = true } }
+        .onAppear { if !loaded, let note = store.note(noteID) { words.load(note.text, marks: note.marks); title = note.title ?? ""; loaded = true } }
         .onDisappear { player.stop(); save() }
         .onChange(of: editing) { _, now in if now == nil { save() } }
+        .onChange(of: words.focused) { _, now in if !now { save() } }
+        // While the recording plays (or is paused part way), its words ink as they are said.
+        .onChange(of: player.progress) { follow() }
+        .onChange(of: player.playing) { follow() }
         // Words and a title that arrive while it is open appear, unless they are being edited.
-        .onChange(of: store.note(noteID)?.text) { _, new in if let new, editing != .text { text = new } }
+        .onChange(of: store.note(noteID)?.text) { _, new in
+            if let note = store.note(noteID), !words.focused, new != words.saved.text { words.load(note.text, marks: note.marks) }
+        }
         .onChange(of: store.note(noteID)?.title) { _, new in if let new, editing != .title { title = new } }
+    }
+
+    private func follow() {
+        guard let note = store.note(noteID) else { return }
+        let on = player.source == store.url(for: note) && (player.playing || player.progress > 0)
+        words.follow(on ? player.progress * note.duration : nil, spoken: note.spoken, duration: note.duration)
     }
 
     private func save() {
         guard store.note(noteID) != nil else { return }
-        store.setText(text.trimmingCharacters(in: .whitespacesAndNewlines), for: noteID)
+        let saved = words.saved
+        store.setText(saved.text, marks: saved.marks, for: noteID)
         store.setTitle(title, for: noteID)
     }
 
     private func content(_ note: CaptureNote) -> some View {
+        GeometryReader { page in
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 VStack(alignment: .leading, spacing: 8) {
@@ -518,12 +552,21 @@ struct NoteScreen: View {
                 }
                 if note.scroll.flatMap(store.scroll) != nil { ScrollPicker(store: store, note: note, making: $makingSet) }
                 VStack(alignment: .leading, spacing: 10) {
-                    TextField(note.state == .transcribing ? "Inscribing…" : "No words yet. Type them here.", text: $text, axis: .vertical)
-                        .font(.geist(19, relativeTo: .title3)).lineSpacing(6)
-                        .focused($editing, equals: .text)
-                        .accessibilityLabel("Inscription text")
-                    FocusRule(active: editing == .text)
+                    // With no words yet, the rest of the page is the box to type them in.
+                    InscriptionTextView(model: words)
+                        .overlay(alignment: .topLeading) {
+                            if words.isEmpty {
+                                Text(note.state == .transcribing ? "Inscribing…" : "No words yet. Type them here.")
+                                    .font(.geist(19, relativeTo: .title3)).foregroundStyle(Color.muted)
+                                    .allowsHitTesting(false)
+                            }
+                        }
+                        .frame(maxHeight: words.roomy ? .infinity : nil, alignment: .top)
+                        .contentShape(Rectangle())
+                        .onTapGesture { words.focus() }
+                    FocusRule(active: words.focused)
                 }
+                .frame(maxHeight: words.roomy ? .infinity : nil, alignment: .top)
                 PlayerBar(player: player, note: note, url: store.url(for: note))
                 if note.state == .unavailable, !note.hasWords {
                     Note("This phone couldn’t put the recording into words. The recording is kept; you can type the inscription yourself.")
@@ -532,8 +575,10 @@ struct NoteScreen: View {
                 }
             }
             .padding(.horizontal, Metric.gutter).padding(.top, 16).padding(.bottom, 40)
+            .frame(minHeight: page.size.height, alignment: .top)
         }
         .scrollDismissesKeyboard(.interactively)
+        }
     }
 }
 
@@ -643,6 +688,8 @@ final class NotePlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
     @Published private(set) var playing = false
     /// 0 at the start (or stopped) → 1 at the end.
     @Published private(set) var progress = 0.0
+    /// The recording loaded, until stopped.
+    @Published private(set) var source: URL?
     private var player: AVAudioPlayer?
     private var ticker: Timer?
     private static let holder = "capture.player"
@@ -652,6 +699,7 @@ final class NotePlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
         guard let new = try? AVAudioPlayer(contentsOf: url) else { return nil }
         new.delegate = self
         player = new
+        source = url
         return new
     }
 
@@ -683,7 +731,7 @@ final class NotePlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
     func stop() {
         guard player != nil else { return }
         pause()
-        player = nil; progress = 0
+        player = nil; progress = 0; source = nil
     }
 
     private func tick() {
@@ -840,6 +888,16 @@ extension PreviewFixtures {
         let store = CaptureStore(preview: empty ? [] : notes, scrolls: empty || noScrolls ? [] : scrolls, naming: empty ? [] : ["note-1800"],
                                  recording: recording ? Date().addingTimeInterval(-7) : nil, listening: listening, level: recording ? 0.7 : 0)
         store.setTrigger(trigger)
+        return store
+    }
+
+    /// The first inscription with no words, or with some of them formatted.
+    @MainActor static func formatted(empty: Bool) -> CaptureStore {
+        let store = capture()
+        let text = empty ? "" : store.note("note-34")?.text ?? ""
+        store.setText(text, marks: empty ? nil : [TextMark(start: 0, length: 8, bold: true),
+                                                   TextMark(start: 21, length: 10, italic: true, highlight: .yellow),
+                                                   TextMark(start: 41, length: 11, bold: true, color: .blue)], for: "note-34")
         return store
     }
 }

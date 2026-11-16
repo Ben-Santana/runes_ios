@@ -270,6 +270,13 @@ struct WorkoutRun: Codable, Hashable, Sendable {
     /// Replaces the live count with the counter's settled one, just before the set logs.
     mutating func settle(_ count: Int) { if phase == .counting { reps = max(0, count) } }
 
+    /// Drops a logged set. The run's place is unchanged.
+    @discardableResult
+    mutating func removeLog(_ id: String) -> SetLog? {
+        guard let i = logs.firstIndex(where: { $0.id == id }) else { return nil }
+        return logs.remove(at: i)
+    }
+
     private mutating func advance() {
         index += 1; reps = 0; setStarted = nil
         phase = index < slots.count ? .waiting : .finished

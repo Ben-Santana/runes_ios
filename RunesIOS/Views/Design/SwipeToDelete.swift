@@ -19,6 +19,10 @@ import UIKit
 /// slide-away, so the caller can show its dialog.
 struct SwipeToDelete: ViewModifier {
     var confirms = false
+    /// Off, the row can't be swiped; one already open closes.
+    var enabled = true
+    /// Where the row is drawn, each frame, for anything drawn elsewhere that moves with it.
+    var onOffset: ((CGFloat) -> Void)? = nil
     let onDelete: () -> Void
 
     /// Where the row is, or is heading while it animates.
@@ -52,9 +56,10 @@ struct SwipeToDelete: ViewModifier {
                                  // Mid-swipe and while open, the row's own taps are off, so letting go doesn't open it.
                                  rowTaps: !dragging && settled == 0 && !removing,
                                  open: settled != 0 && !dragging && !removing,
-                                 shown: shown, close: close, delete: { delete() }))
+                                 shown: shown, report: onOffset, close: close, delete: { delete() }))
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
             .gesture(HorizontalPan(
+                enabled: enabled,
                 touched: { OpenSwipe.shared.touched(id, at: $0) },
                 began: { window in
                     guard !removing else { return }
@@ -86,7 +91,8 @@ struct SwipeToDelete: ViewModifier {
                 },
                 scrolled: { if settled != 0, !removing { close() } }
             ))
-            .accessibilityAction(named: "Delete", onDelete)
+            .accessibilityAction(named: "Delete") { if enabled { onDelete() } }
+            .onChange(of: enabled) { _, now in if !now, settled != 0, !removing { close() } }
             .sensoryFeedback(trigger: armed) { _, now in
                 now ? .impact(weight: .medium) : dragging ? .impact(weight: .light) : nil
             }
@@ -171,6 +177,10 @@ extension View {
     func swipeToDelete(confirms: Bool, _ onDelete: @escaping () -> Void) -> some View {
         modifier(SwipeToDelete(confirms: confirms, onDelete: onDelete))
     }
+    /// Swipe left to delete while `enabled`, telling `offset` where the row is drawn each frame.
+    func swipeToDelete(enabled: Bool, offset: @escaping (CGFloat) -> Void, _ onDelete: @escaping () -> Void) -> some View {
+        modifier(SwipeToDelete(enabled: enabled, onOffset: offset, onDelete: onDelete))
+    }
 }
 
 // MARK: Drawing
@@ -188,6 +198,7 @@ private struct SwipeTrack: ViewModifier, Animatable {
     let rowTaps: Bool
     let open: Bool
     let shown: ShownOffset
+    let report: ((CGFloat) -> Void)?
     let close: () -> Void
     let delete: () -> Void
 
@@ -198,6 +209,7 @@ private struct SwipeTrack: ViewModifier, Animatable {
 
     func body(content: Content) -> some View {
         let _ = shown.x = x
+        let _ = report?(x)
         ZStack(alignment: .trailing) {
             content
                 .offset(x: x)
@@ -322,6 +334,7 @@ private final class TouchWatcher: UIGestureRecognizer, UIGestureRecognizerDelega
 /// enclosing scroll view (which waits for it) scrolls as normal; horizontal begins, and the scroll
 /// view then stays put for the rest of the touch.
 private struct HorizontalPan: UIGestureRecognizerRepresentable {
+    var enabled = true
     let touched: (TimeInterval) -> Void
     let began: (UIWindow?) -> Void
     let changed: (CGFloat) -> Void
@@ -335,6 +348,7 @@ private struct HorizontalPan: UIGestureRecognizerRepresentable {
         let pan = DirectionLockedPan()
         pan.maximumNumberOfTouches = 1
         pan.delegate = context.coordinator
+        pan.isEnabled = enabled
         pan.touched = touched
         pan.scrolled = scrolled
         return pan
@@ -343,6 +357,7 @@ private struct HorizontalPan: UIGestureRecognizerRepresentable {
     func updateUIGestureRecognizer(_ pan: DirectionLockedPan, context: Context) {
         pan.touched = touched
         pan.scrolled = scrolled
+        pan.isEnabled = enabled
     }
 
     func handleUIGestureRecognizerAction(_ pan: DirectionLockedPan, context: Context) {

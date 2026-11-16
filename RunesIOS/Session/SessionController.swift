@@ -116,6 +116,7 @@ final class SessionController: ObservableObject {
         WorkoutStore.shared.onActivity = { [weak self] state, alert in self?.live.show(workout: state, alert: alert) }
         WorkoutStore.shared.onReserve = { [weak self] in self?.reserve($0, for: .workouts) }
         ScoreAudio.shared.onBandBuzz = { [core] buzz in core.transport.perform { core.buzzBand(buzz) } }
+        relay.onBuzz = { [core] buzz in core.transport.perform { core.buzzBand(buzz) } }
         AlarmStore.shared.onBuzz = { [core] pulses, name in core.transport.perform { core.buzzBand(pulses: pulses, name: name) } }
         WorkoutStore.shared.onSound = { voice, volume in ScoreAudio.shared.cue(voice, volume: volume) }
         WorkoutStore.shared.onSoundsLive = { ScoreAudio.shared.setLive($0, for: "workout") }
@@ -139,6 +140,7 @@ final class SessionController: ObservableObject {
             ScoreAudio.shared.preview(voice, pitch: pitch, volume: 0.9)
         }
         CaptureStore.shared.onReserve = { [weak self] in self?.reserve($0, for: .capture) }
+        CaptureStore.shared.onActivity = { [weak self] in self?.live.show(capture: $0) }
         ReelsStore.shared.onReserve = { [weak self] in self?.reserve($0, for: .reels) }
         AlarmStore.shared.onReserve = { [weak self] in self?.reserve($0, for: .alarm) }
         // Capture plays its own cues while its microphone is open; these are the rest.

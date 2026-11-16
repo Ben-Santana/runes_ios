@@ -97,10 +97,11 @@ struct ComboCreator: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .id(sentence).transition(.opacity)
             }
-            HairlineSegments(selection: Binding(get: { editing ? nil : tab }, set: { if let new = $0 { choose(new) } }),
+            HairlineSegments(selection: Binding(get: { editing || airTarget != nil ? nil : tab }, set: { if let new = $0 { choose(new) } }),
                              options: tabs, title: \.title)
             Group {
-                if editing, let index = selected { beadMenu(index) }
+                if let target = airTarget, let feed { airEditor(target, feed: feed) }
+                else if editing, let index = selected { beadMenu(index) }
                 else {
                     switch tab {
                     case .add: pad
@@ -115,8 +116,9 @@ struct ComboCreator: View {
         .sensoryFeedback(.impact(weight: .medium), trigger: dragging != nil)
         .animation(.standard, value: steps)
         .animation(.standard, value: tab)
-        .onChange(of: dismissal) { _, _ in stopListening(); selection = nil; changing = false }
+        .onChange(of: dismissal) { _, _ in stopListening(); selection = nil; changing = false; airTarget = nil }
         .animation(.standard, value: selection)
+        .animation(.standard, value: airTarget?.id)
         .animation(.standard, value: listening)
         .sensoryFeedback(.impact(weight: .light), trigger: steps)
         .sensoryFeedback(.selection, trigger: selection)
@@ -133,20 +135,24 @@ struct ComboCreator: View {
         }
         .onDisappear(perform: stopListening)
         .bandFeed(feed, heard: heard)
-        .sheet(item: $airTarget) { target in
-            if let feed {
-                AirGestureEditor(store: feed, initial: steps.indices.contains(target.id) ? steps[target.id].air : nil) { shape in
-                    if steps.indices.contains(target.id) { steps[target.id] = .airShape(shape) }
-                    else if steps.count < rules.maxSteps { steps.append(.airShape(shape)) }
-                }
-            }
+    }
+
+    /// The air shape being drawn, in place of the tabs' contents.
+    private func airEditor(_ target: AirTarget, feed: MappingStore) -> some View {
+        AirGestureEditor(store: feed, initial: steps.indices.contains(target.id) ? steps[target.id].air : nil) { shape in
+            if steps.indices.contains(target.id) { steps[target.id] = .airShape(shape) }
+            else if steps.count < rules.maxSteps { steps.append(.airShape(shape)) }
+            airTarget = nil
+        } onCancel: {
+            airTarget = nil
         }
+        .id(target.id)
     }
 
     /// A tab touched lets go of the selected step; Add then adds to the end.
     private func choose(_ new: Tab) {
         if new != .add { stopListening() }
-        selection = nil; changing = false
+        selection = nil; changing = false; airTarget = nil
         tab = new
     }
 
@@ -179,7 +185,7 @@ struct ComboCreator: View {
         case .bead(let index): toggle(index)
         case .end: addStep()
         case nil:
-            stopListening(); selection = nil; changing = false
+            stopListening(); selection = nil; changing = false; airTarget = nil
             string.poke(point)
         }
     }
@@ -187,12 +193,12 @@ struct ComboCreator: View {
     /// Selects a bead and shows what can be done to it, or lets go of it.
     private func toggle(_ index: Int) {
         stopListening()
-        changing = false
+        changing = false; airTarget = nil
         selection = selected == index ? nil : index
     }
 
     private func addStep() {
-        selection = nil; changing = false
+        selection = nil; changing = false; airTarget = nil
         tab = .add
     }
 
@@ -212,7 +218,7 @@ struct ComboCreator: View {
         if dragging == nil {
             guard steps.count > 1, case .bead(let index) = string.hit(drag.startLocation) else { return }
             stopListening()
-            selection = index; dragging = index; changing = false
+            selection = index; dragging = index; changing = false; airTarget = nil
         }
         guard let from = dragging, steps.indices.contains(from) else { return }
         let to = string.slot(drag.location)
@@ -422,7 +428,7 @@ struct ComboCreator: View {
             .accessibilityElement(children: .combine)
             HStack(spacing: 6) {
                 menuKey(.pencil, "Change") { changing = true; tab = .add }
-                if step.gesture.isAir, feed != nil { menuKey(.spline, "Shape") { airTarget = AirTarget(id: index) } }
+                if step.gesture.isAir, feed != nil { menuKey(.spline, "Shape") { stopListening(); airTarget = AirTarget(id: index) } }
                 if steps.count > 1 {
                     menuKey(.arrowUp, "Move up", enabled: index > 0) { move(index, by: -1) }
                     menuKey(.arrowDown, "Move down", enabled: index < steps.count - 1) { move(index, by: 1) }
@@ -486,7 +492,7 @@ struct ComboCreator: View {
     }
 
     private func place(_ kind: GestureKind) {
-        if kind.isAir { airTarget = AirTarget(id: selected ?? steps.count); return }
+        if kind.isAir { stopListening(); airTarget = AirTarget(id: selected ?? steps.count); return }
         if let index = selected {
             guard steps[index].gesture != kind else { return }
             // Swapping rotation for movement keeps the axis.

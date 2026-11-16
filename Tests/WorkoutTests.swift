@@ -65,6 +65,13 @@ struct WorkoutTests {
         run.apply(.repeatLast)
         precondition(run.phase == .waiting && run.current?.set == 1, "A finished workout can repeat its last set")
 
+        // Deleting a logged set keeps the run where it is.
+        let before = run.logs.count, place = run.current
+        let dropped = run.logs[0].id
+        precondition(run.removeLog(dropped)?.id == dropped && run.logs.count == before - 1, "Deletes the set")
+        precondition(run.current == place && run.phase == .waiting, "The run's place is unchanged")
+        precondition(run.removeLog(dropped) == nil, "Deleting twice does nothing")
+
         // Controls: one gesture per command; reassigning swaps.
         var controls = WorkoutControls.standard
         precondition(controls.command(for: .doubleTapIndex) == .start)

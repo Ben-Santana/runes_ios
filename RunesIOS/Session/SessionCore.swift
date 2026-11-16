@@ -99,7 +99,7 @@ final class SessionCore: @unchecked Sendable {
         transport.onLinkLost = { [weak self] systemReconnecting in self?.linkLost(systemReconnecting) }
         transport.onBattery = { [weak self] level in
             guard let self, self.snapshot.battery != level else { return }
-            self.snapshot.battery = level; self.record("battery", "level=\(level)"); self.publish()
+            self.snapshot.battery = level; WakeProbe.shared.setBattery(level); self.record("battery", "level=\(level)"); self.publish()
         }
         transport.onPulse = { [weak self] healthy in
             guard let self else { return }
@@ -629,7 +629,7 @@ final class SessionCore: @unchecked Sendable {
     func forget(_ completion: @escaping () -> Void) {
         disconnect { [weak self] _ in
             guard let self else { return }
-            self.snapshot.selected = nil; self.snapshot.devices = []; self.snapshot.battery = nil; self.clearHand()
+            self.snapshot.selected = nil; self.snapshot.devices = []; self.snapshot.battery = nil; WakeProbe.shared.setBattery(nil); self.clearHand()
             self.snapshot.issue = nil; self.snapshot.events = []; self.snapshot.eventCount = 0
             self.snapshot.connectionAttempt = ConnectionAttempt()
             self.snapshot.lastGesture = nil; self.snapshot.gestureTotal = 0

@@ -14,19 +14,26 @@ struct RunesActivityBundle: WidgetBundle {
 struct BandSessionActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: BandActivityAttributes.self) { context in
-            if let alarm = context.state.alarm {
+            if let capture = context.state.capture, context.state.alarm?.phase != .ringing {
+                CaptureLockScreen(capture: capture)
+                    .padding().activityBackgroundTint(Color(.secondarySystemBackground))
+                    .widgetURL(AppLink.capture.running)
+            } else if let alarm = context.state.alarm {
                 AlarmLockScreen(alarm: alarm)
                     .padding().activityBackgroundTint(Color(.secondarySystemBackground))
                     .widgetURL(alarm.url)
             } else if let workout = context.state.workout {
                 WorkoutLockScreen(workout: workout, connected: context.state.isConnected)
                     .padding().activityBackgroundTint(Color(.secondarySystemBackground))
+                    .widgetURL(AppLink.workouts.running)
             } else if let score = context.state.score {
                 ScoreLockScreen(score: score, connected: context.state.isConnected)
                     .padding().activityBackgroundTint(Color(.secondarySystemBackground))
+                    .widgetURL(AppLink.score.running)
             } else if let cook = context.state.cook {
                 CookLockScreen(cook: cook)
                     .padding().activityBackgroundTint(Color(.secondarySystemBackground))
+                    .widgetURL(AppLink.cook.running)
             } else {
                 HStack(spacing: 14) {
                     ProfileMark(icon: context.state.profileIcon).frame(width: 28, height: 28)
@@ -39,6 +46,24 @@ struct BandSessionActivity: Widget {
                 }.padding().activityBackgroundTint(Color(.secondarySystemBackground))
             }
         } dynamicIsland: { context in
+            if let capture = context.state.capture, context.state.alarm?.phase != .ringing {
+                return DynamicIsland {
+                    DynamicIslandExpandedRegion(.leading) {
+                        HStack(spacing: 6) { RecordingMic(size: 18); Text("Recording").font(.subheadline) }
+                    }
+                    DynamicIslandExpandedRegion(.trailing) {
+                        Text(timerInterval: capture.since...Date.distantFuture, countsDown: false).font(.subheadline.monospacedDigit()).multilineTextAlignment(.trailing).frame(maxWidth: 64)
+                    }
+                    DynamicIslandExpandedRegion(.bottom) { CaptureWords(words: capture.words).font(.callout) }
+                } compactLeading: {
+                    RecordingMic(size: 16)
+                } compactTrailing: {
+                    Text(timerInterval: capture.since...Date.distantFuture, countsDown: false).monospacedDigit().multilineTextAlignment(.trailing).frame(maxWidth: 44)
+                } minimal: {
+                    RecordingMic(size: 16)
+                }
+                .widgetURL(AppLink.capture.running)
+            }
             if let alarm = context.state.alarm {
                 return DynamicIsland {
                     DynamicIslandExpandedRegion(.bottom) { AlarmLockScreen(alarm: alarm) }
@@ -77,6 +102,7 @@ struct BandSessionActivity: Widget {
                 } minimal: {
                     WorkoutGlyph(group: workout.group, size: 18)
                 }
+                .widgetURL(AppLink.workouts.running)
             }
             if let score = context.state.score {
                 // Two players show both numbers; more show the player the band is on.
@@ -92,6 +118,7 @@ struct BandSessionActivity: Widget {
                     Text(score.selected == nil ? "\(score.value(0))–\(score.value(1))" : "\(score.value(focus))")
                         .monospacedDigit().minimumScaleFactor(0.6)
                 }
+                .widgetURL(AppLink.score.running)
             }
             if let cook = context.state.cook {
                 // The step, and its timers: one as a number, several as circles.
@@ -110,6 +137,7 @@ struct BandSessionActivity: Widget {
                     if let timer = cook.timers.first { TimerCircle(timer: timer, size: 16) }
                     else { Text(cook.finished ? "✓" : "\(cook.step + 1)").monospacedDigit() }
                 }
+                .widgetURL(AppLink.cook.running)
             }
             return DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) { ProfileMark(icon: context.state.profileIcon).frame(width: 24, height: 24) }
@@ -128,6 +156,49 @@ struct BandSessionActivity: Widget {
                 ProfileMark(icon: context.state.profileIcon).frame(width: 16, height: 16)
             }
         }
+    }
+}
+
+/// A recording under way: how long, and the words heard so far.
+private struct CaptureLockScreen: View {
+    let capture: CaptureActivityState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                RecordingMic(size: 22)
+                Text("Recording").font(.headline)
+                Spacer(minLength: 8)
+                Text(timerInterval: capture.since...Date.distantFuture, countsDown: false).font(.system(size: 22, weight: .medium).monospacedDigit())
+                    .multilineTextAlignment(.trailing).frame(maxWidth: 90, alignment: .trailing)
+            }
+            CaptureWords(words: capture.words).font(.body)
+        }
+    }
+}
+
+/// The latest words, cut at the front so the newest stay in view.
+private struct CaptureWords: View {
+    let words: String
+    var body: some View {
+        Text(words.isEmpty ? "Listening…" : words)
+            .foregroundStyle(words.isEmpty ? .secondary : .primary)
+            .lineLimit(2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentTransition(.opacity)
+    }
+}
+
+private struct RecordingMic: View {
+    let size: CGFloat
+    var body: some View {
+        GeometryReader { geo in
+            let k = min(geo.size.width, geo.size.height) / 24
+            LucideData.mic.reduce(into: Path()) { $0.addPath(SVGPath.cached($1)) }
+                .applying(CGAffineTransform(scaleX: k, y: k))
+                .stroke(style: StrokeStyle(lineWidth: 2 * k, lineCap: .round, lineJoin: .round))
+        }
+        .frame(width: size, height: size).foregroundStyle(Color.red).accessibilityLabel("Recording")
     }
 }
 

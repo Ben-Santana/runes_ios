@@ -32,7 +32,7 @@ enum Muscle: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
 
 /// The picker's filter tabs, and each exercise's icon.
 enum ExerciseGroup: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
-    case chest, back, shoulders, arms, legs, core, cardio
+    case chest, triceps, back, biceps, shoulders, legs, core, cardio
 
     var id: String { rawValue }
     var name: String { rawValue.capitalized }
@@ -42,7 +42,8 @@ enum ExerciseGroup: String, Codable, CaseIterable, Sendable, Hashable, Identifia
         case .chest: [.chest]
         case .back: [.lats, .traps, .lowerBack]
         case .shoulders: [.shoulders]
-        case .arms: [.biceps, .triceps, .forearms]
+        case .triceps: [.triceps]
+        case .biceps: [.biceps, .forearms]
         case .legs: [.quads, .hamstrings, .glutes, .calves]
         case .core: [.abs, .obliques]
         case .cardio: []
@@ -150,7 +151,7 @@ struct MuscleFigureGlyph: View {
     var lineWidth: CGFloat = 0.8
 
     var body: some View {
-        let side: BodySide = group == .back ? .back : .front
+        let side: BodySide = group == .back || group == .triceps ? .back : .front
         // Crop to the part of the body the group lives on, so the icon reads at small sizes.
         let crop = group == .legs ? CGRect(x: 52, y: 196, width: 96, height: 220) : CGRect(x: 36, y: 40, width: 128, height: 180)
         let scale = size / max(crop.width, crop.height)

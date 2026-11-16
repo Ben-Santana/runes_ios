@@ -53,16 +53,22 @@ final class LinkSceneDelegate: NSObject, UIWindowSceneDelegate {
     }
 }
 
-/// The app a widget link asked for, until `RootView` shows it.
+/// The app a widget or Live Activity link asked for, until `RootView` shows it.
 @MainActor
 final class AppLinkRouter: ObservableObject {
     static let shared = AppLinkRouter()
-    @Published var pending: RunesApp?
+
+    struct Request: Equatable {
+        var app: RunesApp
+        /// Straight to what is running in it, from the Live Activity.
+        var running = false
+    }
+    @Published var pending: Request?
 
     func open(url: URL) {
         guard let link = AppLink(url: url), let app = RunesApp(rawValue: link.rawValue) else { return }
         if link == .alarm, AppLink.isFromActivity(url) { AlarmStore.shared.openedFromActivity() }
-        pending = app
+        pending = Request(app: app, running: AppLink.isRunning(url))
     }
 }
 

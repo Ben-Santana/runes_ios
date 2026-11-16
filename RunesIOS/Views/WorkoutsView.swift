@@ -34,13 +34,13 @@ struct ApplicationsScreen: View {
     @State private var path: [AppRoute]
 
     init(workouts: WorkoutStore, scores: ScoreStore? = nil, cook: CookStore? = nil, capture: CaptureStore? = nil,
-         initialRoute: AppRoute? = nil, done: @escaping () -> Void = {}) {
+         initialPath: [AppRoute] = [], done: @escaping () -> Void = {}) {
         self.workouts = workouts
         self.scores = scores ?? .shared
         self.cook = cook ?? .shared
         self.capture = capture ?? .shared
         self.done = done
-        _path = State(initialValue: initialRoute.map { [$0] } ?? [])
+        _path = State(initialValue: initialPath)
     }
 
     var body: some View {
@@ -524,7 +524,7 @@ struct ActiveWorkoutScreen: View {
 
     var body: some View {
         Group {
-            if let run = store.run { ActiveWorkoutView(run: run, controls: store.controls, weightText: store.weightText, perform: store.perform, end: { confirmEnd = true }) }
+            if let run = store.run { ActiveWorkoutView(run: run, controls: store.controls, weightText: store.weightText, perform: store.perform, deleteLog: store.deleteLog, end: { confirmEnd = true }) }
             else { Text("No workout running").font(.bodyText).foregroundStyle(Color.muted).frame(maxWidth: .infinity, maxHeight: .infinity) }
         }
         .page()
@@ -541,6 +541,7 @@ struct ActiveWorkoutView: View {
     let controls: WorkoutControls
     var weightText: (Double?) -> String? = { _ in nil }
     var perform: (WorkoutCommand) -> Void = { _ in }
+    var deleteLog: (String) -> Void = { _ in }
     var end: () -> Void = {}
 
     var body: some View {
@@ -674,7 +675,9 @@ struct ActiveWorkoutView: View {
                         .frame(minWidth: 44, alignment: .trailing)
                 }
                 .padding(.vertical, 12)
-                .transition(.move(edge: .top).combined(with: .opacity))
+                .contentShape(Rectangle())
+                .swipeToDelete { deleteLog(log.id) }
+                .transition(.asymmetric(insertion: .move(edge: .top).combined(with: .opacity), removal: .opacity))
             }
         }
     }

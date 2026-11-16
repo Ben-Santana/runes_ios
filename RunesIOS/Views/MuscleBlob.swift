@@ -8,11 +8,12 @@ import SwiftUI
 
 /// The groups around the ring, clockwise from the top.
 enum BlobLayout {
-    static let groups: [ExerciseGroup] = [.chest, .shoulders, .arms, .legs, .core, .back]
+    static let groups: [ExerciseGroup] = [.chest, .triceps, .shoulders, .legs, .core, .back, .biceps]
     /// Each group's angle, clockwise from the top, in radians.
     static func angle(_ index: Int) -> Double { Double(index) / Double(groups.count) * 2 * .pi }
-    /// How much a group pulls on the outline `delta` radians away: 1 straight at it, fading to the sides.
-    static func reach(_ delta: Double) -> Double { exp(3 * (cos(delta) - 1)) }
+    /// How much a group pulls on the outline `delta` radians away: 1 straight at it, fading to the
+    /// sides. Narrow enough that each group reads as its own lobe, with a dip between neighbours.
+    static func reach(_ delta: Double) -> Double { exp(9 * (cos(delta) - 1)) }
     /// The pull at a group's own angle when every group is full, so a full week makes a round blob.
     static let fullPull: Double = (0..<groups.count).reduce(0) { $0 + reach(angle($1)) }
 }
@@ -59,9 +60,10 @@ struct BlobShape: Shape {
             let th = Double(k) / Double(steps) * 2 * .pi
             var pull = 0.0
             for i in 0..<n { pull += levels[i] * BlobLayout.reach(th - BlobLayout.angle(i)) }
-            let wobble = 0.018 * sin(3 * th + t * 0.7) + 0.012 * sin(4 * th - t * 0.5) + 0.006 * sin(7 * th + t * 1.1)
+            let wobble = 0.01 * sin(3 * th + t * 0.7) + 0.006 * sin(4 * th - t * 0.5) + 0.003 * sin(7 * th + t * 1.1)
             let bulge = poke * 0.1 * BlobLayout.reach(th - pokeAngle)
-            let r = radius * CGFloat((0.32 + 0.6 * min(1, pull / BlobLayout.fullPull) + wobble + bulge) * breath)
+            // An untrained group sinks close to the centre; a full one reaches nearly to the ring.
+            let r = radius * CGFloat((0.12 + 0.8 * min(1, pull / BlobLayout.fullPull) + wobble + bulge) * breath)
             let pt = CGPoint(x: c.x + r * CGFloat(sin(th)), y: c.y - r * CGFloat(cos(th)))
             if k == 0 { p.move(to: pt) } else { p.addLine(to: pt) }
         }

@@ -20,10 +20,12 @@ final class WorkoutStore: ObservableObject {
         var history: [WorkoutRecord]
         var unit: WeightUnit = .kg
         var sounds = WorkoutSounds()
+        var endsAtTarget = false
 
-        init(plans: [WorkoutPlan], controls: WorkoutControls, sensitivity: RepSensitivity, history: [WorkoutRecord], unit: WeightUnit, sounds: WorkoutSounds) {
+        init(plans: [WorkoutPlan], controls: WorkoutControls, sensitivity: RepSensitivity, history: [WorkoutRecord], unit: WeightUnit, sounds: WorkoutSounds,
+             endsAtTarget: Bool) {
             self.plans = plans; self.controls = controls; self.sensitivity = sensitivity; self.history = history; self.unit = unit
-            self.sounds = sounds
+            self.sounds = sounds; self.endsAtTarget = endsAtTarget
         }
         /// Data saved before the split and units existed still loads.
         init(from decoder: Decoder) throws {
@@ -34,6 +36,7 @@ final class WorkoutStore: ObservableObject {
             history = try c.decodeIfPresent([WorkoutRecord].self, forKey: .history) ?? []
             unit = try c.decodeIfPresent(WeightUnit.self, forKey: .unit) ?? .kg
             sounds = (try? c.decodeIfPresent(WorkoutSounds.self, forKey: .sounds)) ?? WorkoutSounds()
+            endsAtTarget = try c.decodeIfPresent(Bool.self, forKey: .endsAtTarget) ?? false
         }
     }
 
@@ -43,6 +46,9 @@ final class WorkoutStore: ObservableObject {
     @Published private(set) var history: [WorkoutRecord]
     @Published private(set) var unit: WeightUnit
     @Published private(set) var sounds: WorkoutSounds { didSet { soundsLiveChanged() } }
+    /// Logs a set by itself once the band has counted its target reps, or a timed set has
+    /// been held for its time, instead of waiting for Stop.
+    @Published private(set) var endsAtTarget = false
     @Published private(set) var run: WorkoutRun? {
         didSet {
             guard (oldValue == nil) != (run == nil), !previewOnly else { return }
@@ -83,12 +89,13 @@ final class WorkoutStore: ObservableObject {
     private var previewOnly = false
 
     private init() {
-        var saved = Saved(plans: WorkoutPlan.starterSplit, controls: .standard, sensitivity: .normal, history: [], unit: .kg, sounds: WorkoutSounds())
+        var saved = Saved(plans: WorkoutPlan.starterSplit, controls: .standard, sensitivity: .normal, history: [], unit: .kg, sounds: WorkoutSounds(),
+                          endsAtTarget: false)
         if let data = UserDefaults.standard.data(forKey: Self.key),
            let decoded = try? JSONDecoder().decode(Saved.self, from: data) { saved = decoded }
         plans = saved.plans.map { $0.normalized() }
         controls = saved.controls; sensitivity = saved.sensitivity; history = saved.history; unit = saved.unit
-        sounds = saved.sounds
+        sounds = saved.sounds; endsAtTarget = saved.endsAtTarget
         decider.onFire = { [weak self] id in
             guard let self, self.run != nil else { return }
             if id == SwitchControls.mappingID { ControlSwitch.shared.toggle(); return }
@@ -133,6 +140,7 @@ final class WorkoutStore: ObservableObject {
     func setSensitivity(_ value: RepSensitivity) { sensitivity = value; persist() }
     func setUnit(_ value: WeightUnit) { unit = value; persist() }
     func setSounds(_ change: (inout WorkoutSounds) -> Void) { change(&sounds); persist() }
+    func setEndsAtTarget(_ on: Bool) { endsAtTarget = on; persist() }
     func clearHistory() { history = []; persist() }
     func deleteRecord(_ id: String) { history.removeAll { $0.id == id }; persist() }
     func move(planFrom source: IndexSet, to destination: Int) { plans.move(fromOffsets: source, toOffset: destination); persist() }
@@ -204,7 +212,8 @@ final class WorkoutStore: ObservableObject {
 
     private func persist() {
         guard !previewOnly else { return }
-        let saved = Saved(plans: plans, controls: controls, sensitivity: sensitivity, history: history, unit: unit, sounds: sounds)
+        let saved = Saved(plans: plans, controls: controls, sensitivity: sensitivity, history: history, unit: unit, sounds: sounds,
+                          endsAtTarget: endsAtTarget)
         if let data = try? JSONEncoder().encode(saved) { UserDefaults.standard.set(data, forKey: Self.key) }
     }
 
@@ -232,10 +241,13 @@ final class WorkoutStore: ObservableObject {
         onActivity?(nil, nil)
     }
 
-    func perform(_ command: WorkoutCommand) {
+    func perform(_ command: WorkoutCommand) { perform(command, settling: true) }
+
+    /// `settling` off logs the live count as it stands, for a set ended on reaching its target.
+    private func perform(_ command: WorkoutCommand, settling: Bool) {
         guard var current = run else { return }
         // The set logs the counter's settled count, which drops a lone movement at either end.
-        if command == .stop, current.phase == .counting, let settled = Self.feed.settled, settled != current.reps {
+        if settling, command == .stop, current.phase == .counting, let settled = Self.feed.settled, settled != current.reps {
             if !previewOnly { onTrace?(.event("settled", "live=\(current.reps) settled=\(settled)")) }
             current.settle(settled)
         }
@@ -245,6 +257,16 @@ final class WorkoutStore: ObservableObject {
         trace(command, from: before, logged: logged, to: current)
         if let cue = WorkoutCue.after(command, from: before, to: current, logged: logged) { play(cue) }
         changed(alert: logged.map { "\($0.slot.exercise.name), \($0.slot.label.lowercased()): \(Self.value($0))" })
+    }
+
+    /// Deletes a set logged in the running workout.
+    func deleteLog(_ id: String) {
+        guard var current = run, let removed = current.removeLog(id) else { return }
+        run = current
+        guard !previewOnly else { return }
+        onTrace?(.event("set_deleted", "exercise=\(removed.exercise.id) \(removed.slot.label) logged=\(removed.reps)"))
+        if current.phase == .finished { record(current) }
+        onActivity?(activityState(current), nil)
     }
 
     /// Takes a band gesture that is one of the workout controls while a workout runs.
@@ -274,6 +296,12 @@ final class WorkoutStore: ObservableObject {
         current.rep()
         run = current
         if !previewOnly { onTrace?(.event("rep", "\(current.reps)")) }
+        if endsAtTarget, let slot = current.current, slot.exercise.measure == .reps, !slot.assumed, current.reps >= slot.target {
+            // The set-done cue stands in for the target's.
+            if !previewOnly { onTrace?(.event("auto_stop", "reps=\(current.reps) target=\(slot.target)")) }
+            perform(.stop, settling: false)
+            return
+        }
         if let cue = WorkoutCue.afterRep(current) { play(cue) }
         changed()
     }
@@ -331,14 +359,18 @@ final class WorkoutStore: ObservableObject {
         holdTimer = Task { [weak self] in
             try? await Task.sleep(for: .seconds(wait))
             guard !Task.isCancelled, let self, let now = self.run, now.phase == .counting, now.setStarted == started else { return }
-            self.play(.target)
+            if self.endsAtTarget { self.perform(.stop) } else { self.play(.target) }
         }
     }
 
     /// Saves a run's sets to history when it finishes or is ended. A run that carries on
     /// after finishing (repeat last set) updates its own entry.
     private func record(_ run: WorkoutRun) {
-        guard !run.logs.isEmpty else { return }
+        guard !run.logs.isEmpty else {
+            // Every set was deleted after it finished.
+            history.removeAll { $0.started == run.started && $0.name == run.name }
+            return persist()
+        }
         let entry = WorkoutRecord(name: run.name, planID: run.planID, started: run.started, ended: Date(), sets: run.logs)
         if let i = history.firstIndex(where: { $0.started == run.started && $0.name == run.name }) {
             history[i].sets = entry.sets; history[i].ended = entry.ended
