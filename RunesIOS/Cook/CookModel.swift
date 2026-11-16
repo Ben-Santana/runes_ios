@@ -344,6 +344,15 @@ struct CookSession: Codable, Equatable, Sendable {
         return wait > 0 ? (wait, last) : nil
     }
 
+    /// The timer this step's time can no longer wait for: the moment to start so they end
+    /// together has come, or gone, and that timer is still counting. Nil while there is
+    /// still a wait, once the time is going, and when nothing else is counting.
+    func due(at now: Date) -> CookTimer? {
+        guard !finished, !gathering, pickedTimer == nil, durations.indices.contains(slot), timer(step: step, slot: slot)?.isLive != true,
+              let last = running(at: now).filter({ $0.step != step }).max(by: { $0.end < $1.end }) else { return nil }
+        return last.remaining(at: now) <= durations[slot].seconds ? last : nil
+    }
+
     /// What the wrist dial starts from: the selected timer's time left, the time a step
     /// mentions that hasn't been started, or nothing on a step with no time.
     func dialSeconds(at now: Date) -> Int {

@@ -473,11 +473,15 @@ struct CookTests {
         guard let land = together.landing(at: t0.addingTimeInterval(60)) else { preconditionFailure("The spaghetti should wait") }
         precondition(land.wait == 300 && land.with.label == "Simmer", "\(land.wait)")
         precondition(together.landing(at: t0.addingTimeInterval(400)) == nil, "Past the moment, there is nothing to wait for")
+        precondition(together.due(at: t0.addingTimeInterval(60)) == nil && together.due(at: t0.addingTimeInterval(360))?.label == "Simmer"
+                     && together.due(at: t0.addingTimeInterval(400))?.label == "Simmer", "From the moment on it is due, while the sauce still counts")
+        precondition(together.due(at: t0.addingTimeInterval(901)) == nil, "The sauce is done: nothing to land with")
         together.apply(.timer, at: t0.addingTimeInterval(360))
         precondition(together.landing(at: t0.addingTimeInterval(361)) == nil && together.running(at: t0.addingTimeInterval(361)).map(\.end) == [t0.addingTimeInterval(900), t0.addingTimeInterval(900)], "Started then, they end together")
         var alone = CookSession(recipe: .starter, at: t0)
         alone.go(to: 3)
-        precondition(alone.landing(at: t0) == nil, "Nothing else is counting")
+        precondition(together.due(at: t0.addingTimeInterval(361)) == nil, "Started, it is due for nothing")
+        precondition(alone.landing(at: t0) == nil && alone.due(at: t0) == nil, "Nothing else is counting")
 
         // MARK: The eight beads
         precondition(Beads.fills(5, of: 16) == [1, 1, 0.5, 0, 0, 0, 0, 0], "Whole beads, then part of the next")
