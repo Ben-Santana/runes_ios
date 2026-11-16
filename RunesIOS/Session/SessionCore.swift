@@ -46,6 +46,11 @@ final class SessionCore: @unchecked Sendable {
     /// Each named setting as it is read or written back, with a line saying so. A line alone is a
     /// note, and an empty one ends a read.
     var onNamedSetting: ((NamedSettings.Setting?, String) -> Void)?
+    /// How the band describes each named setting, as the list is read.
+    var onCapability: ((NamedSettings.Setting, BandCapability) -> Void)?
+    /// Each line of the band tightness test: what was asked, the answer, and every other message
+    /// the band sent while the test listened. An empty line ends it.
+    var onTightness: ((String) -> Void)?
     /// Orientation and gyroscope samples, whether they were started for the Mac or for this phone.
     var onMotion: ((RelayWire.Event.Kind, [Double]) -> Void)?
     var onGesture: ((GestureEvent) -> Void)?
@@ -92,6 +97,12 @@ final class SessionCore: @unchecked Sendable {
     private var settingRead: (count: UInt64, index: UInt64, setting: NamedSettings.Setting?)?
     /// The named setting being written, until its value has been read back.
     private var settingWrite: NamedSettings.Setting?
+    /// How the band described each named setting when the list was last read, by the setting's number.
+    private var capabilities: [UInt64: BandCapability] = [:]
+    /// When the band tightness test began listening, how many other messages it has heard, and which run it is.
+    private var tightnessSince: TimeInterval?
+    private var tightnessHeard = 0
+    private var tightnessRun = 0
     private var lastSettings: String?
     private var pendingHandTarget: (band: UUID, attempt: Date)?
     private static let notNearbyAfter: TimeInterval = 30
@@ -521,14 +532,16 @@ final class SessionCore: @unchecked Sendable {
                 return askNext()
             }
             read.setting = setting; settingRead = read
+            if let capability = BandCapability(describing: payload) { capabilities[setting.id] = capability; onCapability?(setting, capability) }
             askSetting("named_read", NamedSettings.read(id: setting.id))
         case "named_read":
             guard let read = settingRead, var setting = read.setting else { return }
             let answer = NamedSettings.value(of: setting.id, from: payload)
             setting.kind = answer?.kind; setting.value = answer?.value
-            let range = setting.range.map { " [\($0.lowerBound) to \($0.upperBound)]" } ?? ""
+            let range = capabilities[setting.id].map { " [\($0.summary)]" } ?? setting.range.map { " [\($0.lowerBound) to \($0.upperBound)]" } ?? ""
+            let refusal = BandCapability.code(from: payload).map { "not readable (result \($0))" } ?? "not readable"
             let detail = setting.detail.isEmpty ? "" : " (\(setting.detail))"
-            line(setting, "#\(setting.id) \(setting.name)\(range) = \(answer?.text ?? "not readable")\(detail)")
+            line(setting, "#\(setting.id) \(setting.name)\(range) = \(answer?.text ?? refusal)\(detail)")
             askNext()
         case "named_write":
             guard let setting = settingWrite else { return }
@@ -556,6 +569,41 @@ final class SessionCore: @unchecked Sendable {
     private func trial(_ line: String) { record("band_test", line); onTrial?(line) }
     /// The shape of a test's answer, or that none came.
     private func answer(_ payload: Data) -> String { payload.isEmpty ? "no answer" : WristFeedbackResult.shape(payload) }
+
+    /// Asks the band for its own tightness check and listens to what it sends for a while after.
+    /// This sends the one request that starts the check. It writes no setting the band keeps.
+    func checkTightness(_ setting: NamedSettings.Setting, action: UInt64, value: Int64?) {
+        guard tightnessSince == nil else { return }
+        guard snapshot.state == .streaming, settingRead == nil, settingWrite == nil, let proto,
+              let capability = capabilities[setting.id],
+              let request = BandTightness.start(id: setting.id, name: setting.name, capability: capability, action: action, value: value) else {
+            tightness("Not sent: the band is busy, not connected, or does not describe the check this way.")
+            onTightness?(""); return
+        }
+        tightnessRun += 1; tightnessHeard = 0; tightnessSince = ProcessInfo.processInfo.systemUptime
+        proto.watchesOther = true
+        tightness("Asked: setting \(setting.id) action \(action)\(value.map { " value \($0)" } ?? ""). Listening for \(Int(BandTightness.listen)) seconds.")
+        do { try rpc("named_trigger", NamedSettings.channel, NamedSettings.field, request) }
+        catch { tightness("Could not ask the band."); return endTightness() }
+        let run = tightnessRun
+        transport.perform(after: BandTightness.listen) { [weak self] in
+            guard let self, self.tightnessRun == run else { return }
+            self.endTightness()
+        }
+    }
+
+    /// Writes one line of the band tightness test, with the seconds since it was asked.
+    private func tightness(_ text: String) {
+        let line = (tightnessSince.map { String(format: "+%.1fs ", ProcessInfo.processInfo.systemUptime - $0) } ?? "") + text
+        record("band_tightness", line); onTightness?(line)
+    }
+
+    private func endTightness() {
+        guard tightnessSince != nil else { return }
+        tightness("Stopped listening. \(tightnessHeard) other messages.")
+        tightnessSince = nil; tightnessRun += 1; proto?.watchesOther = false
+        onTightness?("")
+    }
 
     /// Plays one of the band's own patterns, 1 or 2, in place of anything still playing.
     /// The reference implementation calls these its gesture feedback patterns.
@@ -637,6 +685,7 @@ final class SessionCore: @unchecked Sendable {
                         transition(.streaming, candidate?.bandPoint == nil ? "Receiving band gestures. Compatibility mode: band identity is unverified." : "Receiving band gestures.")
                         // A read or write of a named setting cut off by a lost link is not carried over.
                         settingRead = nil; settingWrite = nil
+                        endTightness()
                         requestHand()
                     }
                     try reconcileStreams()
@@ -653,6 +702,7 @@ final class SessionCore: @unchecked Sendable {
                 trial("firmware: \(payload.isEmpty ? "no answer" : numbers)")
             case "device_info":
                 if let info = BandInfo.describe(payload) { record("band_info", info); onInfo?(info) }
+            case "named_trigger": tightness(BandTightness.reply(payload))
             case "set_hand":
                 if snapshot.handSetting.wrote() { try rpc("read_hand", 6, 5) }
             case "read_hand":
@@ -694,6 +744,11 @@ final class SessionCore: @unchecked Sendable {
             pulseSentAt = nil; patternInFlight = nil
             feedbackInFlight = nil
             sendPendingHand(); sendNextPulse(); publish()
+        case .other(let kind, let channel, let payload):
+            // The journal is bounded, so a band that floods is cut off at 60 lines.
+            guard tightnessSince != nil, tightnessHeard < 60 else { return }
+            tightnessHeard += 1
+            tightness(BandTightness.describe(kind: kind, channel: channel, payload: payload))
         case .emg(let values, let sequence, let timestamp):
             guard snapshot.state == .streaming else { return }
             onRaw?(RawSample(kind: .emg, uptime: receipt.uptime, sequence: sequence, timestamp: timestamp, emg: values))

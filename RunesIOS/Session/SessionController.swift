@@ -121,6 +121,8 @@ final class SessionController: ObservableObject {
         core.onNamedSetting = { setting, line in Task { @MainActor in BandTests.shared.named(setting, line) } }
         core.onTrial = { line in Task { @MainActor in BandTests.shared.trials.append(line) } }
         core.onInfo = { info in Task { @MainActor in BandTests.shared.info = info } }
+        core.onCapability = { setting, capability in Task { @MainActor in BandTightnessTest.shared.described(setting, capability) } }
+        core.onTightness = { line in Task { @MainActor in BandTightnessTest.shared.heard(line) } }
         WorkoutStore.shared.onSound = { voice, volume in ScoreAudio.shared.cue(voice, volume: volume) }
         WorkoutStore.shared.onSoundsLive = { ScoreAudio.shared.setLive($0, for: "workout") }
         ScoreStore.shared.onReserve = { [weak self] in self?.reserve($0, for: .score) }
@@ -300,6 +302,9 @@ final class SessionController: ObservableObject {
     func readFirmwareStatus() { core.transport.perform { [core] in core.tryOnBand("firmware", field: 7, BandTrial.firmwareStatus) } }
     func writeNamedSetting(_ setting: NamedSettings.Setting, value: UInt64) {
         core.transport.perform { [core] in core.writeNamedSetting(setting, value: value) }
+    }
+    func checkBandTightness(_ setting: NamedSettings.Setting, action: UInt64, value: Int64?) {
+        core.transport.perform { [core] in core.checkTightness(setting, action: action, value: value) }
     }
     func cancelWristFeedback(change: UUID) {
         core.transport.perform { [core] in core.cancelWristFeedback(change: change) }
