@@ -67,7 +67,8 @@ struct AbacusFace: View {
                 // The outermost bead at rest is the one that goes out.
                 if bead == max(1, resting) - 1, let out {
                     Bead(size: 28, ink: share.map(Bead.level) ?? 0, stroke: Color.ink, weight: timer == nil ? 2 : 1.5, ringed: chosen,
-                         lively: timer != nil && !paused && !ringing, urgent: (left ?? 99) <= 60, rattling: ringing)
+                         lively: timer != nil && !paused && !ringing, urgent: (left ?? 99) <= 60, rattling: ringing,
+                         tap: station.here ? session.step * 100 + session.beatIndex + (session.landing(at: now) == nil ? 0 : 50) : 0)
                         .opacity(paused ? 0.55 : 1)
                         .offset(x: x(out) - 14, y: Self.rod - 14)
                         .animation(reduceMotion ? nil : .linear(duration: 0.5), value: out)

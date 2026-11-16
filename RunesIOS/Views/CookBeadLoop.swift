@@ -81,11 +81,19 @@ struct LoopFace: View {
         let ringing = timer?.isRinging(at: now) ?? false, paused = timer?.isPaused ?? false
         let left = timer.map { ringing ? 0 : $0.remaining(at: now) }
         let share = timer.map { $0.total > 0 ? Double($0.remaining(at: now)) / Double($0.total) : 0 }
-        return Bead(size: front ? 60 : timer != nil ? 44 : station.here ? 34 : 26,
-                    ink: share.map(Bead.level) ?? (station.here ? Bead.dot : 0),
-                    stroke: station.here || timer != nil ? Color.ink : Color.muted, weight: front || station.here ? 2.5 : 1.5,
-                    ringed: chosen, lively: timer != nil && !paused && !ringing, urgent: (left ?? 99) <= 60, rattling: ringing,
-                    tap: front ? session.step * 100 + session.beatIndex : 0)
+        // The bead answers each sentence turned, and the moment a wait to start is over.
+        let tap = front ? session.step * 100 + session.beatIndex + (session.landing(at: now) == nil ? 0 : 50) : 0
+        return ZStack {
+            Bead(size: front ? 60 : timer != nil ? 44 : station.here ? 34 : 26,
+                 ink: share.map(Bead.level) ?? (station.here && !front ? Bead.dot : 0),
+                 stroke: station.here || timer != nil ? Color.ink : Color.muted, weight: front || station.here ? 2.5 : 1.5,
+                 ringed: chosen, lively: timer != nil && !paused && !ringing, urgent: (left ?? 99) <= 60, rattling: ringing, tap: tap)
+            // The step's number in the bead its ticket hangs from, read on paper and on ink alike.
+            if front, station.here {
+                Text(String(format: "%02d", session.step + 1)).font(ticketFont(20, .bold)).foregroundStyle(Color.white).blendMode(.difference)
+            }
+        }
+            .compositingGroup()
             .opacity(paused ? 0.55 : 1)
             .contentShape(Circle().inset(by: -10))
             .onTapGesture { if let timer { actions.toggleTimer(timer.id) } else if station.waiting != nil { actions.toggle(session.slot) } }

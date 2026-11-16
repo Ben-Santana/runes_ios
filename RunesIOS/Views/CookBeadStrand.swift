@@ -85,7 +85,7 @@ struct StrandFace: View {
                 Bead(size: wide, ink: share.map(Bead.level) ?? (places < 0 ? Bead.dot : 0),
                      stroke: here || timer != nil ? Color.ink : Color.muted, weight: here ? 2.5 : 1.5, ringed: chosen,
                      lively: timer != nil && !paused && !ringing, urgent: (left ?? 99) <= 60, rattling: ringing,
-                     tap: here ? session.step * 100 + session.beatIndex : 0)
+                     tap: here ? session.step * 100 + session.beatIndex + (session.landing(at: now) == nil ? 0 : 50) : 0)
                 // The step's number, which reads on paper and on ink alike.
                 if abs(places) <= 1, places >= 0 || timer != nil {
                     Text(String(format: "%02d", step + 1)).font(ticketFont(here ? 20 : 13, .bold))
