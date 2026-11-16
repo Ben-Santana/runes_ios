@@ -8,12 +8,12 @@ import SwiftUI
 // worked out from its words (Cook/Stations.swift). A tap on a place starts, pauses or
 // stops what is there; a hold clears it.
 
-private func ticketFont(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
+func ticketFont(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
     .system(size: size, weight: weight, design: .monospaced)
 }
 
 /// A line of dashes, where a ticket would tear.
-private struct Perforation: View {
+struct Perforation: View {
     var body: some View {
         Rectangle().fill(Color.clear).frame(height: 1)
             .overlay(Rectangle().stroke(Color.ink, style: StrokeStyle(lineWidth: 1, dash: [2, 5])).frame(height: 1))
@@ -254,10 +254,12 @@ private struct Vessel: View {
 /// The step as a ticket off the printer: its number and where it happens, one sentence
 /// in capitals, the amounts it calls for, and what follows. A new sentence feeds out
 /// from under the tear line.
-private struct Ticket: View {
+struct Ticket: View {
     let session: CookSession
     let plan: StationPlan
     let now: Date
+    /// The step's sentences as a row of beads, not a count in words.
+    var beads = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -270,7 +272,9 @@ private struct Ticket: View {
                 Text(String(format: "%02d/%02d", session.step + 1, session.count))
                 Text(spot.vessel.uppercased())
                 Spacer()
-                if beats.count > 1 { Text("\(index + 1) OF \(beats.count)").foregroundStyle(Color.muted) }
+                if beats.count > 1 {
+                    if beads { SentenceBeads(count: beats.count, index: index) } else { Text("\(index + 1) OF \(beats.count)").foregroundStyle(Color.muted) }
+                }
             }
             .font(ticketFont(13, .semibold)).padding(.top, 12)
             VStack(alignment: .leading, spacing: 10) {

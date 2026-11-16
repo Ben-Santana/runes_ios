@@ -53,12 +53,17 @@ enum CookListLook: String, Codable, CaseIterable, Sendable {
     var title: String { self == .contents ? "Contents" : "Ledger" }
 }
 enum CookingLook: String, Codable, CaseIterable, Sendable {
-    case stations, focus, hob, rail, poster, numbers
+    case loop, abacus, strand, stations, focus, hob, rail, poster, numbers
     var title: String {
-        switch self { case .stations: "Stations"; case .focus: "Focus"; case .hob: "Hob"; case .rail: "Rail"; case .poster: "Poster"; case .numbers: "Numbers" }
+        switch self {
+        case .loop: "Loop"; case .abacus: "Abacus"; case .strand: "Strand"
+        case .stations: "Stations"; case .focus: "Focus"; case .hob: "Hob"; case .rail: "Rail"; case .poster: "Poster"; case .numbers: "Numbers"
+        }
     }
+    /// Drawn with the band's eight beads.
+    var beads: Bool { self == .loop || self == .abacus || self == .strand }
     /// Whether a step is read a sentence at a time.
-    var paces: Bool { self == .focus || self == .stations }
+    var paces: Bool { self == .focus || self == .stations || beads }
 }
 
 /// What reaches the wrist while cooking.

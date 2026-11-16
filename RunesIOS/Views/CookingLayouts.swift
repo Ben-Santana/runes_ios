@@ -441,7 +441,7 @@ struct TimerPile: View {
 
 /// A time whose digits turn over, each on its own, when they change: the old one falls
 /// away forward and the new one drops into its place.
-private struct FlapDigits: View {
+struct FlapDigits: View {
     let text: String
     let size: CGFloat
     @Environment(\.accessibilityReduceMotion) private var reduceMotion

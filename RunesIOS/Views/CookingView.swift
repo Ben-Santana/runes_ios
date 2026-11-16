@@ -134,10 +134,11 @@ struct CookingView: View {
             // The rail look keeps its place down the side instead.
             Group {
                 if look == .hob || look == .focus { TimeLine(recipe: session.recipe, step: session.gathering ? -1 : session.step, finished: session.finished) }
-                else if look != .rail { StepProgress(count: session.count, step: session.gathering ? -1 : session.step, finished: session.finished, height: look == .poster ? 2 : 3) }
+                // The beads say where the cook is.
+                else if look != .rail, !look.beads { StepProgress(count: session.count, step: session.gathering ? -1 : session.step, finished: session.finished, height: look == .poster ? 2 : 3) }
             }
             .padding(.horizontal, Metric.gutter).padding(.top, 4)
-            if let first = rung.first, look != .focus {
+            if let first = rung.first, look != .focus, !look.beads {
                 let durations = session.recipe.durations(step: first.step)
                 let cue = durations.indices.contains(first.slot) ? StepDetails.cue(for: durations[first.slot], in: session.recipe.steps[first.step]) : nil
                 TimeUpBand(timer: first, others: rung.count - 1, cue: cue, controls: controls, stop: actions.stopRinging)
@@ -165,6 +166,7 @@ struct CookingView: View {
                 else if session.gathering { gather.transition(.opacity) }
                 else if look == .focus { focus.transition(.opacity) }
                 else if look == .stations { stations.transition(.opacity) }
+                else if look.beads { beads.transition(.opacity) }
                 else { pages.transition(.opacity) }
                 // In the focus look a timer whose time is up takes the page: ink from edge to
                 // edge, seen from across the kitchen, and still until it is stopped.
@@ -192,7 +194,7 @@ struct CookingView: View {
             case .rail, .poster: TimerBars(session: session, actions: actions)
             case .focus: TimerPile(session: session, controls: controls, actions: actions).padding(.bottom, quiet ? 6 : 0)
             // The plan above already holds every timer, each in its place.
-            case .stations: EmptyView()
+            case .stations, .loop, .abacus, .strand: EmptyView()
             }
             // Its gestures are taught on the get-ready page and then left out of the way.
             if !quiet { legend(ringing: ringing, now: now).padding(.top, 16).padding(.bottom, 10).padding(.horizontal, 12) }
@@ -263,7 +265,20 @@ struct CookingView: View {
     /// The dial, which takes the whole screen while the pinch is held: there is one thing
     /// being set, and it is given all the room.
     @ViewBuilder private var dialFace: some View {
-        if let dialing {
+        if let dialing, look.beads {
+            let removal = AnyTransition.scale(scale: 0.12, anchor: .bottom).combined(with: .opacity)
+            if session.gathering {
+                BeadDial(fills: Beads.people(dialing), value: "\(dialing)", label: "Servings", hint: "Let go and the amounts follow")
+                    .transition(.asymmetric(insertion: .opacity, removal: removal))
+            } else {
+                let target = session.selectedTimer.flatMap { $0.isLive ? $0 : nil }
+                let named = session.pickedTimer == nil && session.durations.indices.contains(session.slot) ? session.durations[session.slot].label : nil
+                BeadDial(fills: Beads.dial(steps: DialTime.steps(for: dialing)), value: DurationFinder.clock(dialing),
+                         label: target?.label ?? named ?? "Step \(session.step + 1)",
+                         hint: dialing == 0 ? (target == nil ? "Turn your wrist to set a time" : "Let go to clear it") : target == nil ? "Let go to start" : "Let go to set")
+                    .transition(.asymmetric(insertion: .opacity, removal: removal))
+            }
+        } else if let dialing {
             if session.gathering {
                 TimerDial(steps: dialing * 5, value: "\(dialing)", label: "Servings", hint: "Let go and the amounts follow")
                     // Let go, and the dial drops into the pile of timers below.
@@ -301,9 +316,22 @@ struct CookingView: View {
             })
     }
 
+    /// The beads and the ticket. Swipes turn the sentence, as the band's do.
+    private var beads: some View {
+        BeadCookPage(session: session, look: look, controls: controls, actions: actions)
+            .contentShape(Rectangle())
+            .simultaneousGesture(DragGesture(minimumDistance: 14).onEnded { value in
+                let dx = value.translation.width
+                guard abs(dx) > 60, abs(dx) > abs(value.translation.height) * 1.2 else { return }
+                actions.perform(dx < 0 ? .next : .previous)
+            })
+    }
+
     /// The ingredients, before step one. A swipe on, like the band's, begins.
     private var gather: some View {
-        GatherPage(session: session, toggle: actions.tick)
+        Group {
+            if look.beads { BeadGather(session: session, toggle: actions.tick) } else { GatherPage(session: session, toggle: actions.tick) }
+        }
             .simultaneousGesture(DragGesture(minimumDistance: 14).onEnded { value in
                 if value.translation.width < -60, abs(value.translation.width) > abs(value.translation.height) * 1.2 { actions.perform(.next) }
             })
@@ -312,7 +340,7 @@ struct CookingView: View {
     private var finished: some View {
         // Centred when it fits; with a few notes under it, it scrolls.
         ViewThatFits(in: .vertical) {
-            if look == .stations {
+            if look == .stations || look.beads {
                 CookReceipt(session: session) { noting = true }.frame(maxHeight: .infinity, alignment: .top)
                 ScrollView { CookReceipt(session: session) { noting = true } }
             } else {
@@ -875,13 +903,13 @@ extension PreviewFixtures {
     @MainActor static func cookSalmon(_ name: String) -> CookStore {
         let now = Date()
         var session = CookSession(recipe: .salmonPasta, at: now.addingTimeInterval(-1200))
-        session.start(step: 0, slot: 0, at: now.addingTimeInterval(name == "cooking-salmon-ringing" ? -500 : -130))
+        session.start(step: 0, slot: 0, at: now.addingTimeInterval(name.contains("ringing") ? -500 : -130))
         session.go(to: 1)
         session.start(step: 1, slot: 0, at: now.addingTimeInterval(-65))
         session.go(to: 2)
         session.start(step: 2, slot: 0, at: now.addingTimeInterval(-40))
         if name == "cooking-picked" { session.apply(.timerDown, at: now); session.apply(.timerDown, at: now) }
-        if name == "cooking-gather" || name == "cooking-servings" {
+        if name.hasPrefix("cooking-gather") || name.hasPrefix("cooking-servings") {
             session = CookSession(recipe: .salmonPasta, at: now, gather: true)
             for _ in 0..<3 { session.apply(.timer, at: now) }
             session.apply(.timerDown, at: now)
@@ -893,10 +921,11 @@ extension PreviewFixtures {
             session.go(to: 1)
         }
         let look: CookingLook = name.hasSuffix("numbers") ? .numbers : name.hasSuffix("rail") ? .rail : name.hasSuffix("poster") ? .poster
-            : name.hasSuffix("focus") ? .focus : name.hasSuffix("stations") ? .stations : .hob
+            : name.hasSuffix("focus") ? .focus : name.hasSuffix("stations") ? .stations
+            : name.hasSuffix("loop") ? .loop : name.hasSuffix("abacus") ? .abacus : name.hasSuffix("strand") ? .strand : .hob
         if name.hasPrefix("demo") { session = CookSession(recipe: .salmonPasta, at: now, gather: true) }
         return CookStore(preview: Recipe.samples, session: session, cookingLook: look,
-                         dialing: name == "cooking-dial" ? 450 : name == "cooking-servings" ? 6 : nil,
+                         dialing: name.hasPrefix("cooking-dial") ? 450 : name.hasPrefix("cooking-servings") ? 6 : nil,
                          asking: name == "cooking-ask" ? .listening : name == "cooking-answer"
                             ? .answered(question: "How much garlic goes in now?", answer: "Three cloves, minced, with the peas and the spinach. The other two go in the sauce at the next step.") : .idle)
     }

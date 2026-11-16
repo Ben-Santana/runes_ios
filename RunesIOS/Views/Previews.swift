@@ -121,6 +121,8 @@ struct SnapshotGallery: View {
         } else if name.hasPrefix("demo") {
             let store = PreviewFixtures.cookSalmon(name)
             NavigationStack { CookingScreen(store: store) }.task { await PreviewFixtures.walkthrough(store) }
+        } else if name.hasPrefix("cooking-"), ["loop", "abacus", "strand"].contains(where: name.hasSuffix) {
+            NavigationStack { CookingScreen(store: PreviewFixtures.cookSalmon(name)) }
         } else if ["cooking-landing-stations", "cooking-landing-focus", "cooking-done-stations", "cooking-salmon-stations", "cooking-salmon-focus", "cooking-salmon-rail", "cooking-salmon-poster", "cooking-salmon", "cooking-salmon-ringing", "cooking-salmon-numbers", "cooking-picked", "cooking-salmon-done", "cooking-dial", "cooking-ask", "cooking-answer", "cooking-gather", "cooking-servings"].contains(name) {
             NavigationStack { CookingScreen(store: PreviewFixtures.cookSalmon(name)) }
         } else if name == "cooking-numbers" || name == "cooking-numbers-ringing" {
