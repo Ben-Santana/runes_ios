@@ -164,6 +164,7 @@ struct CookingView: View {
                 if session.finished { finished.transition(.opacity.combined(with: .scale(scale: 0.96))) }
                 else if session.gathering { gather.transition(.opacity) }
                 else if look == .focus { focus.transition(.opacity) }
+                else if look == .stations { stations.transition(.opacity) }
                 else { pages.transition(.opacity) }
                 // In the focus look a timer whose time is up takes the page: ink from edge to
                 // edge, seen from across the kitchen, and still until it is stopped.
@@ -183,13 +184,15 @@ struct CookingView: View {
             .animation(reduceMotion ? nil : .entrance, value: session.step)
             }
             // The focus look says one thing at a time; what comes next is a swipe away.
-            let quiet = look == .focus && !session.gathering && !session.finished
+            let quiet = look.paces && !session.gathering && !session.finished
             if !session.finished, !quiet { NextPeek(session: session) }
             switch look {
             case .hob: Hob(session: session, actions: actions)
             case .numbers: TimerShelf(session: session, actions: actions)
             case .rail, .poster: TimerBars(session: session, actions: actions)
             case .focus: TimerPile(session: session, controls: controls, actions: actions).padding(.bottom, quiet ? 6 : 0)
+            // The plan above already holds every timer, each in its place.
+            case .stations: EmptyView()
             }
             // Its gestures are taught on the get-ready page and then left out of the way.
             if !quiet { legend(ringing: ringing, now: now).padding(.top, 16).padding(.bottom, 10).padding(.horizontal, 12) }
@@ -287,6 +290,17 @@ struct CookingView: View {
             })
     }
 
+    /// The kitchen plan and the ticket. Swipes turn the sentence, as the band's do.
+    private var stations: some View {
+        StationsPage(session: session, actions: actions)
+            .contentShape(Rectangle())
+            .simultaneousGesture(DragGesture(minimumDistance: 14).onEnded { value in
+                let dx = value.translation.width
+                guard abs(dx) > 60, abs(dx) > abs(value.translation.height) * 1.2 else { return }
+                actions.perform(dx < 0 ? .next : .previous)
+            })
+    }
+
     /// The ingredients, before step one. A swipe on, like the band's, begins.
     private var gather: some View {
         GatherPage(session: session, toggle: actions.tick)
@@ -298,8 +312,13 @@ struct CookingView: View {
     private var finished: some View {
         // Centred when it fits; with a few notes under it, it scrolls.
         ViewThatFits(in: .vertical) {
-            enjoy.frame(maxHeight: .infinity)
-            ScrollView { enjoy }
+            if look == .stations {
+                CookReceipt(session: session) { noting = true }.frame(maxHeight: .infinity, alignment: .top)
+                ScrollView { CookReceipt(session: session) { noting = true } }
+            } else {
+                enjoy.frame(maxHeight: .infinity)
+                ScrollView { enjoy }
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .contentShape(Rectangle())
@@ -867,9 +886,9 @@ extension PreviewFixtures {
             for _ in 0..<3 { session.apply(.timer, at: now) }
             session.apply(.timerDown, at: now)
         }
-        if name == "cooking-salmon-done" { session.go(to: session.count - 1); session.apply(.next, at: now) }
+        if name.contains("done") { session.go(to: session.count - 1); session.apply(.next, at: now) }
         let look: CookingLook = name.hasSuffix("numbers") ? .numbers : name.hasSuffix("rail") ? .rail : name.hasSuffix("poster") ? .poster
-            : name.hasSuffix("focus") ? .focus : .hob
+            : name.hasSuffix("focus") ? .focus : name.hasSuffix("stations") ? .stations : .hob
         if name.hasPrefix("demo") { session = CookSession(recipe: .salmonPasta, at: now, gather: true) }
         return CookStore(preview: Recipe.samples, session: session, cookingLook: look,
                          dialing: name == "cooking-dial" ? 450 : name == "cooking-servings" ? 6 : nil,
@@ -914,6 +933,10 @@ extension PreviewFixtures {
         store.demoExpire(); await wait(3)
         store.stopRinging(); await wait(1.2)
         store.perform(.next); await wait(2)
+        // To the last step and past it, for the end of the cook.
+        if let count = store.session?.count { store.go(to: count - 1) }
+        await wait(1.6)
+        store.perform(.next); await wait(4)
     }
 
     /// Recipes with nothing cooking, some cooked before.

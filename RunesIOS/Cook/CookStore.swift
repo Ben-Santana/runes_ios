@@ -53,10 +53,12 @@ enum CookListLook: String, Codable, CaseIterable, Sendable {
     var title: String { self == .contents ? "Contents" : "Ledger" }
 }
 enum CookingLook: String, Codable, CaseIterable, Sendable {
-    case focus, hob, rail, poster, numbers
+    case stations, focus, hob, rail, poster, numbers
     var title: String {
-        switch self { case .focus: "Focus"; case .hob: "Hob"; case .rail: "Rail"; case .poster: "Poster"; case .numbers: "Numbers" }
+        switch self { case .stations: "Stations"; case .focus: "Focus"; case .hob: "Hob"; case .rail: "Rail"; case .poster: "Poster"; case .numbers: "Numbers" }
     }
+    /// Whether a step is read a sentence at a time.
+    var paces: Bool { self == .focus || self == .stations }
 }
 
 /// What reaches the wrist while cooking.
@@ -219,9 +221,9 @@ final class CookStore: ObservableObject {
         reads = saved.reads ?? false
         assistant = CookAssistant()
         listLook = saved.listLook.flatMap(CookListLook.init) ?? .contents
-        cookingLook = saved.cookingLook.flatMap(CookingLook.init) ?? .focus
+        cookingLook = saved.cookingLook.flatMap(CookingLook.init) ?? .stations
         session = saved.session
-        session?.paced = cookingLook == .focus
+        session?.paced = cookingLook.paces
         scheduled = Set((saved.session?.timers ?? []).map { Self.notificationPrefix + $0.id })
         decider.onFire = { [weak self] id in
             guard let self else { return }
@@ -250,7 +252,7 @@ final class CookStore: ObservableObject {
         self.recipes = recipes; controls = .standard; sounds = true; buzz = .timers; dial = true; self.dialing = dialing
         spoken = true; reads = false; assistant = CookAssistant(preview: asking)
         self.listLook = listLook; self.cookingLook = cookingLook; self.session = session; previewOnly = true
-        self.session?.paced = cookingLook == .focus
+        self.session?.paced = cookingLook.paces
     }
     #endif
 
@@ -293,7 +295,7 @@ final class CookStore: ObservableObject {
         if !previewOnly { onReserve?(reservedNow) }
     }
     func setListLook(_ look: CookListLook) { listLook = look; persist() }
-    func setCookingLook(_ look: CookingLook) { cookingLook = look; session?.paced = look == .focus; persist() }
+    func setCookingLook(_ look: CookingLook) { cookingLook = look; session?.paced = look.paces; persist() }
 
     /// What a link gave: the recipe its page publishes for search engines, or, when it
     /// publishes none, the page as the text a reader sees.
@@ -328,7 +330,7 @@ final class CookStore: ObservableObject {
         // With things still to get out, cooking opens on the ingredients.
         var fresh = CookSession(recipe: recipe, gather: ready.count < recipe.ingredients.count)
         for index in ready { fresh.toggle(ingredient: index) }
-        fresh.paced = cookingLook == .focus
+        fresh.paced = cookingLook.paces
         session = fresh
         changed()
     }
