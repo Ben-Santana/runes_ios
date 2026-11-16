@@ -163,6 +163,12 @@ struct ConnectionDiagnosticsTests {
         let settings = PB.field(6, PB.field(6, 2) + PB.field(10, 1) + PB.field(46, PB.field(3, 1)) + PB.field(9, Data([0xff, 0xff])))
         precondition(BandSettings.describe(settings) == "6=2 9=bytes(2) 10=1 46={3=1}")
         precondition(BandSettings.describe(PB.field(2, 1)) == nil)
+        // Band tests: a gesture's acknowledgement, a stored pattern with its gap as a still segment, and stop.
+        precondition(BandTrial.acknowledge(gesture: 7) == Data([0x08, 0x07, 0x10, 0x02, 0x18, 0x00]))
+        let stored = BandTrial.pattern(named: "ab", [BandPulse(duration: 60, amplitude: 190, gap: 90), BandPulse(duration: 110, amplitude: 245)])
+        let twoBeats = Data([0x0a, 0x02, 0x61, 0x62, 0x12, 0x05, 0x08, 0x3c, 0x10, 0xbe, 0x01, 0x12, 0x04, 0x08, 0x5a, 0x10, 0x00, 0x12, 0x05, 0x08, 0x6e, 0x10, 0xf5, 0x01])
+        precondition(stored == PB.field(4, PB.field(1, twoBeats) + PB.field(2, 1)))
+        precondition(BandTrial.stop == Data([0x1a, 0x00]))
         // The band's named settings: the requests, and what is read from their answers.
         precondition(NamedSettings.count() == Data([0x0a, 0x02, 0x08, 0x02]))
         precondition(NamedSettings.describe(index: 5) == Data([0x12, 0x04, 0x08, 0x02, 0x10, 0x05]))

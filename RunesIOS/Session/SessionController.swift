@@ -119,6 +119,7 @@ final class SessionController: ObservableObject {
             Task { @MainActor in BandTests.shared.patternAnswer = "Pattern \(pattern): \(result.rawValue). \(note)" }
         }
         core.onNamedSetting = { setting, line in Task { @MainActor in BandTests.shared.named(setting, line) } }
+        core.onTrial = { line in Task { @MainActor in BandTests.shared.trials.append(line) } }
         WorkoutStore.shared.onSound = { voice, volume in ScoreAudio.shared.cue(voice, volume: volume) }
         WorkoutStore.shared.onSoundsLive = { ScoreAudio.shared.setLive($0, for: "workout") }
         ScoreStore.shared.onReserve = { [weak self] in self?.reserve($0, for: .score) }
@@ -288,6 +289,12 @@ final class SessionController: ObservableObject {
     func vibrate(_ pulses: [BandPulse]) { core.transport.perform { [core] in core.play(pulses, name: "lab") } }
     func performBandPattern(_ pattern: UInt64) { core.transport.perform { [core] in core.perform(pattern: pattern) } }
     func readNamedSettings() { core.transport.perform { [core] in core.readNamedSettings() } }
+    func acknowledgeGestures(_ on: Bool) { core.transport.perform { [core] in core.acknowledgesGestures = on } }
+    /// Has the band store a pattern under a name and play it itself.
+    func playStored(_ pulses: [BandPulse], named name: String) {
+        core.transport.perform { [core] in core.tryOnBand("pattern", field: 17, BandTrial.pattern(named: name, pulses)) }
+    }
+    func stopVibration() { core.transport.perform { [core] in core.tryOnBand("stop", field: 17, BandTrial.stop) } }
     func writeNamedSetting(_ setting: NamedSettings.Setting, value: UInt64) {
         core.transport.perform { [core] in core.writeNamedSetting(setting, value: value) }
     }
