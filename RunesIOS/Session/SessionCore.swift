@@ -87,6 +87,10 @@ final class SessionCore: @unchecked Sendable {
     private var buzzGeneration = 0
     private var pulseSentAt: TimeInterval?
     private var patternInFlight: UInt64?
+    /// Whether the pattern playing is one to show on the screen edge.
+    private var buzzShown = true
+    /// Whether the band is set to stay quiet on gestures. Nil until the band has said.
+    private var bandQuietOnGestures: Bool?
     /// Where the read of the named settings has got to: how many there are, the place in the list, and the setting just described.
     private var settingRead: (count: UInt64, index: UInt64, setting: NamedSettings.Setting?)?
     /// The named setting being written, until its value has been read back.
@@ -454,13 +458,31 @@ final class SessionCore: @unchecked Sendable {
     func buzzBand(_ buzz: BandBuzz) { play(buzz.pulses, name: buzz.rawValue) }
 
     /// Plays any list of pulses, replacing a pattern still playing. An empty list stops it.
-    func play(_ pulses: [BandPulse], name: String) {
+    /// A pattern with no name is an answer to a gesture: there is one for every gesture, so it
+    /// is left out of the journal and off the screen edge, where the gesture already shows.
+    func play(_ pulses: [BandPulse], name: String?) {
         guard snapshot.state == .streaming, proto != nil else { return }
         buzzGeneration += 1
-        buzzQueue = pulses; buzzResting = false
+        buzzQueue = pulses; buzzResting = false; buzzShown = name != nil
         guard !pulses.isEmpty else { return }
-        record("band_buzz", "\(name) requested.")
+        if let name { record("band_buzz", "\(name) requested.") }
         sendNextPulse()
+    }
+
+    /// Buzzes the band in answer to a gesture, in place of the buzz the band gives by itself.
+    /// Sent only while the band is known to stay quiet on gestures, so nothing is felt twice.
+    func answer(_ gesture: BandGesture.Kind) {
+        // An answer that cannot go out at once is dropped: a late one would feel wrong.
+        guard bandQuietOnGestures == true, proto?.canSendWristFeedback == true else { return }
+        play(gesture.answer, name: nil)
+    }
+
+    /// Notes what the band's haptics setting is, as read on connecting or after it was written.
+    private func heard(haptics value: UInt64) {
+        let quiet = value == 2
+        guard quiet != bandQuietOnGestures else { return }
+        bandQuietOnGestures = quiet
+        record("band_buzz", quiet ? "The band stays quiet on gestures; Runes answers them." : "Band haptics setting \(value); Runes does not answer gestures.")
     }
 
     /// Reads every setting the band can name, one request at a time.
@@ -541,6 +563,7 @@ final class SessionCore: @unchecked Sendable {
             settingWrite = nil
             let answer = NamedSettings.value(of: setting.id, from: payload)
             setting.kind = answer?.kind; setting.value = answer?.value
+            if setting.name == "haptics", let value = answer?.value { heard(haptics: value) }
             line(setting, "\(setting.name): the band now reports \(answer?.value.map(String.init) ?? "nothing readable").")
         }
     }
@@ -573,7 +596,10 @@ final class SessionCore: @unchecked Sendable {
         guard snapshot.state == .streaming, let proto else { buzzQueue = []; return }
         guard proto.canSendWristFeedback else { return }
         let pulse = buzzQueue.removeFirst()
-        do { try rpc("wrist_feedback", 6, 17, pulse.payload); pulseSentAt = ProcessInfo.processInfo.systemUptime; onPulseSent?(pulse) }
+        do {
+            try rpc("wrist_feedback", 6, 17, pulse.payload); pulseSentAt = ProcessInfo.processInfo.systemUptime
+            if buzzShown { onPulseSent?(pulse) }
+        }
         catch { record("band_buzz", "Send unconfirmed."); buzzQueue = []; return }
         guard !buzzQueue.isEmpty else { return }
         buzzResting = true
@@ -655,6 +681,7 @@ final class SessionCore: @unchecked Sendable {
             case "set_hand":
                 if snapshot.handSetting.wrote() { try rpc("read_hand", 6, 5) }
             case "read_hand":
+                if let haptics = BandSettings.haptics(payload) { heard(haptics: haptics) }
                 if let settings = BandSettings.describe(payload), settings != lastSettings {
                     lastSettings = settings
                     record("band_settings", settings); onSettings?(settings)

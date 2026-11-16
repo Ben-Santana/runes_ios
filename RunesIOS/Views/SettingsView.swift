@@ -30,6 +30,7 @@ struct SettingsView<Advanced: View>: View {
     @ViewBuilder var advanced: () -> Advanced
     @AppStorage(Preferences.haptics) private var haptics = true
     @AppStorage(Preferences.batteryAlerts) private var batteryAlerts = false
+    @AppStorage(Preferences.bandAnswers) private var bandAnswers = true
     @State private var confirmForget = false
     @State private var scanningMac = false
     @State private var macToRemove: MacLinks.Mac?
@@ -84,6 +85,9 @@ struct SettingsView<Advanced: View>: View {
                     }
                     PanelGroup("Preferences") {
                         Toggle(isOn: $haptics) { label("Haptics on gesture", "A light tap when a gesture arrives while Runes is open.") }
+                            .padding(.horizontal, Metric.inset).padding(.vertical, 10)
+                        Rule()
+                        Toggle(isOn: $bandAnswers) { label("Band buzz on gesture", "Runes buzzes your band when it hears a gesture, while the band is set to stay quiet by itself.") }
                             .padding(.horizontal, Metric.inset).padding(.vertical, 10)
                         Rule()
                         Toggle(isOn: $batteryAlerts) { label("Band battery alerts", "A notification when the band drops to 20%.") }

@@ -379,6 +379,13 @@ enum BandSettings {
         return describe(config, depth: 0)
     }
 
+    /// The band's haptics setting from the settings it reports on connecting: 3 when it buzzes
+    /// by itself on gestures, 2 when it stays quiet on them, 1 when its motor is off.
+    static func haptics(_ payload: Data) -> UInt64? {
+        guard let config = try? Fields(Fields(payload).bytes(6)) else { return nil }
+        return try? config.integer(11)
+    }
+
     /// A text field cut to 80 plain characters, or nil when it is absent or empty.
     static func text(_ fields: Fields, _ number: Int) -> String? {
         guard let raw = try? fields.bytes(number) else { return nil }
@@ -534,6 +541,20 @@ enum BandTrial {
     static let stop = PB.field(3, Data())
     /// Asks which firmware is running and whether an update is waiting. Sent as an update request; it changes nothing.
     static let firmwareStatus = PB.field(1, Data())
+}
+
+extension BandGesture.Kind {
+    /// What Runes plays on the band in answer to this gesture, in place of the buzz the band
+    /// gives by itself: a tick for a tap, which a double tap repeats, a firmer one as a hold
+    /// begins and a light one as it ends, and one in between for a swipe.
+    var answer: [BandPulse] {
+        switch self {
+        case .tap, .doubleTap: [BandPulse(duration: 40, amplitude: 200)]
+        case .holdBegan: [BandPulse(duration: 70, amplitude: 230)]
+        case .holdEnded: [BandPulse(duration: 30, amplitude: 150)]
+        case .swipe: [BandPulse(duration: 50, amplitude: 210)]
+        }
+    }
 }
 
 enum WristFeedbackResult: String, Sendable {
