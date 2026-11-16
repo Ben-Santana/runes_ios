@@ -179,6 +179,13 @@ private struct Ticket: View {
                     VStack(alignment: .leading, spacing: 2) { ForEach(uses.prefix(3), id: \.self) { Text($0.uppercased()) } }
                         .font(ticketFont(15))
                 }
+                // When to start this so it is done with what is already on.
+                if let landing = session.landing(at: now) {
+                    Text("START IN \(DurationFinder.clock(landing.wait)) · LANDS WITH \(landing.with.label.uppercased())")
+                        .font(ticketFont(15, .semibold)).monospacedDigit()
+                        .padding(.horizontal, 8).padding(.vertical, 5)
+                        .overlay(Rectangle().strokeBorder(Color.ink, lineWidth: 1.5))
+                }
             }
             .padding(.top, 10)
             .id("\(session.step).\(index)")

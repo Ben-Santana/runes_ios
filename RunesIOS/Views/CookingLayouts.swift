@@ -367,15 +367,19 @@ struct TimerPile: View {
         let own = pot.step == session.step && !session.finished
         let height: CGFloat = rank == 0 ? 100 : 40
         let digits: CGFloat = rank == 0 ? 60 : 20
+        // A time not started says when to start it so it lands with the rest.
+        let landing = timer == nil && own && pot.slot == session.slot ? session.landing(at: now) : nil
         return HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(pot.label).font(rank == 0 ? .heading : .label).lineLimit(1)
+                Text(pot.label + (rank > 0 ? landing.map { " · start in \(DurationFinder.clock($0.wait))" } ?? "" : ""))
+                    .font(rank == 0 ? .heading : .label).monospacedDigit().lineLimit(1)
                 if rank == 0 {
                     // The one gesture that matters here is shown where it acts.
                     HStack(spacing: 6) {
                         if timer == nil || paused, let start = controls?.trigger(for: .timer) { TriggerGlyphs(steps: start.steps, size: 13) }
-                        Text(ringing ? "Time’s up" : paused ? "Paused" : timer == nil ? "Ready" : own ? "Counting" : "Step \(pot.step + 1)")
-                            .font(.caption)
+                        Text(ringing ? "Time’s up" : paused ? "Paused" : landing.map { "Start in \(DurationFinder.clock($0.wait)), to land with \($0.with.label)" }
+                             ?? (timer == nil ? "Ready" : own ? "Counting" : "Step \(pot.step + 1)"))
+                            .font(.caption).monospacedDigit().lineLimit(1)
                     }
                     .opacity(0.7)
                 }

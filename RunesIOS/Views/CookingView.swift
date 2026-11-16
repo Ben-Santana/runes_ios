@@ -887,6 +887,11 @@ extension PreviewFixtures {
             session.apply(.timerDown, at: now)
         }
         if name.contains("done") { session.go(to: session.count - 1); session.apply(.next, at: now) }
+        if name.contains("landing") {
+            session = CookSession(recipe: .salmonPasta, at: now)
+            session.start(step: 0, slot: 0, at: now.addingTimeInterval(-70))
+            session.go(to: 1)
+        }
         let look: CookingLook = name.hasSuffix("numbers") ? .numbers : name.hasSuffix("rail") ? .rail : name.hasSuffix("poster") ? .poster
             : name.hasSuffix("focus") ? .focus : name.hasSuffix("stations") ? .stations : .hob
         if name.hasPrefix("demo") { session = CookSession(recipe: .salmonPasta, at: now, gather: true) }

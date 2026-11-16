@@ -345,7 +345,7 @@ final class CookStore: ObservableObject {
         ringTask?.cancel(); ringTask = nil
         if dialing != nil { dialing = nil; onDial?(false) }
         assistant.dismiss()
-        warned = []
+        warned = []; called = []; pendingStart = nil
         persist(); arm(); syncNotifications(); liveChanged()
         guard !previewOnly else { return }
         onReserve?(reservedNow)
@@ -605,12 +605,38 @@ final class CookStore: ObservableObject {
         if buzz != .off { wrist([.double]) }
     }
 
+    /// Starts already called for, so each is said once.
+    private var called: Set<String> = []
+
+    /// The moment to start this step's time so it lands with what is already going.
+    private func startMoment(at now: Date) -> (key: String, time: Date, label: String, with: String)? {
+        guard let session, let landing = session.landing(at: now) else { return nil }
+        let key = "\(session.step).\(session.slot).\(landing.with.id)"
+        guard !called.contains(key) else { return nil }
+        return (key, now.addingTimeInterval(Double(landing.wait)), session.durations[session.slot].label ?? "Step \(session.step + 1)", landing.with.label)
+    }
+
+    /// Says when it is time to start something so it finishes with what is already cooking.
+    private func callStart() {
+        let now = Date()
+        guard let session, session.landing(at: now) == nil, session.durations.indices.contains(session.slot),
+              session.timer(step: session.step, slot: session.slot)?.isLive != true, let due = pendingStart, due.time <= now.addingTimeInterval(1) else { return }
+        pendingStart = nil
+        called.insert(due.key)
+        if sounds { onCue?(.soon) }
+        if buzz != .off { wrist([.double, .tap]) }
+        if spoken { assistant.read("Start the \(due.label.lowercased()) now, to finish with the \(due.with.lowercased()).") }
+    }
+    private var pendingStart: (key: String, time: Date, label: String, with: String)?
+
     /// Wakes at the next timer's end, so the screen and the Lock Screen turn to ringing,
-    /// and a minute before a long one ends.
+    /// a minute before a long one ends, and when it is time to start something so it lands
+    /// with the rest.
     private func arm() {
         wake?.invalidate(); wake = nil
         let now = Date()
-        guard !previewOnly, let end = ([session?.nextEnd(after: now)] + notices(at: now).map(\.time).filter { $0 > now }).compactMap({ $0 }).min() else { return }
+        pendingStart = previewOnly ? nil : startMoment(at: now)
+        guard !previewOnly, let end = ([session?.nextEnd(after: now), pendingStart?.time] + notices(at: now).map(\.time).filter { $0 > now }).compactMap({ $0 }).min() else { return }
         let timer = Timer(fire: end, interval: 0, repeats: false) { [weak self] _ in
             Task { @MainActor in self?.rang() }
         }
@@ -621,6 +647,7 @@ final class CookStore: ObservableObject {
     private func rang() {
         objectWillChange.send()
         giveNotice()
+        callStart()
         arm(); show()
         ring()
         liveChanged()
