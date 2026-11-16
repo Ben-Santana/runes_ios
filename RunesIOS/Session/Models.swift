@@ -455,6 +455,28 @@ enum NamedSettings {
     }
 }
 
+/// Requests the band is known to understand from its published message definitions, which
+/// the app does not rely on yet. Each is tried from the Band tests page.
+enum BandTrial {
+    /// The channel the named settings use, which the band is known to answer on.
+    static let channel: UInt16 = 1
+    /// Tells the band a gesture arrived, as the Meta app does for each one: the gesture's
+    /// sequence number, the kind of app (2, a phone app) and the link (0, direct).
+    static func acknowledge(gesture sequence: UInt64) -> Data { PB.field(1, sequence) + PB.field(2, 2) + PB.field(3, 0) }
+    /// A vibration the band stores under `name` and plays itself: each pulse is a segment of
+    /// duration and strength, and a gap is a segment of no strength. Sent as a haptics request.
+    static func pattern(named name: String, _ pulses: [BandPulse], play: Bool = true) -> Data {
+        let segments = pulses.flatMap { pulse -> [Data] in
+            let on = PB.field(2, PB.field(1, pulse.duration) + PB.field(2, min(pulse.amplitude, 255)))
+            return pulse.gap > 0 ? [on, PB.field(2, PB.field(1, pulse.gap) + PB.field(2, 0))] : [on]
+        }
+        let pattern = segments.reduce(PB.field(1, Data(name.utf8)), +)
+        return PB.field(4, PB.field(1, pattern) + PB.field(2, play ? 1 : 0))
+    }
+    /// Stops whatever the band's motor is playing. Sent as a haptics request.
+    static let stop = PB.field(3, Data())
+}
+
 enum WristFeedbackResult: String, Sendable {
     case accepted, rejected, unconfirmed
     init(_ payload: Data) {

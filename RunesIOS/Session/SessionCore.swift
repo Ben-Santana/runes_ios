@@ -36,6 +36,11 @@ final class SessionCore: @unchecked Sendable {
     var onSettings: ((String) -> Void)?
     /// The band's answer to one of its own patterns, with the reply's shape.
     var onPattern: ((UInt64, WristFeedbackResult, String) -> Void)?
+    /// What a band test heard back, as a line for the tests page.
+    var onTrial: ((String) -> Void)?
+    /// Whether each gesture is acknowledged to the band, as the Meta app does. Off unless a test turns it on.
+    var acknowledgesGestures = false { didSet { acknowledgementNoted = false } }
+    private var acknowledgementNoted = false
     /// Each named setting as it is read or written back, with a line saying so. A line alone is a
     /// note, and an empty one ends a read.
     var onNamedSetting: ((NamedSettings.Setting?, String) -> Void)?
@@ -538,6 +543,17 @@ final class SessionCore: @unchecked Sendable {
         }
     }
 
+    /// Sends one band test request. A request still waiting on the same channel means this one is skipped.
+    func tryOnBand(_ operation: String, field: Int, _ payload: Data) {
+        guard snapshot.state == .streaming else { return }
+        do { try rpc("try_" + operation, BandTrial.channel, field, payload) }
+        catch { if operation != "acknowledge" { trial("\(operation): the band is busy; try again.") } }
+    }
+
+    private func trial(_ line: String) { record("band_test", line); onTrial?(line) }
+    /// The shape of a test's answer, or that none came.
+    private func answer(_ payload: Data) -> String { payload.isEmpty ? "no answer" : WristFeedbackResult.shape(payload) }
+
     /// Plays one of the band's own patterns, 1 or 2, in place of anything still playing.
     /// The reference implementation calls these its gesture feedback patterns.
     func perform(pattern: UInt64) {
@@ -624,6 +640,10 @@ final class SessionCore: @unchecked Sendable {
                 }
             case "stop_streams": finishDisconnect()
             case "named_count", "named_describe", "named_read", "named_write", "named_verify": namedSetting(operation, payload)
+            case "try_acknowledge":
+                // One line for the first answer; a line per gesture would bury the journal.
+                if !acknowledgementNoted { acknowledgementNoted = true; trial("acknowledge: \(answer(payload))") }
+            case "try_pattern", "try_stop": trial("\(operation.dropFirst(4)): \(answer(payload))")
             case "set_hand":
                 if snapshot.handSetting.wrote() { try rpc("read_hand", 6, 5) }
             case "read_hand":
@@ -687,6 +707,7 @@ final class SessionCore: @unchecked Sendable {
                                               gesture: [finger, action, derived, synthetic ? 1 : 0]))
             }
             record("gesture", event: event, receipt: receipt)
+            if acknowledgesGestures, !synthetic { tryOnBand("acknowledge", field: 11, BandTrial.acknowledge(gesture: sequence)) }
             snapshot.eventCount += 1; snapshot.events.insert(event, at: 0)
             if snapshot.events.count > 200 { snapshot.events.removeLast(snapshot.events.count - 200) }
             onGesture?(event)
