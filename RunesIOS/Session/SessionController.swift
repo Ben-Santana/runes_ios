@@ -242,7 +242,7 @@ final class SessionController: ObservableObject {
                   !ReelsStore.shared.consume(gesture) { MappingStore.shared.receive(gesture) }
         // The band's own buzz may be turned off; then Runes answers on the wrist, locked or not.
         if UserDefaults.standard.object(forKey: Preferences.bandAnswers) as? Bool ?? true {
-            core.transport.perform { [core] in core.answer(gesture.kind) }
+            core.transport.perform { [core] in core.answer(gesture.kind, heardAt: gesture.at) }
         }
         guard foreground else { return }
         BandBuzzFeed.shared.heard(gesture)
