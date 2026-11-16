@@ -491,21 +491,11 @@ struct CookTests {
         precondition(Beads.people(4) == [1, 1, 1, 1, 0, 0, 0, 0] && Beads.people(10) == [2, 2, 1, 1, 1, 1, 1, 1])
         precondition(Beads.slots(for: 5) == [0, 1, 3, 4, 6] && Beads.slots(for: 4) == [0, 2, 4, 6] && Beads.slots(for: 8) == Array(0..<8) && Beads.slots(for: 0).isEmpty)
         precondition(Beads.shortest(from: 0, to: 3) == 3 && Beads.shortest(from: 6, to: 0) == 2 && Beads.shortest(from: 1, to: 6) == -3 && Beads.shortest(from: 0, to: 4) == 4)
-        precondition(Beads.reach(0, of: 480) == 0 && Beads.reach(120, of: 480) == 0.5 && Beads.reach(480, of: 480) == 1 && Beads.reach(900, of: 480) == 1 && Beads.reach(60, of: 0) == 0)
-        // Six steps fill the strand exactly; fewer leave beads spare; more show the eight round now.
-        let six = Beads.strand(steps: 6, now: .step(2))
-        precondition(six.marks == [.ready, .step(0), .step(1), .step(2), .step(3), .step(4), .step(5), .done] && six.now == 3)
-        let few = Beads.strand(steps: 3, now: .done)
-        precondition(few.marks == [.ready, .step(0), .step(1), .step(2), .done, nil, nil, nil] && few.now == 4)
-        let many = Beads.strand(steps: 12, now: .step(7))
-        precondition(many.marks.first == .step(4) && many.marks.last == .step(11) && many.now == 3, "Three behind now stay in sight")
-        precondition(Beads.strand(steps: 12, now: .ready).now == 0 && Beads.strand(steps: 12, now: .done).marks.last == .done && Beads.strand(steps: 12, now: .done).now == 7)
 
         // What is at each place the salmon uses, a minute after the air fryer went on.
         let kitchenPlan = StationPlan(steps: Recipe.salmonPasta.steps)
         precondition(kitchenPlan.used == [.oven, .frontLeft, .frontRight, .counter])
         var kitchen = CookSession(recipe: .salmonPasta, at: t0)
-        precondition(CookSession(recipe: .salmonPasta, at: t0, gather: true).mark == .ready && kitchen.mark == .step(0))
         kitchen.start(step: 0, slot: 0, at: t0)
         kitchen.go(to: 1)
         let minute = t0.addingTimeInterval(60)
@@ -518,7 +508,7 @@ struct CookTests {
         let after = kitchen.stations(kitchenPlan, at: t0.addingTimeInterval(301))
         precondition(after[1].timer?.step == 1 && after[1].waiting == nil && kitchen.approach(at: t0.addingTimeInterval(301)) == nil, "Started, it is a timer and waits for nothing")
         kitchen.go(to: 5); kitchen.apply(.next, at: t0.addingTimeInterval(400))
-        precondition(kitchen.mark == .done && kitchen.stations(kitchenPlan, at: t0.addingTimeInterval(400)).allSatisfy { !$0.here })
+        precondition(kitchen.finished && kitchen.stations(kitchenPlan, at: t0.addingTimeInterval(400)).allSatisfy { !$0.here }, "Finished, the cook is nowhere")
 
         // MARK: The wrist dial
         // Still, the sensor's offset is learned; held, a steady turn about one axis comes out in degrees.

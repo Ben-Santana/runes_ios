@@ -13,13 +13,20 @@ import SwiftUI
 // the band's gestures are on, the wait before a start, or NOW when that wait is over. Each place away from the front is named beside its bead with
 // its time. A spark runs round the cord from a time that is counting to the front and
 // arrives at the moment to start. Under the ring one line says what the figure is, and
-// what will need the cook next.
+// what will need the cook next. Whatever the wrist is told, the ring is knocked in the
+// same rhythm, so the two say one thing.
 
 struct LoopFace: View {
     let session: CookSession
     let plan: StationPlan
     let now: Date
+    /// What the wrist was just told: the ring moves to the same rhythm.
+    var pulse = CookStore.Pulse()
     let actions: CookActions
+    /// A bead was touched, or the ground beside the beads when nil.
+    var touch: (Station?) -> Void = { _ in }
+    /// When each buzz of the wrist's rhythm lands, and how hard.
+    @State private var shocks: [(at: Date, strength: Double)] = []
     /// Places the ring has turned, counted on and never wrapped, so it turns the short way.
     @State private var turns = 0
     @State private var turnFrom = 0.0
@@ -114,12 +121,18 @@ struct LoopFace: View {
                     .gesture(SpatialTapGesture().onEnded { touched($0.location, width: proxy.size.width, scene) })
             }
             .frame(height: Self.height)
-            .accessibilityElement(children: .ignore)
-            .accessibilityAddTraits(.isButton)
-            .accessibilityLabel(reading.figure + ", " + reading.line.lowercased())
-            .accessibilityValue(stations.map { station in
-                station.vessel + ": " + (station.timer.map { $0.isRinging(at: now) ? "time’s up" : "\(DurationFinder.short($0.remaining(at: now))) left" } ?? (station.here ? "this step" : "idle"))
-            }.joined(separator: ", "))
+            // For VoiceOver the ring is its figure and a button for each place with a time.
+            .accessibilityRepresentation {
+                VStack {
+                    Button(reading.figure + ", " + reading.line.lowercased()) { actions.perform(.timer) }
+                        .accessibilityHint("Starts, pauses or stops it.")
+                    ForEach(stations.filter { $0.timer != nil || $0.waiting != nil }, id: \.place) { station in
+                        Button(station.vessel + ", " + (station.timer.map { $0.isRinging(at: now) ? "time’s up" : "\(DurationFinder.short($0.remaining(at: now))) left" + ($0.isPaused ? ", paused" : "") }
+                                                        ?? "\(DurationFinder.short(station.waiting ?? 0)), not started")) { touch(station) }
+                            .accessibilityHint("Shows what can be done there.")
+                    }
+                }
+            }
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Text(reading.line).font(ticketFont(12, .bold)).lineLimit(1).minimumScaleFactor(0.7)
                 Spacer(minLength: 0)
@@ -142,6 +155,27 @@ struct LoopFace: View {
         .onChange(of: session.step * 100 + session.beatIndex) { _, _ in tappedAt = Date() }
         .onChange(of: selected) { _, _ in chosenAt = Date() }
         .onChange(of: reading.urgent) { _, urgent in if urgent { tappedAt = Date() } }
+        .onChange(of: pulse.id) { _, _ in
+            // Each buzz is a knock through the ring: once for a tap, harder for a long one,
+            // climbing for a rise and dying away for a fade.
+            var at = Date(), landed: [(at: Date, strength: Double)] = []
+            for buzz in pulse.pattern.prefix(12) {
+                let knocks: [Double] = switch buzz {
+                case .tap: [0.7]
+                case .double: [0.7, 0.7]
+                case .triple: [0.7, 0.7, 0.7]
+                case .long: [1.3]
+                case .buzz: [1]
+                case .rise: [0.4, 0.7, 1.1]
+                case .fade: [1.1, 0.7, 0.4]
+                case .flutter: [0.4, 0.4, 0.4, 0.4, 0.4]
+                case .heartbeat: [0.9, 0.5]
+                }
+                for (index, strength) in knocks.enumerated() { landed.append((at.addingTimeInterval(Double(index) * 0.13), strength)) }
+                at = at.addingTimeInterval(buzz == .long ? 0.65 : 0.42)
+            }
+            shocks = landed
+        }
     }
 
     /// How far the ring has turned at a moment, in places.
@@ -202,13 +236,13 @@ struct LoopFace: View {
 
         // The figure, on the ground inside the ring: far letters smaller, near ones larger.
         let figure = BeadSphere.outline(scene.figure)
-        let inside = Self.ring - Self.ball - 2
+        let inside = Self.ring - Self.ball - 4
         let fit = 2 * inside / hypot(figure.box.width, figure.box.height * 1.15)
         let written = BeadSphere.laid(figure.path) { point in
             let across = (point.x - figure.box.midX) * fit, toward = (point.y - figure.box.midY) * fit * 1.15
             return at((across + toward) * 0.5.squareRoot(), (toward - across) * 0.5.squareRoot(), 6).point
         }
-        context.fill(written, with: .color((scene.loud ? Color.ink : Color.faint).opacity(still ? 1 : BeadEase.clamp((age - 0.2) / 0.35))))
+        context.fill(written, with: .color((scene.loud ? Color.ink : Color.muted).opacity(still ? 1 : BeadEase.clamp((age - 0.2) / 0.35))))
 
         func angle(_ slot: Double) -> Double { Self.place + (turn - slot) * Self.place }
         struct Pod { var slot: Int; var x: Double; var y: Double; var lift: Double; var station: Int?; var shown: Double }
@@ -229,7 +263,10 @@ struct LoopFace: View {
                 }
             }
             if !still {
-                if let front { lift += 6 * BeadEase.bounce(sinceTap - Self.apart(slot, front) * 0.045) }
+                if let front {
+                    lift += 6 * BeadEase.bounce(sinceTap - Self.apart(slot, front) * 0.045)
+                    for shock in shocks { lift += 5 * shock.strength * BeadEase.bounce(date.timeIntervalSince(shock.at) - Self.apart(slot, front) * 0.045) }
+                }
                 if let ringing = scene.ringing { lift += 9 * BeadEase.bounce(beat - Self.apart(slot, ringing) * 0.045) }
             }
             // The beads rise into place one after another round the ring, from the front.
@@ -322,8 +359,7 @@ struct LoopFace: View {
 
     // MARK: Touch
 
-    /// A touch on a bead starts, pauses or stops what is at that place; anywhere else in
-    /// the ring it is the timer gesture, on the figure.
+    /// A touch on a bead is that bead's; anywhere else in the ring it is the ground's.
     private func touched(_ point: CGPoint, width: CGFloat, _ scene: Scene) {
         let scale = scale(width)
         let nearest = scene.stations.indices.map { index -> (index: Int, far: Double, r: Double) in
@@ -332,8 +368,7 @@ struct LoopFace: View {
             return (index, hypot(place.point.x - point.x, place.point.y - point.y), Self.ball * scale * place.size)
         }
         .min { $0.far < $1.far }
-        guard let nearest, nearest.far < nearest.r + 12 else { actions.perform(.timer); return }
-        let station = scene.stations[nearest.index]
-        if let timer = station.timer { actions.toggleTimer(timer.id) } else if station.waiting != nil { actions.toggle(session.slot) }
+        guard let nearest, nearest.far < nearest.r + 12 else { touch(nil); return }
+        touch(scene.stations[nearest.index])
     }
 }

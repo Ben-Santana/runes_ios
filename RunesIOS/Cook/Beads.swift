@@ -1,7 +1,7 @@
 import Foundation
 
 // The band's eight beads as the way a cook is shown: how full each one is, where each
-// sits on a loop, which step each one carries. Numbers only, so they are checked without
+// sits on the loop, what is at each place. Numbers only, so they are checked without
 // a screen (Tests/CookTests.swift).
 
 enum Beads {
@@ -41,38 +41,6 @@ enum Beads {
         let ahead = ((to - from) % count + count) % count
         return ahead > count / 2 ? ahead - count : ahead
     }
-
-    /// Where a timer's bead sits on its rod: nothing at the end where time is up, one at
-    /// the far end for the longest time. The root of the share left, so the last minutes
-    /// move furthest and two times of any length are side by side when they have the
-    /// same time to go.
-    static func reach(_ seconds: Int, of longest: Int) -> Double {
-        guard longest > 0 else { return 0 }
-        return min(1, max(0, Double(seconds) / Double(longest))).squareRoot()
-    }
-
-    /// What a bead on the strand of steps stands for.
-    enum Mark: Equatable, Sendable {
-        /// Getting the ingredients out, before step one.
-        case ready
-        case step(Int)
-        /// The recipe finished.
-        case done
-    }
-
-    /// The eight beads of the strand and which of them is now. A recipe of six steps
-    /// fills them exactly: ready, the six, done. A shorter one leaves beads spare at the
-    /// end. A longer one shows the eight around now, three behind it where there are
-    /// that many, so what was just started stays in sight.
-    static func strand(steps: Int, now: Mark) -> (marks: [Mark?], now: Int) {
-        let all: [Mark] = [.ready] + (0..<max(0, steps)).map(Mark.step) + [.done]
-        let at = all.firstIndex(of: now) ?? 0
-        guard all.count > count else {
-            return (all + Array(repeating: nil, count: count - all.count), at)
-        }
-        let first = min(max(0, at - 3), all.count - count)
-        return (Array(all[first..<first + count]), at - first)
-    }
 }
 
 /// What is at one of the kitchen's places at a moment.
@@ -99,9 +67,6 @@ extension StationPlan {
 }
 
 extension CookSession {
-    /// The mark on the strand for where the cook is.
-    var mark: Beads.Mark { finished ? .done : gathering ? .ready : .step(step) }
-
     /// Every place the recipe uses and what is there now.
     func stations(_ plan: StationPlan, at now: Date) -> [Station] {
         let cooking = !finished && !gathering

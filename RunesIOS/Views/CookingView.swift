@@ -135,10 +135,10 @@ struct CookingView: View {
             Group {
                 if look == .hob || look == .focus { TimeLine(recipe: session.recipe, step: session.gathering ? -1 : session.step, finished: session.finished) }
                 // The beads say where the cook is.
-                else if look != .rail, !look.beads { StepProgress(count: session.count, step: session.gathering ? -1 : session.step, finished: session.finished, height: look == .poster ? 2 : 3) }
+                else if look != .rail, look != .loop { StepProgress(count: session.count, step: session.gathering ? -1 : session.step, finished: session.finished, height: look == .poster ? 2 : 3) }
             }
             .padding(.horizontal, Metric.gutter).padding(.top, 4)
-            if let first = rung.first, look != .focus, !look.beads {
+            if let first = rung.first, look != .focus, look != .loop {
                 let durations = session.recipe.durations(step: first.step)
                 let cue = durations.indices.contains(first.slot) ? StepDetails.cue(for: durations[first.slot], in: session.recipe.steps[first.step]) : nil
                 TimeUpBand(timer: first, others: rung.count - 1, cue: cue, controls: controls, stop: actions.stopRinging)
@@ -165,8 +165,7 @@ struct CookingView: View {
                 if session.finished { finished.transition(.opacity.combined(with: .scale(scale: 0.96))) }
                 else if session.gathering { gather.transition(.opacity) }
                 else if look == .focus { focus.transition(.opacity) }
-                else if look == .stations { stations.transition(.opacity) }
-                else if look.beads { beads.transition(.opacity) }
+                else if look == .loop { beads.transition(.opacity) }
                 else { pages.transition(.opacity) }
                 // In the focus look a timer whose time is up takes the page: ink from edge to
                 // edge, seen from across the kitchen, and still until it is stopped.
@@ -193,8 +192,8 @@ struct CookingView: View {
             case .numbers: TimerShelf(session: session, actions: actions)
             case .rail, .poster: TimerBars(session: session, actions: actions)
             case .focus: TimerPile(session: session, controls: controls, actions: actions).padding(.bottom, quiet ? 6 : 0)
-            // The plan above already holds every timer, each in its place.
-            case .stations, .loop, .abacus, .strand: EmptyView()
+            // The ring above already holds every timer, each at its place.
+            case .loop: EmptyView()
             }
             // Its gestures are taught on the get-ready page and then left out of the way.
             if !quiet { legend(ringing: ringing, now: now).padding(.top, 16).padding(.bottom, 10).padding(.horizontal, 12) }
@@ -216,7 +215,8 @@ struct CookingView: View {
         .sensoryFeedback(.selection, trigger: dialing)
         .sensoryFeedback(.impact(flexibility: .soft), trigger: asking == .idle)
         .animation(reduceMotion ? nil : .entrance, value: dialing != nil)
-        .overlay(alignment: .topTrailing) { BuzzMark(pulse: pulse).padding(.trailing, Metric.gutter).padding(.top, 26) }
+        // In the loop the ring itself moves to the wrist's rhythm.
+        .overlay(alignment: .topTrailing) { if look != .loop { BuzzMark(pulse: pulse).padding(.trailing, Metric.gutter).padding(.top, 26) } }
         .animation(reduceMotion ? nil : .entrance, value: session.finished)
         .animation(.entrance, value: ringing)
         .sensoryFeedback(.selection, trigger: session.step)
@@ -265,7 +265,7 @@ struct CookingView: View {
     /// The dial, which takes the whole screen while the pinch is held: there is one thing
     /// being set, and it is given all the room.
     @ViewBuilder private var dialFace: some View {
-        if let dialing, look.beads {
+        if let dialing, look == .loop {
             let removal = AnyTransition.scale(scale: 0.12, anchor: .bottom).combined(with: .opacity)
             if session.gathering {
                 BeadDial(fills: Beads.people(dialing), value: "\(dialing)", label: "Servings", hint: "Let go and the amounts follow")
@@ -305,20 +305,9 @@ struct CookingView: View {
             })
     }
 
-    /// The kitchen plan and the ticket. Swipes turn the sentence, as the band's do.
-    private var stations: some View {
-        StationsPage(session: session, actions: actions)
-            .contentShape(Rectangle())
-            .simultaneousGesture(DragGesture(minimumDistance: 14).onEnded { value in
-                let dx = value.translation.width
-                guard abs(dx) > 60, abs(dx) > abs(value.translation.height) * 1.2 else { return }
-                actions.perform(dx < 0 ? .next : .previous)
-            })
-    }
-
     /// The beads and the ticket. Swipes turn the sentence, as the band's do.
     private var beads: some View {
-        BeadCookPage(session: session, look: look, controls: controls, actions: actions)
+        BeadCookPage(session: session, controls: controls, pulse: pulse, actions: actions)
             .contentShape(Rectangle())
             .simultaneousGesture(DragGesture(minimumDistance: 14).onEnded { value in
                 let dx = value.translation.width
@@ -330,7 +319,7 @@ struct CookingView: View {
     /// The ingredients, before step one. A swipe on, like the band's, begins.
     private var gather: some View {
         Group {
-            if look.beads { BeadGather(session: session, toggle: actions.tick) } else { GatherPage(session: session, toggle: actions.tick) }
+            if look == .loop { BeadGather(session: session, toggle: actions.tick) } else { GatherPage(session: session, toggle: actions.tick) }
         }
             .simultaneousGesture(DragGesture(minimumDistance: 14).onEnded { value in
                 if value.translation.width < -60, abs(value.translation.width) > abs(value.translation.height) * 1.2 { actions.perform(.next) }
@@ -340,7 +329,7 @@ struct CookingView: View {
     private var finished: some View {
         // Centred when it fits; with a few notes under it, it scrolls.
         ViewThatFits(in: .vertical) {
-            if look == .stations || look.beads {
+            if look == .loop {
                 CookReceipt(session: session) { noting = true }.frame(maxHeight: .infinity, alignment: .top)
                 ScrollView { CookReceipt(session: session) { noting = true } }
             } else {
@@ -927,8 +916,7 @@ extension PreviewFixtures {
             session.go(to: 1)
         }
         let look: CookingLook = name.hasSuffix("numbers") ? .numbers : name.hasSuffix("rail") ? .rail : name.hasSuffix("poster") ? .poster
-            : name.hasSuffix("focus") ? .focus : name.hasSuffix("stations") ? .stations
-            : name.hasSuffix("loop") ? .loop : name.hasSuffix("abacus") ? .abacus : name.hasSuffix("strand") ? .strand : .hob
+            : name.hasSuffix("focus") ? .focus : name.hasSuffix("loop") ? .loop : .hob
         if name.hasPrefix("demo") { session = CookSession(recipe: .salmonPasta, at: now, gather: true) }
         return CookStore(preview: Recipe.samples, session: session, cookingLook: look,
                          dialing: name.hasPrefix("cooking-dial") ? 450 : name.hasPrefix("cooking-servings") ? 6 : nil,

@@ -53,17 +53,12 @@ enum CookListLook: String, Codable, CaseIterable, Sendable {
     var title: String { self == .contents ? "Contents" : "Ledger" }
 }
 enum CookingLook: String, Codable, CaseIterable, Sendable {
-    case loop, abacus, strand, stations, focus, hob, rail, poster, numbers
+    case loop, focus, hob, rail, poster, numbers
     var title: String {
-        switch self {
-        case .loop: "Loop"; case .abacus: "Abacus"; case .strand: "Strand"
-        case .stations: "Stations"; case .focus: "Focus"; case .hob: "Hob"; case .rail: "Rail"; case .poster: "Poster"; case .numbers: "Numbers"
-        }
+        switch self { case .loop: "Loop"; case .focus: "Focus"; case .hob: "Hob"; case .rail: "Rail"; case .poster: "Poster"; case .numbers: "Numbers" }
     }
-    /// Drawn with the band's eight beads.
-    var beads: Bool { self == .loop || self == .abacus || self == .strand }
     /// Whether a step is read a sentence at a time.
-    var paces: Bool { self == .focus || self == .stations || beads }
+    var paces: Bool { self == .focus || self == .loop }
 }
 
 /// What reaches the wrist while cooking.
@@ -241,7 +236,7 @@ final class CookStore: ObservableObject {
         records = saved.records ?? []
         assistant = CookAssistant()
         listLook = saved.listLook.flatMap(CookListLook.init) ?? .contents
-        cookingLook = saved.cookingLook.flatMap(CookingLook.init) ?? .stations
+        cookingLook = saved.cookingLook.flatMap(CookingLook.init) ?? .loop
         session = saved.session
         session?.paced = cookingLook.paces
         scheduled = Set((saved.session?.timers ?? []).map { Self.notificationPrefix + $0.id })
@@ -590,6 +585,7 @@ final class CookStore: ObservableObject {
             cue = .nothing
         }
         if sounds, !previewOnly { onCue?(cue) }
+        if case .step = event { callDue() }
         out = session.ready.count
         // The wrist is told about timers always, and about pages too when set to everything.
         if let event, buzz == .all || (buzz == .timers && event.isTimer) { wrist([event.wrist]) }
@@ -651,6 +647,17 @@ final class CookStore: ObservableObject {
         if spoken { assistant.read("Start the \(due.label.lowercased()) now, to finish with the \(due.with.lowercased()).") }
     }
     private var pendingStart: (key: String, time: Date, label: String, with: String)?
+
+    /// Arriving at a step whose time should already be going says so, once: the same cue
+    /// and buzz as the moment to start, which has passed.
+    private func callDue() {
+        guard let session, let with = session.due(at: Date()) else { return }
+        let key = "\(session.step).\(session.slot).\(with.id)"
+        guard !called.contains(key) else { return }
+        called.insert(key)
+        if sounds, !previewOnly { onCue?(.soon) }
+        if buzz != .off { wrist([.double, .tap]) }
+    }
 
     /// Wakes at the next timer's end, so the screen and the Lock Screen turn to ringing,
     /// a minute before a long one ends, and when it is time to start something so it lands

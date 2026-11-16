@@ -8,10 +8,9 @@ import CoreText
 // counting is ink standing in the bead, running out as the time does. A thin ring that
 // settles round a bead is the one the band's gestures act on.
 //
-// Three looks arrange the beads differently (CookBeadLoop, CookBeadAbacus,
-// CookBeadStrand). This file has what they share: the bead, the step's ticket with its
-// sentences as beads, what shows when a time is up, the ingredients as beads to fill, and
-// the wrist dial as a loop of beads.
+// The loop itself is in CookBeadLoop.swift. This file has the rest: the bead, the cooking
+// page, what shows when a time is up or a bead is touched, the ingredients as beads to
+// fill, and the wrist dial as a loop of beads.
 
 /// Curves over 0...1; anything outside is held at the ends. The same ones the ring and
 /// the bead strings elsewhere in the app move by.
@@ -306,54 +305,131 @@ struct SentenceBeads: View {
 
 // MARK: The cooking page
 
-/// The page while a step shows: the beads, in the look chosen, and the step's ticket. A
-/// time that is up takes the ticket's place until it is stopped. The strand hangs down the
-/// leading edge with the ticket beside it; the other looks sit over the ticket.
+/// The page while a step shows: the loop of beads, and the step's ticket under it. A time
+/// that is up takes the ticket's place until it is stopped. So does what can be done at a
+/// place, while its bead is touched: the way the combo page shows a bead's own choices in
+/// place of the rest, and puts them away again.
 struct BeadCookPage: View {
     let session: CookSession
-    let look: CookingLook
     let controls: CookControls
+    /// What the wrist was just told, which the ring moves to.
+    var pulse = CookStore.Pulse()
     let actions: CookActions
+    /// The place whose bead was touched, and when, so its choices can be put away unused.
+    @State private var opened: StationPlan.Place?
+    @State private var openedAt = Date()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let plan = StationPlan(steps: session.recipe.steps)
         TimelineView(.periodic(from: .now, by: 0.5)) { context in
-            let now = context.date
-            if look == .strand {
-                HStack(alignment: .top, spacing: 0) {
-                    StrandFace(session: session, plan: plan, now: now, actions: actions).frame(width: 104)
-                    // Clear of the mark the wrist's buzz leaves at the top of the page.
-                    reading(plan, now).padding(.leading, -14).padding(.top, 34)
-                }
-            } else {
-                VStack(spacing: 0) {
-                    if look == .abacus { AbacusFace(session: session, plan: plan, now: now, actions: actions).padding(.top, 14) }
-                    else { LoopFace(session: session, plan: plan, now: now, actions: actions) }
-                    // The loop's own figure counts the wait to a start, so its ticket need not.
-                    reading(plan, now, landing: look != .loop).padding(.top, 14)
-                }
+            VStack(spacing: 0) {
+                LoopFace(session: session, plan: plan, now: context.date, pulse: pulse, actions: actions, touch: touched)
+                reading(plan, context.date).padding(.top, 14)
+                Spacer(minLength: 0)
             }
         }
+        // Moving on puts the choices away, and so does leaving them alone.
+        .onChange(of: session.step * 100 + session.beatIndex) { _, _ in opened = nil }
+        .task(id: openedAt) {
+            guard opened != nil else { return }
+            try? await Task.sleep(for: .seconds(10))
+            if !Task.isCancelled { opened = nil }
+        }
+        .sensoryFeedback(.selection, trigger: opened)
     }
 
-    private func reading(_ plan: StationPlan, _ now: Date, landing: Bool = true) -> some View {
+    /// Under the loop: a time that is up, a touched bead's choices, or the step's ticket.
+    private func reading(_ plan: StationPlan, _ now: Date) -> some View {
         let rung = session.ringing(at: now)
-        return VStack(spacing: 0) {
-            ZStack {
-                if let first = rung.first {
-                    let durations = session.recipe.durations(step: first.step)
-                    let cue = durations.indices.contains(first.slot) ? StepDetails.cue(for: durations[first.slot], in: session.recipe.steps[first.step]) : nil
-                    TimeUp(timer: first, place: plan.spot(step: first.step).vessel, others: rung.count - 1, cue: cue, controls: controls, stop: actions.stopRinging)
-                        .transition(.opacity)
+        // Only a place with a time has anything to choose.
+        let open: Station? = opened.flatMap { place in
+            session.stations(plan, at: now).first { $0.place == place && ($0.timer != nil || $0.waiting != nil) }
+        }
+        return ZStack {
+            if let first = rung.first {
+                let durations = session.recipe.durations(step: first.step)
+                let cue = durations.indices.contains(first.slot) ? StepDetails.cue(for: durations[first.slot], in: session.recipe.steps[first.step]) : nil
+                TimeUp(timer: first, place: plan.spot(step: first.step).vessel, others: rung.count - 1, cue: cue, controls: controls, stop: actions.stopRinging)
+                    .transition(.opacity)
+            } else if let open {
+                BeadMenu(station: open, session: session, now: now, actions: actions, used: { openedAt = Date() }, close: { opened = nil })
+                    .transition(.opacity)
+            } else {
+                Ticket(session: session, plan: plan).transition(.opacity)
+            }
+        }
+        .clipped()
+        .animation(reduceMotion ? nil : .entrance, value: rung.isEmpty)
+        .animation(.standard, value: open?.place)
+    }
+
+    /// A touch on a bead selects what is there and shows its choices; on the same bead
+    /// again, or beside the beads, it puts them away. With nothing showing, a touch
+    /// beside the beads is the timer gesture.
+    private func touched(_ station: Station?) {
+        guard let station, station.timer != nil || station.waiting != nil, station.place != opened else {
+            if opened != nil { opened = nil } else if station == nil { actions.perform(.timer) }
+            return
+        }
+        if let timer = station.timer { actions.pick(timer.id) }
+        opened = station.place
+        openedAt = Date()
+    }
+}
+
+/// What can be done at a place whose bead was touched, in the ticket's place: its name,
+/// what is there, and a key for each thing, as the combo page offers a bead's choices.
+struct BeadMenu: View {
+    let station: Station
+    let session: CookSession
+    let now: Date
+    let actions: CookActions
+    /// Called when a key is used, so the choices stay a while longer.
+    let used: () -> Void
+    let close: () -> Void
+
+    var body: some View {
+        let timer = station.timer
+        let detail: String = {
+            guard let timer else { return "This step · \(station.waiting.map(DurationFinder.short) ?? ""), not started" }
+            return "Step \(timer.step + 1) · \(timer.label.lowercased()) · " + (timer.isPaused ? "paused at " : "") + DurationFinder.clock(timer.remaining(at: now)) + (timer.isPaused ? "" : " left")
+        }()
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(detail).font(.caption).monospacedDigit().foregroundStyle(Color.muted).contentTransition(.numericText(countsDown: true))
+                Text(station.vessel).font(.heading)
+            }
+            .accessibilityElement(children: .combine)
+            HStack(spacing: 6) {
+                if let timer {
+                    key(timer.isPaused ? .play : .pause, timer.isPaused ? "Start" : "Pause") { actions.toggleTimer(timer.id) }
+                    key(.plus, "1 minute") { actions.addMinute(timer.id) }
+                    key(.x, "Clear") { actions.cancelTimer(timer.id); close() }
                 } else {
-                    Ticket(session: session, plan: plan, now: now, beads: true, landing: landing)
+                    key(.play, "Start") { actions.toggle(session.slot) }
                 }
             }
-            .clipped()
-            .animation(reduceMotion ? nil : .entrance, value: rung.isEmpty)
-            Spacer(minLength: 0)
+            Text("Touch the bead again to put this away.").font(.caption).foregroundStyle(Color.muted)
         }
+        .padding(.horizontal, Metric.gutter).padding(.top, 6)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func key(_ icon: Lucide, _ label: String, action: @escaping () -> Void) -> some View {
+        Button { action(); used() } label: {
+            VStack(spacing: 5) {
+                LucideIcon(icon, size: 18)
+                Text(label).font(.caption).lineLimit(1).minimumScaleFactor(0.8)
+            }
+            .foregroundStyle(Color.ink)
+            .frame(maxWidth: .infinity).frame(height: 56)
+            .background(Color.paper, in: RoundedRectangle(cornerRadius: Metric.control))
+            .overlay(RoundedRectangle(cornerRadius: Metric.control).strokeBorder(Color.rule, lineWidth: Metric.hairline))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressRow())
+        .accessibilityLabel(label)
     }
 }
 

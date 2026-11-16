@@ -1070,12 +1070,8 @@ struct CookSettingsScreen: View {
                     Block {
                         HairlineSegments(selection: Binding(get: { store.listLook }, set: { store.setListLook($0) }),
                                          options: CookListLook.allCases, title: \.title)
-                        // Two rows: the looks made of beads, then the earlier ones.
                         HairlineSegments(selection: Binding(get: { store.cookingLook }, set: { store.setCookingLook($0) }),
-                                         options: CookingLook.allCases.filter(\.beads), title: \.title)
-                            .padding(.top, 12)
-                        HairlineSegments(selection: Binding(get: { store.cookingLook }, set: { store.setCookingLook($0) }),
-                                         options: CookingLook.allCases.filter { !$0.beads }, title: \.title)
+                                         options: CookingLook.allCases, title: \.title)
                             .padding(.top, 12)
                     } header: {
                         Heading("Look")
