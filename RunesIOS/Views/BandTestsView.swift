@@ -56,6 +56,7 @@ struct BandTestsScreen: View {
                     .disabled(!ready || tests.busy)
                 }
                 ownBuzz
+                BandTightnessPanel(ready: ready)
                 PanelGroup("The band's own patterns", caption: tests.patternAnswer ?? "The band keeps these itself. Play each and compare it with the buzz you feel when it hears a gesture.") {
                     ActionRow("Play pattern 1") { controller.performBandPattern(1) }
                     Rule()
@@ -70,7 +71,7 @@ struct BandTestsScreen: View {
                 }
                 PanelGroup(nil, caption: "Copies everything above as text.") {
                     ActionRow(copied ? "Copied" : "Copy results", icon: copied ? .check : .clipboardCopy) {
-                        UIPasteboard.general.string = ([tests.patternAnswer, tests.settings] + tests.lines).compactMap { $0 }.joined(separator: "\n")
+                        UIPasteboard.general.string = ([tests.patternAnswer, tests.settings] + tests.lines + BandTightnessTest.shared.lines).compactMap { $0 }.joined(separator: "\n")
                         copied = true
                     }
                 }
