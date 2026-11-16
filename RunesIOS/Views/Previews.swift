@@ -279,7 +279,6 @@ private struct WristPreview: View {
                                         macs: [MacLinks.Mac(id: UUID(), name: "Studio", state: .connected),
                                                MacLinks.Mac(id: UUID(), name: "MacBook Air", state: .notNearby)])) { EmptyView() }
 }
-#endif
 
 /// The home screen stepping through connected, connecting and disconnected, for watching the corner change.
 private struct HomeCycle: View {
@@ -295,3 +294,4 @@ private struct HomeCycle: View {
             }
     }
 }
+#endif
