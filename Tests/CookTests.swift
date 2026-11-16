@@ -255,7 +255,7 @@ struct CookTests {
         let t0 = Date(timeIntervalSince1970: 1_000_000)
         var cook = CookSession(recipe: .starter, at: t0)
         precondition(cook.step == 0 && cook.count == 6 && cook.position == "Step 1 of 6" && !cook.finished)
-        precondition(cook.apply(.previous, at: t0) == nil, "Nothing before the first step")
+        precondition(cook.apply(.previous, at: t0) == .step(0) && cook.gathering && cook.apply(.next, at: t0) == .step(0) && !cook.gathering, "Before the first step are the ingredients")
         precondition(cook.apply(.timer, at: t0) == nil, "The first step mentions no time")
         // A step with no time gets a minute of its own to count; more minutes go to it.
         guard case .started(let own)? = cook.apply(.addMinute, at: t0) else { preconditionFailure("A minute should start") }
@@ -397,6 +397,27 @@ struct CookTests {
         // A timer that rang and was stopped is no longer in the round.
         precondition(hob.apply(.timer, at: t0.addingTimeInterval(500)) == .stopped && hob.others.isEmpty && hob.slots == 0)
         precondition(try! JSONDecoder().decode(CookSession.self, from: try! JSONEncoder().encode(hob)) == hob)
+
+        // MARK: Getting ready
+        // Before step one the ingredients are showing: up and down move along them, the timer gesture ticks one off.
+        var ready = CookSession(recipe: .starter, at: t0, gather: true)
+        precondition(ready.gathering && ready.position == "Getting ready" && ready.marked == 0 && ready.durations.isEmpty && ready.slots == 0)
+        precondition(ready.apply(.timer, at: t0) == .selected(1) && ready.ready == [0], "Ticked, and on to the next")
+        precondition(ready.apply(.timerDown, at: t0) == .selected(2) && ready.apply(.timerUp, at: t0) == .selected(1) && ready.apply(.timerUp, at: t0) == .selected(0))
+        precondition(ready.apply(.timerUp, at: t0) == .selected(7) && ready.apply(.timer, at: t0) == .selected(1) && ready.ready == [0, 7], "Round the end, and past what is already out")
+        ready.apply(.timerUp, at: t0)
+        precondition(ready.marked == 0 && ready.apply(.timer, at: t0) == .selected(0) && ready.ready == [7], "Ticked by mistake, it comes off and the mark stays")
+        precondition(ready.apply(.addMinute, at: t0) == nil && ready.apply(.reset, at: t0) == nil && ready.timers.isEmpty, "No timer belongs to getting ready")
+        precondition(ready.apply(.next, at: t0) == .step(0) && !ready.gathering && ready.step == 0 && ready.position == "Step 1 of 6")
+        precondition(ready.apply(.previous, at: t0) == .step(0) && ready.gathering && ready.apply(.previous, at: t0) == nil, "Back from step one is the ingredients")
+        ready.serve(8)
+        precondition(ready.recipe.ingredients[0] == "800 g spaghetti" && ready.recipe.yield == "Serves 8" && ready.ready == [7], "Servings changed while getting ready")
+        ready.serve(6); ready.serve(4); ready.serve(0)
+        precondition(ready.recipe == Recipe.starter, "Back to what was written, exactly")
+        ready.go(to: 3); precondition(!ready.gathering && ready.ready == [7])
+        precondition(try! JSONDecoder().decode(CookSession.self, from: try! JSONEncoder().encode(ready)) == ready)
+        precondition(!CookSession(recipe: Recipe(title: "x", ingredients: [], steps: ["Eat."]), at: t0, gather: true).gathering, "Nothing to get out")
+        precondition(CookAsk.context(CookSession(recipe: .starter, at: t0, gather: true), at: t0).contains("Now: the cook is getting the ingredients out."))
 
         // MARK: The wrist dial
         // Still, the sensor's offset is learned; held, a steady turn about one axis comes out in degrees.

@@ -169,13 +169,27 @@ struct CookSession: Codable, Equatable, Sendable {
     private var chosen: Int? = nil
     /// A timer from another step, selected instead; it takes the commands until the step changes.
     private var picked: String? = nil
+    /// True before the first step, while the ingredients are being got out.
+    private var getting: Bool? = nil
+    /// Which ingredient the band's gestures are on while getting ready.
+    private var cursor: Int? = nil
+    /// The recipe as it was when cooking began, once the servings have been changed since.
+    private var written: Recipe? = nil
 
-    init(recipe: Recipe, at now: Date = Date()) { self.recipe = recipe; started = now }
+    /// `gather` opens on the ingredients, to tick off as they are got out, before step one.
+    init(recipe: Recipe, at now: Date = Date(), gather: Bool = false) {
+        self.recipe = recipe; started = now
+        if gather, !recipe.ingredients.isEmpty { getting = true }
+    }
 
     var count: Int { recipe.steps.count }
     var text: String { recipe.steps.indices.contains(step) ? recipe.steps[step] : "" }
     var isLast: Bool { step >= count - 1 }
-    var durations: [StepDuration] { recipe.durations(step: step) }
+    /// Getting ready: the ingredients are showing, not a step.
+    var gathering: Bool { getting == true }
+    /// The ingredient the gestures are on while getting ready.
+    var marked: Int { min(max(cursor ?? 0, 0), max(0, recipe.ingredients.count - 1)) }
+    var durations: [StepDuration] { gathering ? [] : recipe.durations(step: step) }
 
     /// The timer a step without a time of its own was given, while it is going.
     var ownTimer: CookTimer? { timer(step: step, slot: durations.count).flatMap { $0.isLive ? $0 : nil } }
@@ -214,11 +228,14 @@ struct CookSession: Codable, Equatable, Sendable {
         switch command {
         case .next:
             guard !finished else { return nil }
+            if gathering { getting = nil; return .step(step) }
             if isLast { finished = true; return .finished }
             step += 1; chosen = nil; picked = nil
             return .step(step)
         case .previous:
             if finished { finished = false; return .step(step) }
+            // Back from the first step is the ingredients again.
+            if step == 0, !gathering, !recipe.ingredients.isEmpty { getting = true; picked = nil; return .step(step) }
             guard step > 0 else { return nil }
             step -= 1; chosen = nil; picked = nil
             return .step(step)
@@ -226,13 +243,20 @@ struct CookSession: Codable, Equatable, Sendable {
             // A ringing timer is the urgent thing, whichever step is showing.
             if !ringing(at: now).isEmpty { stopRinging(at: now); return .stopped }
             guard !finished else { return nil }
+            // Getting ready, it ticks the marked ingredient and moves on to the next one not yet out.
+            if gathering {
+                toggle(ingredient: marked)
+                let count = recipe.ingredients.count
+                if ready.contains(marked), let next = (1..<count).map({ (marked + $0) % count }).first(where: { !ready.contains($0) }) { cursor = next }
+                return .selected(marked)
+            }
             if let other = pickedTimer { return toggle(step: other.step, slot: other.slot, at: now) }
             guard slots > 0 else { return nil }
             return toggle(step: step, slot: slot, at: now)
         case .addMinute:
             if let index = extendable(at: now) { return addMinute(to: timers[index].id, at: now).map(CookEvent.extended) }
             // A step that mentions no time gets a minute of its own to count.
-            guard !finished, durations.isEmpty else { return nil }
+            guard !finished, !gathering, durations.isEmpty else { return nil }
             timers.removeAll { $0.step == step && $0.slot == 0 }
             let timer = CookTimer(step: step, slot: 0, label: "Step \(step + 1)", total: 60, end: now.addingTimeInterval(60))
             timers.append(timer)
@@ -245,6 +269,11 @@ struct CookSession: Codable, Equatable, Sendable {
             // Asking changes nothing in the recipe; the store hears it.
             return nil
         case .timerDown, .timerUp:
+            if gathering {
+                let count = recipe.ingredients.count
+                cursor = (marked + (command == .timerDown ? 1 : -1) + count) % count
+                return .selected(marked)
+            }
             let others = others, count = slots + others.count, current = selection
             guard !finished, count > (current == nil ? 0 : 1) else { return nil }
             // Round and round, so two timers swap with either swipe. With nothing
@@ -368,7 +397,16 @@ struct CookSession: Codable, Equatable, Sendable {
     /// Shows a step, with one of its times selected.
     mutating func go(to index: Int, slot: Int? = nil) {
         guard recipe.steps.indices.contains(index) else { return }
-        step = index; finished = false; chosen = slot; picked = nil
+        step = index; finished = false; chosen = slot; picked = nil; getting = nil
+    }
+
+    /// Cooks for another number of people. Amounts in the list and in the steps follow;
+    /// times, ticks and timers stay.
+    mutating func serve(_ count: Int) {
+        let base = written ?? recipe
+        guard base.servings != nil, (1...99).contains(count), count != recipe.servings else { return }
+        written = base
+        recipe = base.scaled(to: count)
     }
 
     mutating func toggle(ingredient index: Int) {
@@ -377,5 +415,5 @@ struct CookSession: Codable, Equatable, Sendable {
     }
 
     /// "Step 3 of 8".
-    var position: String { finished ? "Done" : "Step \(step + 1) of \(count)" }
+    var position: String { finished ? "Done" : gathering ? "Getting ready" : "Step \(step + 1) of \(count)" }
 }

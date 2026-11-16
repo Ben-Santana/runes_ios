@@ -25,7 +25,8 @@ enum CookAsk {
             lines += ["Steps:"] + recipe.steps.enumerated().map { "\($0.offset + 1). \($0.element.count > cap ? String($0.element.prefix(cap)) + "…" : $0.element)" }
             if notes, let kept = recipe.notes, !kept.isEmpty { lines += ["Notes:"] + kept.map { "- \($0)" } }
             if let nutrition = recipe.nutrition { lines.append("Nutrition: \(nutrition)") }
-            lines.append(session.finished ? "Now: the recipe is finished." : "Now: the cook is on step \(session.step + 1) of \(session.count).")
+            lines.append(session.finished ? "Now: the recipe is finished." : session.gathering ? "Now: the cook is getting the ingredients out."
+                         : "Now: the cook is on step \(session.step + 1) of \(session.count).")
             let timers = session.live(at: now).map { timer -> String in
                 let state = timer.isRinging(at: now) ? "time is up" : "\(DurationFinder.short(timer.remaining(at: now))) left" + (timer.isPaused ? ", paused" : "")
                 return "\(timer.label) from step \(timer.step + 1), \(state)"
