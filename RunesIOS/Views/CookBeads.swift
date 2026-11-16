@@ -1,67 +1,195 @@
 import SwiftUI
+import UIKit
+import CoreText
 
-// Cook drawn with the band's eight beads. A bead is the ring's pod laid flat: paper inside
-// a hairline, with ink in it. Empty is nothing yet. A dot in the middle is here or done,
-// as a pod on the ring has when it is charged. Full of ink is a time counting, and the
-// ink runs down to the dot as the time does. Rings spread from a bead that is counting,
-// and one whose time is up rattles until it is stopped. A second ring round a bead is the
-// one the band's gestures act on. A bead that takes a gesture gives under it once and
-// sends a ripple out, as the ring does for a tap.
+// Cook drawn with the band's eight beads, in the hand the rest of the app draws them:
+// equal beads of paper inside a hairline, standing on the ground the ring stands on, moved
+// by the ring's own bounce and turn. Empty is nothing yet. The ring's dot is here. A time
+// counting is ink standing in the bead, running out as the time does. A thin ring that
+// settles round a bead is the one the band's gestures act on.
 //
-// Three looks arrange the same eight differently (CookBeadLoop, CookBeadAbacus,
+// Three looks arrange the beads differently (CookBeadLoop, CookBeadAbacus,
 // CookBeadStrand). This file has what they share: the bead, the step's ticket with its
-// sentences as beads, the ticket for a time that is up, the ingredients as beads to fill,
-// and the wrist dial as a loop of beads.
+// sentences as beads, what shows when a time is up, the ingredients as beads to fill, and
+// the wrist dial as a loop of beads.
 
+/// Curves over 0...1; anything outside is held at the ends. The same ones the ring and
+/// the bead strings elsewhere in the app move by.
+enum BeadEase {
+    static func clamp(_ t: Double) -> Double { min(1, max(0, t)) }
+    static func out(_ t: Double) -> Double { 1 - pow(1 - clamp(t), 3) }
+    static func inOut(_ t: Double) -> Double { let t = clamp(t); return t < 0.5 ? 4 * t * t * t : 1 - pow(-2 * t + 2, 3) / 2 }
+    static func smooth(_ t: Double) -> Double { let t = clamp(t); return t * t * (3 - 2 * t) }
+    /// Ease out with a small overshoot.
+    static func back(_ t: Double) -> Double { let t = clamp(t) - 1; return 1 + 2.4 * t * t * t + 1.4 * t * t }
+    /// The ring's damped bounce: up at once, settled in under a second.
+    static func bounce(_ tau: Double) -> Double { tau <= 0 ? 0 : exp(-5.5 * tau) * sin(2 * .pi * 2.6 * tau) }
+}
+
+/// How a bead is drawn everywhere in Cook: the ring's pod. Paper inside a hairline, and
+/// nothing else at rest. A time counting is ink standing in it like liquid in a glass
+/// ball, its surface seen a little from above, running out as the time does.
+enum BeadDraw {
+    static let hair: CGFloat = 1.25
+
+    static func circle(_ centre: CGPoint, _ r: Double) -> Path {
+        Path(ellipseIn: CGRect(x: centre.x - r, y: centre.y - r, width: 2 * r, height: 2 * r))
+    }
+
+    /// `level` is how full of ink it is, 0...1. `dot` is the ring's charge mark, 0...1.
+    static func body(_ context: inout GraphicsContext, at centre: CGPoint, radius r: Double, stroke: Color,
+                     level: Double = 0, dot: Double = 0, alpha: Double = 1) {
+        guard r > 0.5, alpha > 0.005 else { return }
+        let body = circle(centre, r)
+        context.fill(body, with: .color(Color.paper.opacity(alpha)))
+        if level > 0.01 { ink(&context, at: centre, radius: r, level: level, alpha: alpha) }
+        context.stroke(body, with: .color(stroke.opacity(alpha)), lineWidth: hair)
+        if dot > 0.01 {
+            let d = r * 0.32
+            context.fill(circle(CGPoint(x: centre.x, y: centre.y - r * 0.12), d), with: .color(Color.ink.opacity(dot * alpha)))
+        }
+    }
+
+    private static func ink(_ context: inout GraphicsContext, at centre: CGPoint, radius r: Double, level: Double, alpha: Double) {
+        var inside = context
+        inside.clip(to: circle(centre, r - 0.3))
+        let shade = GraphicsContext.Shading.color(Color.ink.opacity(alpha))
+        guard level < 0.995 else { inside.fill(circle(centre, r), with: shade); return }
+        let top = centre.y + r - 2 * r * level
+        let half = max(0, r * r - (top - centre.y) * (top - centre.y)).squareRoot()
+        inside.fill(Path(CGRect(x: centre.x - r, y: top, width: 2 * r, height: centre.y + r - top)), with: shade)
+        // The surface, an ellipse as the ring's shadows are, with its near edge picked out.
+        let deep = half * 0.26
+        inside.fill(Path(ellipseIn: CGRect(x: centre.x - half, y: top - deep, width: 2 * half, height: 2 * deep)), with: shade)
+        var edge = Path()
+        edge.addLines((0...24).map { step in
+            let a = Double(step) / 24 * .pi
+            return CGPoint(x: centre.x + cos(a) * half, y: top + sin(a) * deep)
+        })
+        inside.stroke(edge, with: .color(Color.paper.opacity(0.5 * alpha)), lineWidth: 0.9)
+    }
+
+    /// A number laid on the bead's surface round `facing`, as the gesture beads carry their
+    /// runes: softer than the outline, and read on paper and on ink alike.
+    static func mark(_ context: inout GraphicsContext, _ text: String, at centre: CGPoint, radius r: Double,
+                     facing: SIMD3<Double> = SIMD3(0, 0, 1), alpha: Double = 1) {
+        guard r > 4, facing.z > 0.05, alpha > 0.01 else { return }
+        let wrapped = BeadSphere.wrap(BeadSphere.digits(text), scale: r * 2 / 24, facing: facing, centre: centre, radius: r)
+        var over = context
+        over.blendMode = .difference
+        over.fill(wrapped, with: .color(Color.white.opacity(0.85 * min(1, facing.z * 2.5) * alpha)))
+    }
+
+    /// The mark a bead leaves on the ground under it, as the ring draws it.
+    static func shadow(_ context: inout GraphicsContext, at foot: CGPoint, radius r: Double, lift: Double, stroke: Color, alpha: Double = 1) {
+        let wide = r * max(0.45, 0.8 - max(0, lift) / 60)
+        let path = Path(ellipseIn: CGRect(x: foot.x - wide, y: foot.y - wide * sin(RingGeometry.elevation), width: 2 * wide, height: 2 * wide * sin(RingGeometry.elevation)))
+        context.stroke(path, with: .color(stroke.opacity(0.35 * alpha * max(0.25, 1 - max(0, lift) / 20))), lineWidth: 0.9)
+    }
+}
+
+/// Figures as shapes, and shapes laid on a ball. The wrapping is the one the gesture beads
+/// and the rune balls use upstream; when the branches meet, theirs serves here too.
+enum BeadSphere {
+    private static var cache: [String: Path] = [:]
+
+    /// A short number in the icons' 24-unit box, centred, in the app's own face.
+    static func digits(_ text: String) -> Path {
+        if let known = cache[text] { return known }
+        let size: CGFloat = text.count > 1 ? 11.5 : 14
+        let font = CTFontCreateWithName((UIFont(name: "Geist-Medium", size: size)?.fontName ?? UIFont.systemFont(ofSize: size, weight: .medium).fontName) as CFString, size, nil)
+        var path = Path(), x: CGFloat = 0
+        for unit in Array(text.utf16) {
+            var character = unit, glyph = CGGlyph()
+            guard CTFontGetGlyphsForCharacters(font, &character, &glyph, 1) else { continue }
+            // Font outlines have y upward; the page has it downward.
+            var place = CGAffineTransform(translationX: x, y: 0).scaledBy(x: 1, y: -1)
+            if let outline = CTFontCreatePathForGlyph(font, glyph, &place) { path.addPath(Path(outline)) }
+            var advance = CGSize.zero
+            CTFontGetAdvancesForGlyphs(font, .horizontal, &glyph, &advance, 1)
+            x += advance.width - 0.3
+        }
+        let box = path.boundingRect
+        let centred = path.applying(CGAffineTransform(translationX: 12 - box.midX, y: 12 - box.midY))
+        cache[text] = centred
+        return centred
+    }
+
+    /// A shape in its 24-unit box laid on a ball seen square on, around the unit vector
+    /// `facing` (x right, y up, z toward the eye): distances from the middle become arcs,
+    /// so it curves with the bead and slides toward the edge as the bead turns.
+    static func wrap(_ shape: Path, scale: Double, facing n: SIMD3<Double>, centre: CGPoint, radius: Double) -> Path {
+        let vertical = SIMD3<Double>(0, 1, 0)
+        let lean = vertical - n * (vertical * n).sum()
+        let length = (lean * lean).sum().squareRoot()
+        let up = length > 1e-6 ? lean / length : vertical
+        let right = SIMD3(up.y * n.z - up.z * n.y, up.z * n.x - up.x * n.z, up.x * n.y - up.y * n.x)
+        func place(_ point: CGPoint) -> CGPoint {
+            let u = (point.x - 12) * scale / radius, v = (12 - point.y) * scale / radius, arc = (u * u + v * v).squareRoot()
+            let on = arc < 1e-6 ? n : n * cos(arc) + (right * u + up * v) * (sin(arc) / arc)
+            return CGPoint(x: centre.x + radius * on.x, y: centre.y - radius * on.y)
+        }
+        func mix(_ a: CGPoint, _ b: CGPoint, _ t: Double) -> CGPoint { CGPoint(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t) }
+        var wrapped = Path(), last = CGPoint.zero, start = CGPoint.zero
+        shape.forEach { element in
+            switch element {
+            case .move(let to):
+                wrapped.move(to: place(to)); last = to; start = to
+            case .line(let to):
+                for step in 1...4 { wrapped.addLine(to: place(mix(last, to, Double(step) / 4))) }
+                last = to
+            case .quadCurve(let to, let control):
+                for step in 1...8 {
+                    let t = Double(step) / 8
+                    wrapped.addLine(to: place(mix(mix(last, control, t), mix(control, to, t), t)))
+                }
+                last = to
+            case .curve(let to, let control1, let control2):
+                for step in 1...8 {
+                    let t = Double(step) / 8
+                    let a = mix(last, control1, t), b = mix(control1, control2, t), c = mix(control2, to, t)
+                    wrapped.addLine(to: place(mix(mix(a, b, t), mix(b, c, t), t)))
+                }
+                last = to
+            case .closeSubpath:
+                wrapped.closeSubpath(); last = start
+            }
+        }
+        return wrapped
+    }
+}
+
+/// One bead by itself, where there is no ring round it: on a rod, beside an ingredient,
+/// on the dial. `level` is how full of ink it is.
 struct Bead: View {
     var size: CGFloat
-    /// How wide the ink in it is, as a share of the bead: nothing, the dot, or all of it.
-    var ink: Double = 0
-    var stroke = Color.muted
-    var weight: CGFloat = 1.5
-    /// A second ring round it: the one the gestures act on.
+    var level: Double = 0
+    /// The ring's charge mark: here, or done.
+    var dot = false
+    var stroke = Color.ink
+    /// A ring round it: the one the gestures act on.
     var ringed = false
-    /// Counting: rings spread from it, faster once `urgent`.
-    var lively = false
-    var urgent = false
-    /// Its time is up.
+    /// Its time is up: it shakes, then rests, then shakes again.
     var rattling = false
-    /// How the ink moves when its amount changes: slowly for a time running down.
-    var pour = Animation.linear(duration: 0.5)
     /// Changes when a gesture lands on it; the bead answers once.
     var tap = 0
     @State private var tapped: Date?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// The dot's width as a share of the bead's, as the band's ring draws it.
-    static let dot = 0.32
-
-    /// The ink for a share of a time left: all of it at the start, down to the dot.
-    static func level(_ share: Double) -> Double { dot + (1 - dot) * min(1, max(0, share)).squareRoot() }
-    /// The ink for a share of a count done, by area, so half done looks half full.
-    static func part(_ share: Double) -> Double { min(1, max(0, share)).squareRoot() }
-
     var body: some View {
-        let moving = (lively || rattling || tapped != nil) && !reduceMotion
-        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !moving)) { context in
-            let t = context.date.timeIntervalSinceReferenceDate
-            // Seconds since the last gesture landed, while the bead is still answering it.
-            let since = reduceMotion ? nil : tapped.map { context.date.timeIntervalSince($0) }
-            ZStack {
-                Circle().fill(Color.paper)
-                Circle().fill(Color.ink).scaleEffect(CGFloat(rattling ? 1 : ink))
-                Circle().strokeBorder(rattling ? Color.ink : stroke, lineWidth: weight)
-            }
-            .frame(width: size, height: size)
-            .background { if lively || rattling, moving { ripples(t) } }
-            .background { if let since { shock(since) } }
-            .overlay { Circle().strokeBorder(Color.ink, lineWidth: 1.5).padding(-6).opacity(ringed ? 1 : 0) }
-            // The ring's own damped bounce, as a give in the bead's size.
-            .scaleEffect(1 + 0.12 * CGFloat(since.map { $0 <= 0 ? 0 : exp(-5.5 * $0) * sin(2 * .pi * 2.6 * $0) } ?? 0))
-            .offset(x: rattling && !reduceMotion ? sin(t * 38) * 2.5 : 0)
+        let moving = (rattling || tapped != nil) && !reduceMotion
+        TimelineView(.animation(minimumInterval: 1.0 / 60, paused: !moving)) { timeline in
+            let t = timeline.date.timeIntervalSinceReferenceDate
+            let since = moving ? tapped.map { timeline.date.timeIntervalSince($0) } : nil
+            let beat = t.truncatingRemainder(dividingBy: 1.3)
+            BeadFigure(level: level, dot: dot ? 1 : 0, stroke: stroke, ring: ringed ? 1 : 0,
+                       shake: moving && rattling ? 5 * sin(beat * 42) * exp(-5 * beat) : 0,
+                       swell: 1 + 0.1 * BeadEase.bounce(since ?? 0),
+                       ripple: moving && rattling ? beat / 0.8 : since.map { $0 / 0.7 })
         }
-        .animation(pour, value: ink)
-        .animation(.standard, value: ringed)
+        .frame(width: size, height: size)
+        .animation(.easeOut(duration: 0.3), value: level)
+        .animation(.spring(duration: 0.3, bounce: 0.3), value: ringed)
         .onChange(of: tap) { _, _ in
             let at = Date()
             tapped = at
@@ -69,32 +197,39 @@ struct Bead: View {
         }
         .accessibilityHidden(true)
     }
+}
 
-    /// The ripple one gesture sends out: two rings, the second a moment behind.
-    private func shock(_ since: Double) -> some View {
-        ZStack {
-            ForEach(0..<2, id: \.self) { echo in
-                let local = since - Double(echo) * 0.12
-                if local > 0, local < 0.8 {
-                    let spread = 1 - pow(1 - local / 0.8, 2)
-                    Circle().stroke(Color.ink.opacity((1 - local / 0.8) * (echo == 0 ? 0.55 : 0.3)), lineWidth: 1)
-                        .frame(width: size + 44 * CGFloat(spread), height: size + 44 * CGFloat(spread))
-                }
-            }
-        }
+/// The drawing of one bead, with what can change smoothly kept as numbers.
+private struct BeadFigure: View, Animatable {
+    var level: Double
+    var dot: Double
+    let stroke: Color
+    var ring: Double
+    let shake: Double
+    let swell: Double
+    /// 0...1 while a ring spreads from it and fades.
+    let ripple: Double?
+    var animatableData: AnimatablePair<Double, AnimatablePair<Double, Double>> {
+        get { AnimatablePair(level, AnimatablePair(dot, ring)) }
+        set { level = newValue.first; dot = newValue.second.first; ring = newValue.second.second }
     }
 
-    /// Hairline rings that leave the bead and fade, like the ripples a tap sends over the
-    /// band's ring. Two at a time, half a beat apart.
-    private func ripples(_ t: Double) -> some View {
-        let period = rattling ? 0.7 : urgent ? 1.1 : 2.6
-        let spread: CGFloat = rattling ? 22 : 13
-        return ZStack {
-            ForEach(0..<2, id: \.self) { echo in
-                let phase = (t / period + Double(echo) * 0.5).truncatingRemainder(dividingBy: 1)
-                Circle().stroke(Color.ink.opacity(0.5 * (1 - phase)), lineWidth: 1)
-                    .frame(width: size + 2 * spread * CGFloat(phase), height: size + 2 * spread * CGFloat(phase))
+    var body: some View {
+        // Drawn into room round the bead, so its rings are not cut off.
+        GeometryReader { proxy in
+            let r = Double(min(proxy.size.width, proxy.size.height)) / 2 - 1
+            Canvas { context, size in
+                let centre = CGPoint(x: size.width / 2 + shake, y: size.height / 2)
+                if let ripple, ripple > 0, ripple < 1 {
+                    context.stroke(BeadDraw.circle(centre, r + 16 * BeadEase.out(ripple)), with: .color(Color.ink.opacity(0.5 * (1 - ripple))), lineWidth: 1)
+                }
+                BeadDraw.body(&context, at: centre, radius: r * swell, stroke: stroke, level: level, dot: dot)
+                if ring > 0.01 {
+                    context.stroke(BeadDraw.circle(centre, r + 11 - 6 * ring), with: .color(Color.ink.opacity(min(1, ring))), lineWidth: BeadDraw.hair)
+                }
             }
+            .frame(width: proxy.size.width + 40, height: proxy.size.height + 40)
+            .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
         }
     }
 }
@@ -121,9 +256,9 @@ struct SentenceBeads: View {
     var body: some View {
         HStack(spacing: 5) {
             ForEach(0..<count, id: \.self) { sentence in
-                Circle().strokeBorder(sentence <= index ? Color.ink : Color.muted, lineWidth: 1.5)
-                    .background(Circle().fill(sentence <= index ? Color.ink : Color.clear))
-                    .frame(width: sentence == index ? 10 : 8, height: sentence == index ? 10 : 8)
+                Circle().strokeBorder(sentence <= index ? Color.ink : Color.muted, lineWidth: 1.25)
+                    .background(Circle().fill(sentence == index ? Color.ink : Color.clear))
+                    .frame(width: 8, height: 8)
             }
         }
         .animation(.standard, value: index)
@@ -134,8 +269,9 @@ struct SentenceBeads: View {
 
 // MARK: The cooking page
 
-/// The page while a step shows: the beads on top, in the look chosen, and the step's
-/// ticket under them. A time that is up takes the ticket's place until it is stopped.
+/// The page while a step shows: the beads, in the look chosen, and the step's ticket. A
+/// time that is up takes the ticket's place until it is stopped. The strand hangs down the
+/// leading edge with the ticket beside it; the other looks sit over the ticket.
 struct BeadCookPage: View {
     let session: CookSession
     let look: CookingLook
@@ -147,37 +283,45 @@ struct BeadCookPage: View {
         let plan = StationPlan(steps: session.recipe.steps)
         TimelineView(.periodic(from: .now, by: 0.5)) { context in
             let now = context.date
-            let rung = session.ringing(at: now)
-            VStack(spacing: 0) {
-                Group {
-                    switch look {
-                    case .abacus: AbacusFace(session: session, plan: plan, now: now, actions: actions).padding(.top, 10)
-                    case .strand: StrandFace(session: session, plan: plan, now: now, actions: actions)
-                    default: LoopFace(session: session, plan: plan, now: now, actions: actions)
-                    }
+            if look == .strand {
+                HStack(alignment: .top, spacing: 0) {
+                    StrandFace(session: session, plan: plan, now: now, actions: actions).frame(width: 104)
+                    // Clear of the mark the wrist's buzz leaves at the top of the page.
+                    reading(plan, now).padding(.leading, -14).padding(.top, 34)
                 }
-                ZStack {
-                    if let first = rung.first {
-                        let durations = session.recipe.durations(step: first.step)
-                        let cue = durations.indices.contains(first.slot) ? StepDetails.cue(for: durations[first.slot], in: session.recipe.steps[first.step]) : nil
-                        TimeUpTicket(timer: first, place: plan.spot(step: first.step).vessel, others: rung.count - 1, cue: cue, controls: controls, stop: actions.stopRinging)
-                            .transition(reduceMotion ? .opacity : .move(edge: .bottom))
-                    } else {
-                        Ticket(session: session, plan: plan, now: now, beads: true)
-                    }
+            } else {
+                VStack(spacing: 0) {
+                    if look == .abacus { AbacusFace(session: session, plan: plan, now: now, actions: actions).padding(.top, 14) }
+                    else { LoopFace(session: session, plan: plan, now: now, actions: actions) }
+                    reading(plan, now).padding(.top, 14)
                 }
-                .padding(.top, 12)
-                .clipped()
-                .animation(reduceMotion ? nil : .entrance, value: rung.isEmpty)
-                Spacer(minLength: 0)
             }
+        }
+    }
+
+    private func reading(_ plan: StationPlan, _ now: Date) -> some View {
+        let rung = session.ringing(at: now)
+        return VStack(spacing: 0) {
+            ZStack {
+                if let first = rung.first {
+                    let durations = session.recipe.durations(step: first.step)
+                    let cue = durations.indices.contains(first.slot) ? StepDetails.cue(for: durations[first.slot], in: session.recipe.steps[first.step]) : nil
+                    TimeUp(timer: first, place: plan.spot(step: first.step).vessel, others: rung.count - 1, cue: cue, controls: controls, stop: actions.stopRinging)
+                        .transition(.opacity)
+                } else {
+                    Ticket(session: session, plan: plan, now: now, beads: true)
+                }
+            }
+            .clipped()
+            .animation(reduceMotion ? nil : .entrance, value: rung.isEmpty)
+            Spacer(minLength: 0)
         }
     }
 }
 
-/// A time that is up, printed where the step was: ink from edge to edge, the place in
-/// letters to read from across the kitchen, what to check, and how to stop it. A tap stops it.
-struct TimeUpTicket: View {
+/// A time that is up, where the step was, as the alarm shows one ringing: where it is in
+/// large type, what to check, and one round button that stops it.
+struct TimeUp: View {
     let timer: CookTimer
     /// Where it is: "Air fryer".
     let place: String
@@ -186,41 +330,53 @@ struct TimeUpTicket: View {
     var cue: String? = nil
     let controls: CookControls
     let stop: () -> Void
+    @State private var breathe = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        Button(action: stop) {
-            VStack(alignment: .leading, spacing: 0) {
-                HStack {
-                    Text("TIME’S UP")
-                    Spacer()
-                    Text(String(format: "%02d ", timer.step + 1) + timer.label.uppercased() + (others > 0 ? " +\(others)" : ""))
-                }
-                .font(ticketFont(13, .semibold))
-                Text(place.uppercased()).font(ticketFont(44, .bold)).lineLimit(2).minimumScaleFactor(0.5).padding(.top, 14)
+        VStack(spacing: 0) {
+            VStack(spacing: 6) {
+                Text("Time’s up" + (others > 0 ? " · and \(others) more" : "")).font(.heading).foregroundStyle(Color.muted)
+                Text(place).font(.geist(44, .medium, relativeTo: .largeTitle)).tracking(-1.2).lineLimit(1).minimumScaleFactor(0.5)
                 if let cue {
-                    Text("CHECK: \(cue.uppercased())").font(ticketFont(19, .semibold)).lineSpacing(2).padding(.top, 10)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer(minLength: 12)
-                HStack(spacing: 18) {
-                    ForEach([(CookCommand.timer, "STOP"), (.addMinute, "+1 MIN")], id: \.1) { command, word in
-                        if let trigger = controls.trigger(for: command) {
-                            HStack(spacing: 6) { TriggerGlyphs(steps: trigger.steps, size: 16); Text(word).font(ticketFont(13, .semibold)) }
-                        }
-                    }
+                    Text("Check: \(cue)").font(.bodyText).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
                 }
             }
-            .foregroundStyle(Color.paper)
-            .padding(18)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(Color.ink)
-            .contentShape(Rectangle())
+            .padding(.top, 12)
+            Button(action: stop) {
+                VStack(spacing: 10) {
+                    if let trigger = controls.trigger(for: .timer) { TriggerGlyphs(steps: trigger.steps, size: 26) }
+                    Text("Stop").font(.geist(30, .medium, relativeTo: .title)).tracking(-0.6)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background {
+                    Circle().strokeBorder(Color.rule, lineWidth: Metric.hairline).scaleEffect(breathe ? 1.04 : 0.96)
+                    Circle().strokeBorder(Color.ink, lineWidth: 1.5).padding(14)
+                }
+                .contentShape(Circle())
+            }
+            .buttonStyle(PressRow())
+            .frame(maxHeight: 210)
+            .padding(.vertical, 18)
+            if let trigger = controls.trigger(for: .addMinute) {
+                HStack(spacing: 6) {
+                    TriggerGlyphs(steps: trigger.steps, size: 15)
+                    Text("Another minute").font(.caption)
+                }
+                .foregroundStyle(Color.muted)
+            }
         }
-        .buttonStyle(PressRow())
-        .padding(.horizontal, Metric.gutter).padding(.bottom, 8)
+        .padding(.horizontal, Metric.gutter)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .onAppear {
+            guard !reduceMotion else { return }
+            withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true)) { breathe = true }
+        }
         .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(.isButton)
         .accessibilityLabel("Time’s up at the \(place.lowercased()), step \(timer.step + 1)" + (cue.map { ". Check: \($0)" } ?? ""))
         .accessibilityHint("Stops the timer.")
+        .accessibilityAction(.default, stop)
     }
 }
 
@@ -239,37 +395,41 @@ struct BeadGather: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    HStack(spacing: 9) {
+                    HStack(spacing: 8) {
                         ForEach(0..<Beads.count, id: \.self) { index in
-                            Bead(size: 30, ink: Bead.part(fills[index]), stroke: fills[index] > 0 ? Color.ink : Color.muted)
+                            Bead(size: 30, level: fills[index], stroke: fills[index] > 0 ? Color.ink : Color.muted).arrive(index)
                         }
                     }
-                    .background(Rectangle().fill(Color.rule).frame(height: Metric.hairline))
-                    Text("GET EVERYTHING OUT").font(ticketFont(24, .bold)).padding(.top, 18)
-                    Text([String(format: "%02d/%02d OUT", session.ready.count, items.count), session.recipe.yield?.uppercased()].compactMap { $0 }.joined(separator: " · "))
-                        .font(ticketFont(13)).monospacedDigit().contentTransition(.numericText()).padding(.top, 6).padding(.bottom, 16)
+                    .frame(maxWidth: .infinity)
+                    .padding(.bottom, 26)
+                    Text("Get everything out.").font(.geist(32, relativeTo: .title)).tracking(-0.5)
+                    Text(["\(session.ready.count) of \(items.count) out", session.recipe.yield].compactMap { $0 }.joined(separator: " · "))
+                        .font(.caption).monospacedDigit().foregroundStyle(Color.muted)
+                        .contentTransition(.numericText()).padding(.top, 8).padding(.bottom, 18)
                     // What a later step needs ready, said now while there is time.
                     let first = StepDetails.headStarts(in: session.recipe.steps)
                     if !first.isEmpty {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("START FIRST").font(ticketFont(13, .semibold))
-                            ForEach(first, id: \.self) { Text($0.uppercased()).font(ticketFont(17, .bold)).fixedSize(horizontal: false, vertical: true) }
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Start first").font(.label)
+                            ForEach(first, id: \.self) { Text($0).font(.geist(20, relativeTo: .title3)).fixedSize(horizontal: false, vertical: true) }
                         }
-                        .padding(.bottom, 16)
+                        .padding(.bottom, 20)
                     }
                     // What was written down the last time, read before it is too late to use.
                     if let notes = session.recipe.notes, !notes.isEmpty {
-                        VStack(alignment: .leading, spacing: 3) {
-                            ForEach(notes.suffix(2), id: \.self) { Text("* " + $0.uppercased()).font(ticketFont(12)).foregroundStyle(Color.muted).fixedSize(horizontal: false, vertical: true) }
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Remember").font(.label)
+                            ForEach(notes.suffix(2), id: \.self) { Text($0).font(.bodyText).foregroundStyle(Color.muted).fixedSize(horizontal: false, vertical: true) }
                         }
-                        .padding(.bottom, 16)
+                        .padding(.bottom, 20)
                     }
-                    Perforation()
-                    ForEach(Array(items.enumerated()), id: \.offset) { index, item in row(index, item).id(index) }
-                    Perforation()
+                    ForEach(Array(items.enumerated()), id: \.offset) { index, item in
+                        Hairline(delay: 0.02 * Double(index))
+                        row(index, item).id(index)
+                    }
+                    Hairline()
                 }
-                .padding(.horizontal, Metric.gutter + 4).padding(.top, 20).padding(.bottom, 16)
-                .animation(.standard, value: session.ready)
+                .padding(.horizontal, Metric.gutter).padding(.top, 24).padding(.bottom, 16)
                 .animation(.standard, value: session.marked)
             }
             .onChange(of: session.marked) { _, marked in withAnimation(.standard) { proxy.scrollTo(marked, anchor: .center) } }
@@ -281,18 +441,16 @@ struct BeadGather: View {
         let line = Ingredients.split(item), out = session.ready.contains(index), marked = index == session.marked
         return Button { toggle(index) } label: {
             HStack(alignment: .center, spacing: 14) {
-                Bead(size: 18, ink: out ? 1 : 0, stroke: out || marked ? Color.ink : Color.muted, ringed: marked)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(line.name.uppercased()).font(ticketFont(16, marked ? .bold : .semibold))
-                        .strikethrough(out, color: Color.muted).foregroundStyle(out ? Color.muted : Color.ink)
-                        .multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
-                    if let amount = line.amount {
-                        Text(amount.uppercased()).font(ticketFont(13)).foregroundStyle(Color.muted).contentTransition(.numericText())
-                    }
-                }
-                Spacer(minLength: 0)
+                Bead(size: 20, level: out ? 1 : 0, stroke: out || marked ? Color.ink : Color.muted, ringed: marked, tap: out ? 1 : 0)
+                    .padding(.horizontal, 6)
+                Text(line.name).strikethrough(out, color: Color.muted).foregroundStyle(out ? Color.muted : Color.ink)
+                    .multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
+                Text(line.amount ?? "").monospacedDigit().foregroundStyle(Color.muted).lineLimit(1).minimumScaleFactor(0.6)
+                    .contentTransition(.numericText())
             }
-            .padding(.vertical, 9).padding(.leading, 8).contentShape(Rectangle())
+            .font(.geist(20, relativeTo: .title3))
+            .padding(.vertical, 14).contentShape(Rectangle())
         }
         .buttonStyle(PressRow())
         .accessibilityElement(children: .ignore)
@@ -304,7 +462,7 @@ struct BeadGather: View {
 // MARK: The wrist dial
 
 /// The wrist dial as the loop of eight, shown while the index finger is pinched and
-/// held: ink fills the beads clockwise from the top as the wrist turns, a bead for an
+/// held: ink rises in the beads clockwise from the top as the wrist turns, a bead for an
 /// eighth of the dial, round the time being set. For people it is a bead each. It moves
 /// only as the hand does.
 struct BeadDial: View {
@@ -320,25 +478,22 @@ struct BeadDial: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        // The bead the ink has reached, which stands a little proud of the rest.
+        // The bead the ink has reached, which the ring settles round.
         let level = fills.reduce(0, +)
         let head = level <= 0 ? -1 : (Int(level.rounded(.up)) - 1) % Beads.count
         GeometryReader { geo in
-            let side = max(160, min(geo.size.width - 36, geo.size.height - 130))
-            let bead = side * 0.2, radius = (side - bead) / 2 - 4
-            VStack(spacing: 16) {
-                Text(label.uppercased()).font(ticketFont(15, .semibold))
+            let side = max(160, min(geo.size.width - 56, geo.size.height - 150))
+            let bead = side * 0.17, radius = (side - bead) / 2 - 6
+            VStack(spacing: 18) {
+                Text(label).font(.heading).foregroundStyle(Color.muted)
                 ZStack {
-                    Circle().stroke(Color.rule, lineWidth: Metric.hairline).frame(width: radius * 2, height: radius * 2)
                     ForEach(0..<Beads.count, id: \.self) { index in
                         let fill = fills.indices.contains(index) ? fills[index] : 0
                         ZStack {
-                            Bead(size: bead, ink: Bead.part(fill), stroke: fill > 0 ? Color.ink : Color.muted, weight: index == head ? 2.5 : 1.5,
-                                 pour: .easeOut(duration: 0.16))
-                            // A second turn of the dial opens the bead again from the middle.
-                            Circle().fill(Color.paper).frame(width: bead * 0.56, height: bead * 0.56).scaleEffect(CGFloat(Bead.part(fill - 1)))
+                            Bead(size: bead, level: min(1, fill), stroke: fill > 0 ? Color.ink : Color.muted, ringed: index == head)
+                            // A second turn of the dial marks the bead again with the ring's dot, in paper.
+                            Circle().fill(Color.paper).frame(width: bead * 0.3, height: bead * 0.3).scaleEffect(CGFloat(min(1, max(0, fill - 1))))
                         }
-                        .scaleEffect(index == head && !reduceMotion ? 1.14 : 1)
                         .modifier(OnLoop(angle: Double(index) * .pi / 4 - .pi / 2, radius: open || reduceMotion ? radius : radius * 0.7))
                     }
                     // Sized to stay inside the beads, however many digits the time has.
@@ -346,13 +501,12 @@ struct BeadDial: View {
                 }
                 .frame(width: side, height: side)
                 .opacity(open ? 1 : 0)
-                .animation(.easeOut(duration: 0.16), value: fills)
-                Text(hint.uppercased()).font(ticketFont(13)).foregroundStyle(Color.muted)
+                Text(hint).font(.label).foregroundStyle(Color.muted)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(Color.paper)
-        .onAppear { withAnimation(.entrance) { open = true } }
+        .onAppear { withAnimation(reduceMotion ? nil : .spring(duration: 0.5, bounce: 0.15)) { open = true } }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Setting \(label) to \(value)")
     }

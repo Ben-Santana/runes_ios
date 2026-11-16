@@ -1,7 +1,7 @@
 import SwiftUI
 
-// Cook's Abacus look. Every place the recipe uses is a rod, and the eight beads rest at
-// the near end of the rods. Starting a time pushes a bead out along its rod, as far as
+// Cook's Abacus look, drawn with the same bead and the same quiet lines as the rest:
+// every place the recipe uses is a string, and the eight beads rest at its near end. Starting a time pushes a bead out along its rod, as far as
 // the time is long, and it slides to the bar at the far end as the time runs down: two
 // beads level with each other will be done together. A time not yet started is an open
 // bead waiting where it would begin. When it should wait so as to land with another, a
@@ -24,8 +24,9 @@ struct AbacusFace: View {
         // A rod is as long as the longest time the recipe has, or one made longer since.
         let written = session.recipe.steps.indices.flatMap { session.recipe.durations(step: $0) }.map(\.seconds).max() ?? 0
         let longest = max(60, written, session.timers.filter(\.isLive).map(\.total).max() ?? 0)
+        // Every bead is the same size, as on the ring; a rod holds what rests there in a row.
         GeometryReader { geo in
-            let bar = geo.size.width - 64, far: CGFloat = 62
+            let bar = geo.size.width - 62, far: CGFloat = 74
             // A bead whose time is up rests against the bar, not on it.
             let x = { (seconds: Int) -> CGFloat in bar - 15 - CGFloat(Beads.reach(seconds, of: longest)) * (bar - 15 - far) }
             let height = CGFloat(stations.count) * Self.row
@@ -36,11 +37,11 @@ struct AbacusFace: View {
                         .offset(y: CGFloat(index) * Self.row)
                 }
                 // The bar every bead is headed for.
-                Rectangle().fill(Color.ink).frame(width: 2, height: height - 8).offset(x: bar - 1, y: 12)
+                Rectangle().fill(Color.ink).frame(width: BeadDraw.hair, height: height - 10).offset(x: bar - 0.6, y: 14)
                 // The line to wait for.
                 if session.landing(at: now) != nil, let waiting = stations.first(where: \.here)?.waiting {
                     Path { path in path.move(to: CGPoint(x: x(waiting), y: 12)); path.addLine(to: CGPoint(x: x(waiting), y: height + 4)) }
-                        .stroke(Color.ink, style: StrokeStyle(lineWidth: 1, dash: [3, 4]))
+                        .stroke(Color.ink.opacity(0.55), style: StrokeStyle(lineWidth: BeadDraw.hair, dash: [3, 3.5]))
                         .transition(.opacity)
                 }
                 scale(longest, bar: bar, x: x).offset(y: height + 4)
@@ -59,28 +60,26 @@ struct AbacusFace: View {
         let share = timer.map { $0.total > 0 ? Double($0.remaining(at: now)) / Double($0.total) : 0 }
         let out = left ?? station.waiting
         return ZStack(alignment: .topLeading) {
-            Text(station.vessel.uppercased()).font(ticketFont(11, station.here ? .bold : .semibold))
+            Text(station.vessel).font(.caption)
                 .foregroundStyle(station.here || timer != nil ? Color.ink : Color.muted)
-            Rectangle().fill(station.here ? Color.ink : Color.rule).frame(width: bar, height: station.here ? 1.5 : Metric.hairline)
-                .offset(y: Self.rod - (station.here ? 0.75 : 0.5))
+            Rectangle().fill(Color.ink.opacity(station.here ? 0.55 : 0.14)).frame(width: bar, height: BeadDraw.hair)
+                .offset(y: Self.rod - 0.6)
             ForEach(0..<max(1, resting), id: \.self) { bead in
                 // The outermost bead at rest is the one that goes out.
                 if bead == max(1, resting) - 1, let out {
-                    Bead(size: 28, ink: share.map(Bead.level) ?? 0, stroke: Color.ink, weight: timer == nil ? 2 : 1.5, ringed: chosen,
-                         lively: timer != nil && !paused && !ringing, urgent: (left ?? 99) <= 60, rattling: ringing,
+                    Bead(size: 24, level: ringing ? 1 : share ?? 0, ringed: chosen, rattling: ringing,
                          tap: station.here ? session.step * 100 + session.beatIndex + (session.landing(at: now) == nil ? 0 : 50) : 0)
                         .opacity(paused ? 0.55 : 1)
-                        .offset(x: x(out) - 14, y: Self.rod - 14)
+                        .offset(x: x(out) - 12, y: Self.rod - 12)
                         .animation(reduceMotion ? nil : .linear(duration: 0.5), value: out)
                 } else {
-                    Bead(size: 12, stroke: Color.faint, weight: 1).offset(x: 2 + CGFloat(bead) * 15, y: Self.rod - 6)
+                    Bead(size: 24, stroke: Color.faint).offset(x: CGFloat(bead) * 27, y: Self.rod - 12)
                 }
             }
             if let out {
-                Text(DurationFinder.clock(out)).font(ticketFont(17, chosen ? .bold : .semibold)).monospacedDigit()
-                    .foregroundStyle(ringing ? Color.paper : timer == nil || paused ? Color.muted : Color.ink)
+                Text(DurationFinder.clock(out)).font(.geist(17, .medium, relativeTo: .body)).monospacedDigit()
+                    .foregroundStyle(timer == nil || paused ? Color.muted : Color.ink)
                     .contentTransition(.numericText(countsDown: true))
-                    .padding(.horizontal, 4).background(ringing ? Color.ink : Color.clear)
                     .frame(width: width - bar - 8, alignment: .trailing)
                     .offset(x: bar + 8, y: Self.rod - 11)
             }
@@ -100,11 +99,11 @@ struct AbacusFace: View {
         let marks = [1, 2, 5, 10, 20, 30, 60, 120, 240].filter { $0 * 60 <= longest }
         return ZStack(alignment: .topLeading) {
             ForEach(marks, id: \.self) { minutes in
-                Text("\(minutes)").font(ticketFont(10)).foregroundStyle(Color.muted).fixedSize()
+                Text("\(minutes)").font(.geist(10, relativeTo: .caption2)).foregroundStyle(Color.muted).fixedSize()
                     .frame(width: 30).offset(x: x(minutes * 60) - 15)
             }
-            Text("0").font(ticketFont(10)).foregroundStyle(Color.muted).frame(width: 30).offset(x: x(0) - 15)
-            Text("MIN").font(ticketFont(10)).foregroundStyle(Color.muted).offset(x: bar + 14)
+            Text("0").font(.geist(10, relativeTo: .caption2)).foregroundStyle(Color.muted).frame(width: 30).offset(x: x(0) - 15)
+            Text("min left").font(.geist(10, relativeTo: .caption2)).foregroundStyle(Color.muted).fixedSize().offset(x: bar + 8)
         }
         .accessibilityHidden(true)
     }

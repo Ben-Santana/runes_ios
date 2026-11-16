@@ -1,120 +1,141 @@
 import SwiftUI
 
-// Cook's Strand look. The band's loop seen from the side, and a bead is a step: the one
-// showing is large in the middle with its number, the ones done trail off behind it with
-// a dot in each, and the ones to come wait ahead, smaller the further round they are.
-// Each step on moves the whole strand a place. A step with a time counting lifts off the
-// line, full of ink that runs down, with its time over it and its place under it, and
-// stays lifted as it moves back, so everything on the go is in the one line. While a
-// time waits to be started so it lands with another, a small bead runs along the line
-// from under that one to the middle.
+// Cook's Strand look. The recipe hangs as beads on a string down the leading edge, the way
+// a set's inscriptions hang in Capture: a bead for each step, carrying its number on its
+// surface, with the step being cooked read beside it on the ticket. The string sways a
+// little, the beads drop onto it in turn when the page opens, and the bead for the step
+// showing has a ring that settles round it and turns right round when it is chosen and
+// for each sentence turned. A step done gives up its number. A step with a time counting
+// holds ink that runs out, with the time beside it, wherever the cook has got to since.
+// While a time waits to be started so it lands with another, a spark runs along the
+// string from that one's bead and arrives at the moment to start.
 
 struct StrandFace: View {
     let session: CookSession
     let plan: StationPlan
     let now: Date
     let actions: CookActions
+    @State private var chosenAt = Date.distantPast
+    @State private var spunAt = Date.distantPast
+    @State private var appeared = Date()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    /// Where the line is, from the top.
-    private static let line: CGFloat = 116
-    private static let sizes: [CGFloat] = [62, 40, 26, 17, 11, 8, 6, 5]
 
-    /// How far from the middle a bead that many places from now is, as a share of half the width.
-    private static func away(_ places: Int) -> CGFloat {
-        CGFloat(places.signum()) * (1 - CGFloat(pow(0.64, Double(abs(places)))))
-    }
+    /// Where the string hangs from the leading edge, and how far down the first bead is.
+    private static let hang = 36.0, lead = 22.0
+
+    private func pitch(_ height: CGFloat) -> Double { min(74, (Double(height) - Self.lead - 40) / Double(max(1, session.count))) }
+    private func radius(_ pitch: Double) -> Double { min(18, pitch * 0.34) }
+
+    /// The step whose bead the gestures are on: the one showing, unless another step's timer was picked.
+    private var chosen: Int { session.pickedTimer?.step ?? session.step }
 
     var body: some View {
-        let strand = Beads.strand(steps: session.count, now: session.mark)
-        let selected = session.selectedTimer.flatMap { $0.isLive ? $0 : nil }
-        GeometryReader { geo in
-            let middle = geo.size.width / 2, half = middle - 8
-            ZStack(alignment: .topLeading) {
-                Rectangle().fill(Color.rule).frame(height: Metric.hairline).offset(y: Self.line)
-                ForEach(0..<Beads.count, id: \.self) { index in
-                    let places = index - strand.now
-                    bead(strand.marks[index], places: places, selected: selected)
-                        .position(x: middle + Self.away(places) * half, y: Self.line)
-                        .zIndex(Double(Beads.count - abs(places)))
-                }
-                // The wait before starting, as a bead on its way to the middle.
-                if let landing = session.landing(at: now), let along = session.approach(at: now),
-                   let from = strand.marks.firstIndex(of: .step(landing.with.step)) {
-                    // From the edge of the mark the lifted bead leaves on the line.
-                    let start = middle + Self.away(from - strand.now) * half + 16
-                    Bead(size: 11, ink: 1, stroke: Color.ink)
-                        .position(x: start + (middle - start) * CGFloat(along), y: Self.line)
-                        .animation(reduceMotion ? nil : .linear(duration: 0.5), value: along)
-                    Text("START IN \(DurationFinder.clock(landing.wait))").font(ticketFont(11, .bold)).monospacedDigit().fixedSize()
-                        .position(x: middle, y: Self.line + 46)
-                }
+        GeometryReader { proxy in
+            TimelineView(.animation(minimumInterval: 1.0 / 60, paused: reduceMotion)) { timeline in
+                Canvas { context, size in draw(&context, size, at: reduceMotion ? now : timeline.date) }
             }
-            .animation(reduceMotion ? nil : .spring(duration: 0.7, bounce: 0.18), value: strand.now)
-            .animation(reduceMotion ? nil : .spring(duration: 0.5, bounce: 0.25), value: session.timers.filter(\.isLive).map(\.id))
+            .contentShape(Rectangle())
+            .gesture(SpatialTapGesture().onEnded { touched($0.location, height: proxy.size.height) })
         }
-        .frame(height: 176)
-    }
-
-    @ViewBuilder private func bead(_ mark: Beads.Mark?, places: Int, selected: CookTimer?) -> some View {
-        let size = Self.sizes[min(abs(places), Self.sizes.count - 1)]
-        switch mark {
-        case .step(let step): stepBead(step, places: places, size: size, selected: selected)
-        // Getting ready is done by the time a step shows.
-        case .ready: Bead(size: size, ink: Bead.dot, stroke: Color.muted)
-        case .done: Bead(size: size, stroke: Color.muted)
-        case nil: Bead(size: size, stroke: Color.faint, weight: 1)
-        }
-    }
-
-    private func stepBead(_ step: Int, places: Int, size: CGFloat, selected: CookTimer?) -> some View {
-        let timer = session.timers.filter { $0.step == step && $0.isLive }.min { $0.remaining(at: now) < $1.remaining(at: now) }
-        let ringing = timer?.isRinging(at: now) ?? false, paused = timer?.isPaused ?? false
-        let left = timer.map { ringing ? 0 : $0.remaining(at: now) }
-        let share = timer.map { $0.total > 0 ? Double($0.remaining(at: now)) / Double($0.total) : 0 }
-        let here = places == 0
-        // The time of the step showing that has not been started.
-        let waiting = here && timer == nil && session.pickedTimer == nil && session.durations.indices.contains(session.slot) ? session.durations[session.slot].seconds : nil
-        let chosen = timer.map { $0.id == selected?.id } ?? (waiting != nil)
-        // A bead with a time counting stands off the line by its own height and a little.
-        let lift: CGFloat = timer == nil ? 0 : max(26, size * 0.5 + 14)
-        let wide = max(size, timer == nil ? size : 24)
-        return ZStack {
-            // Where it stood, as the ring marks the wrist under a pod that is lifted.
-            if timer != nil { Ellipse().stroke(Color.faint, lineWidth: 1).frame(width: wide * 0.7, height: wide * 0.2) }
-            ZStack {
-                Bead(size: wide, ink: share.map(Bead.level) ?? (places < 0 ? Bead.dot : 0),
-                     stroke: here || timer != nil ? Color.ink : Color.muted, weight: here ? 2.5 : 1.5, ringed: chosen,
-                     lively: timer != nil && !paused && !ringing, urgent: (left ?? 99) <= 60, rattling: ringing,
-                     tap: here ? session.step * 100 + session.beatIndex + (session.landing(at: now) == nil ? 0 : 50) : 0)
-                // The step's number, which reads on paper and on ink alike.
-                if abs(places) <= 1, places >= 0 || timer != nil {
-                    Text(String(format: "%02d", step + 1)).font(ticketFont(here ? 20 : 13, .bold))
-                        .foregroundStyle(Color.white).blendMode(.difference).opacity(here ? 1 : 0.7)
-                }
-            }
-            .compositingGroup()
-            .opacity(paused ? 0.55 : 1)
-            .offset(y: -lift)
-            if let out = left ?? waiting {
-                Text(DurationFinder.clock(out)).font(ticketFont(here ? 20 : 12, .bold)).monospacedDigit().fixedSize()
-                    .foregroundStyle(timer == nil || paused ? Color.muted : Color.ink)
-                    .contentTransition(.numericText(countsDown: true))
-                    .offset(y: -lift - wide / 2 - (here ? 20 : 13))
-            }
-            if timer != nil, !here {
-                Text(plan.spot(step: step).vessel.uppercased()).font(ticketFont(10, .semibold)).foregroundStyle(Color.muted).fixedSize()
-                    .offset(y: abs(places).isMultiple(of: 2) ? 30 : 17)
-            }
-        }
-        .frame(width: wide, height: wide)
-        .contentShape(Rectangle().inset(by: -8))
-        .onTapGesture {
-            if let timer { actions.toggleTimer(timer.id) } else if waiting != nil { actions.toggle(session.slot) } else if !here { actions.go(step, nil) }
-        }
-        .onLongPressGesture(minimumDuration: 0.5) { if let timer { actions.cancelTimer(timer.id) } }
+        .onChange(of: chosen) { _, _ in chosenAt = Date() }
+        .onChange(of: session.beatIndex) { _, _ in spunAt = Date() }
         .accessibilityElement(children: .ignore)
-        .accessibilityAddTraits(chosen ? [.isButton, .isSelected] : .isButton)
-        .accessibilityLabel("Step \(step + 1), \(plan.spot(step: step).vessel), " + (left.map { ringing ? "time’s up" : "\(DurationFinder.short($0)) left" + (paused ? ", paused" : "") }
-                            ?? waiting.map { "\(DurationFinder.short($0)), not started" } ?? (here ? "this step" : places < 0 ? "done" : "to come")))
+        .accessibilityLabel("Steps")
+        .accessibilityValue("Step \(session.step + 1) of \(session.count)" + session.live(at: now).map { ", step \($0.step + 1) \($0.isRinging(at: now) ? "time’s up" : DurationFinder.short($0.remaining(at: now)) + " left")" }.joined())
+    }
+
+    private func draw(_ context: inout GraphicsContext, _ size: CGSize, at date: Date) {
+        let still = reduceMotion, ink = Color.ink
+        let t = date.timeIntervalSinceReferenceDate, age = date.timeIntervalSince(appeared)
+        let count = session.count, pitch = pitch(size.height), r = radius(pitch)
+        guard count > 0 else { return }
+        let beat = t.truncatingRemainder(dividingBy: 1.3)
+
+        // Each bead drops onto the string in turn when the page opens.
+        func grown(_ index: Int) -> Double { still ? 1 : BeadEase.back((age - 0.05 * Double(min(index, 12))) / 0.4) }
+        let timers: [CookTimer?] = (0..<count).map { step in
+            session.timers.filter { $0.step == step && $0.isLive }.min { $0.remaining(at: date) < $1.remaining(at: date) }
+        }
+        let centres: [CGPoint] = (0..<count).map { index in
+            let depth = min(1, Double(index + 1) / 3)
+            var sway = still ? 0 : 2.2 * sin(t * 0.55 - Double(index) * 0.45) * depth
+            // A bead whose time is up shakes on the string, rests, and shakes again.
+            if !still, timers[index]?.isRinging(at: date) == true { sway += 7 * sin(beat * 42) * exp(-5 * beat) }
+            return CGPoint(x: Self.hang + sway, y: Self.lead + Double(index) * pitch + pitch / 2 - (1 - min(1, grown(index))) * 18)
+        }
+
+        // The string, fading away above the first bead and knotted off under the last.
+        let reach = still ? 1 : min(1, age / 0.5)
+        let knot = CGPoint(x: centres[count - 1].x, y: centres[count - 1].y + r + 16)
+        let points = [CGPoint(x: Self.hang, y: -6)] + centres + [knot]
+        for index in 0..<(points.count - 1) {
+            var line = Path()
+            line.move(to: points[index]); line.addLine(to: points[index + 1])
+            let shade: GraphicsContext.Shading = index == 0
+                ? .linearGradient(Gradient(colors: [ink.opacity(0), ink.opacity(0.55)]), startPoint: points[0], endPoint: points[1])
+                : .color(ink.opacity(0.55))
+            context.stroke(line.trimmedPath(from: 0, to: reach), with: shade, style: StrokeStyle(lineWidth: BeadDraw.hair, lineCap: .round))
+        }
+        context.fill(BeadDraw.circle(knot, 2.5), with: .color(ink.opacity(0.55 * reach)))
+
+        // The wait before a start, run along the string to the bead it is for.
+        if let landing = session.landing(at: date), let along = session.approach(at: date), centres.indices.contains(landing.with.step), centres.indices.contains(session.step) {
+            let from = centres[landing.with.step], to = centres[session.step]
+            context.fill(BeadDraw.circle(CGPoint(x: from.x + (to.x - from.x) * along, y: from.y + (to.y - from.y) * along), 2.6), with: .color(ink))
+        }
+
+        let cooking = !session.finished && !session.gathering
+        for index in 0..<count {
+            let timer = timers[index], centre = centres[index]
+            let here = cooking && index == session.step, done = !cooking || index < session.step
+            let ringing = timer?.isRinging(at: date) ?? false, paused = timer?.isPaused ?? false
+            var level = 0.0
+            if let timer, timer.total > 0 {
+                level = ringing ? 1 : (timer.paused.map(Double.init) ?? max(0, timer.end.timeIntervalSince(date))) / Double(timer.total)
+            }
+            let scale = grown(index) * (here ? 1.08 : 1)
+            if ringing, !still {
+                let spread = beat / 0.8
+                if spread < 1 { context.stroke(BeadDraw.circle(centre, r + 16 * BeadEase.out(spread)), with: .color(ink.opacity(0.5 * (1 - spread))), lineWidth: 1) }
+            }
+            BeadDraw.body(&context, at: centre, radius: r * scale, stroke: here || timer != nil ? ink : done ? Color.muted : ink.opacity(0.75),
+                          level: min(1, level), alpha: min(1, scale) * (paused ? 0.55 : 1))
+            // The number it carries, turning with the bead: once round when it is chosen and for each sentence.
+            if !done || timer != nil {
+                var yaw = still ? 0 : 0.2 * sin(t * 0.7 + Double(index) * 1.9)
+                if index == chosen, !still {
+                    let spin = date.timeIntervalSince(chosenAt) / 0.55, turn = date.timeIntervalSince(spunAt) / 0.5
+                    if spin < 1 { yaw += BeadEase.inOut(spin) * 2 * .pi }
+                    if turn < 1, here { yaw += BeadEase.inOut(turn) * 2 * .pi }
+                }
+                BeadDraw.mark(&context, "\(index + 1)", at: centre, radius: r * scale, facing: SIMD3(sin(yaw), 0, cos(yaw)),
+                              alpha: min(1, scale) * (here || timer != nil ? 1 : 0.6))
+            }
+            if cooking, index == chosen {
+                let settle = still ? 1 : BeadEase.back(date.timeIntervalSince(chosenAt) / 0.3)
+                context.stroke(BeadDraw.circle(centre, r * 1.08 + 12 - 6 * settle), with: .color(ink.opacity(min(1, settle))), lineWidth: BeadDraw.hair)
+            }
+            // The time there, beside the bead.
+            let waiting = here && timer == nil && session.pickedTimer == nil && session.durations.indices.contains(session.slot) ? session.durations[session.slot].seconds : nil
+            if let seconds = timer.map({ ringing ? 0 : $0.remaining(at: date) }) ?? waiting {
+                context.draw(Text(DurationFinder.clock(seconds)).font(.geist(13, .medium, relativeTo: .footnote)).monospacedDigit()
+                                .foregroundStyle(timer == nil || paused ? Color.muted : ink),
+                             at: CGPoint(x: centre.x + r * 1.08 + 10, y: centre.y), anchor: .leading)
+            }
+        }
+    }
+
+    /// A touch on a bead starts, pauses or stops its time, or goes to its step.
+    private func touched(_ point: CGPoint, height: CGFloat) {
+        let pitch = pitch(height)
+        let index = Int(((Double(point.y) - Self.lead) / pitch).rounded(.down))
+        guard (0..<session.count).contains(index), abs(Double(point.x) - Self.hang) < radius(pitch) + 22 else { return }
+        if let timer = session.timers.filter({ $0.step == index && $0.isLive }).min(by: { $0.remaining(at: now) < $1.remaining(at: now) }) {
+            actions.toggleTimer(timer.id)
+        } else if index == session.step, !session.durations.isEmpty {
+            actions.toggle(session.slot)
+        } else if index != session.step {
+            actions.go(index, nil)
+        }
     }
 }
