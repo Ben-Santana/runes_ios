@@ -120,6 +120,7 @@ final class SessionController: ObservableObject {
         }
         core.onNamedSetting = { setting, line in Task { @MainActor in BandTests.shared.named(setting, line) } }
         core.onTrial = { line in Task { @MainActor in BandTests.shared.trials.append(line) } }
+        core.onInfo = { info in Task { @MainActor in BandTests.shared.info = info } }
         WorkoutStore.shared.onSound = { voice, volume in ScoreAudio.shared.cue(voice, volume: volume) }
         WorkoutStore.shared.onSoundsLive = { ScoreAudio.shared.setLive($0, for: "workout") }
         ScoreStore.shared.onReserve = { [weak self] in self?.reserve($0, for: .score) }
@@ -295,6 +296,8 @@ final class SessionController: ObservableObject {
         core.transport.perform { [core] in core.tryOnBand("pattern", field: 17, BandTrial.pattern(named: name, pulses)) }
     }
     func stopVibration() { core.transport.perform { [core] in core.tryOnBand("stop", field: 17, BandTrial.stop) } }
+    /// Asks the band which firmware it runs and whether an update is waiting. Reading only.
+    func readFirmwareStatus() { core.transport.perform { [core] in core.tryOnBand("firmware", field: 7, BandTrial.firmwareStatus) } }
     func writeNamedSetting(_ setting: NamedSettings.Setting, value: UInt64) {
         core.transport.perform { [core] in core.writeNamedSetting(setting, value: value) }
     }

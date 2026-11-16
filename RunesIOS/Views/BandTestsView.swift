@@ -15,6 +15,8 @@ final class BandTests: ObservableObject {
     @Published private(set) var busy = false
     /// What the other tests heard back, a line each.
     @Published var trials: [String] = []
+    /// What the band said about its software when it connected.
+    @Published var info: String?
 
     func startReading() { lines = []; named = [:]; busy = true }
     func startWriting() { busy = true }
@@ -92,12 +94,18 @@ struct BandTestsScreen: View {
                 if !tests.lines.isEmpty {
                     PanelGroup("What the band reported", caption: nil) { lines(tests.lines.joined(separator: "\n")) }
                 }
+                PanelGroup("Band software", caption: "What the band says it runs, read when it connects. The second row asks whether an update is waiting; it changes nothing.") {
+                    lines(tests.info ?? "Not read yet. Reconnect the band.")
+                    Rule()
+                    ActionRow("Read update status") { controller.readFirmwareStatus() }
+                        .disabled(!ready)
+                }
                 PanelGroup("Settings read on connecting", caption: "The band sends these when it connects.") {
                     lines(tests.settings ?? "Not read yet.")
                 }
                 PanelGroup(nil, caption: "Copies everything above as text.") {
                     ActionRow(copied ? "Copied" : "Copy results", icon: copied ? .check : .clipboardCopy) {
-                        UIPasteboard.general.string = ([tests.patternAnswer, tests.settings] + tests.trials + tests.lines).compactMap { $0 }.joined(separator: "\n")
+                        UIPasteboard.general.string = ([tests.patternAnswer, tests.info, tests.settings] + tests.trials + tests.lines).compactMap { $0 }.joined(separator: "\n")
                         copied = true
                     }
                 }
