@@ -647,11 +647,13 @@ final class CookStore: ObservableObject {
             let cue = times.indices.contains(rung.slot) ? StepDetails.cue(for: times[rung.slot], in: session.recipe.steps[rung.step]) : nil
             assistant.read("\(rung.label). Time’s up." + (cue.map { " Check: \($0)." } ?? ""))
         }
+        // The first buzz also counts out where the pan is: taps for a burner, a long one for the oven.
+        let place = session.flatMap { session in session.ringing(at: Date()).first.map { StationPlan(steps: session.recipe.steps).spot(step: $0.step).place } }
         ringTask = Task { [weak self] in
-            for _ in 0..<30 {
+            for round in 0..<30 {
                 guard let self, !Task.isCancelled, let session = self.session, !session.ringing(at: Date()).isEmpty else { break }
                 if self.sounds { self.onCue?(.ring) }
-                if self.buzz != .off { self.wrist([.triple]) }
+                if self.buzz != .off { self.wrist([.triple] + (round == 0 ? place.map(RecipeBrief.wrist) ?? [] : [])) }
                 try? await Task.sleep(for: .seconds(2))
             }
             self?.ringTask = nil
