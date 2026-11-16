@@ -69,6 +69,14 @@ enum CookBuzz: String, Codable, CaseIterable, Sendable {
     }
 }
 
+/// A cook that was finished, kept as it ended: what the receipt is printed from.
+struct CookRecord: Codable, Identifiable, Equatable, Sendable {
+    var id = UUID().uuidString.lowercased()
+    var session: CookSession
+    var ended: Date
+    var minutes: Int { max(1, Int(ended.timeIntervalSince(session.started) / 60)) }
+}
+
 /// Saved recipes and the one being cooked. While a recipe is being cooked its gestures
 /// are taken here and mappings that use them are off. Timers are absolute end times, so
 /// they survive the phone locking and the app being closed: each one also schedules a
@@ -91,6 +99,7 @@ final class CookStore: ObservableObject {
         var dial: Bool?
         var spoken: Bool?
         var reads: Bool?
+        var records: [CookRecord]?
         var listLook: String?
         var cookingLook: String?
     }
@@ -126,6 +135,11 @@ final class CookStore: ObservableObject {
             }
         }
     }
+
+    /// The receipts of cooks that were finished, the latest first. The last forty are kept.
+    @Published private(set) var records: [CookRecord]
+    func records(for recipe: String) -> [CookRecord] { records.filter { $0.session.recipe.id == recipe } }
+    func forget(_ record: String) { records.removeAll { $0.id == record }; persist() }
 
     /// Hears a question about the recipe and answers it.
     let assistant: CookAssistant
@@ -219,6 +233,7 @@ final class CookStore: ObservableObject {
         dial = saved.dial ?? true
         spoken = saved.spoken ?? true
         reads = saved.reads ?? false
+        records = saved.records ?? []
         assistant = CookAssistant()
         listLook = saved.listLook.flatMap(CookListLook.init) ?? .contents
         cookingLook = saved.cookingLook.flatMap(CookingLook.init) ?? .stations
@@ -248,7 +263,8 @@ final class CookStore: ObservableObject {
     #if DEBUG
     /// Fixed state for screenshots and previews; never saved.
     init(preview recipes: [Recipe], session: CookSession? = nil, listLook: CookListLook = .contents, cookingLook: CookingLook = .hob, dialing: Int? = nil,
-         asking: CookAssistant.Phase = .idle) {
+         asking: CookAssistant.Phase = .idle, records: [CookRecord] = []) {
+        self.records = records
         self.recipes = recipes; controls = .standard; sounds = true; buzz = .timers; dial = true; self.dialing = dialing
         spoken = true; reads = false; assistant = CookAssistant(preview: asking)
         self.listLook = listLook; self.cookingLook = cookingLook; self.session = session; previewOnly = true
@@ -342,6 +358,8 @@ final class CookStore: ObservableObject {
         if finished.finished, let index = recipes.firstIndex(where: { $0.id == finished.recipe.id }) {
             recipes[index].cooked += 1; recipes[index].lastCooked = Date()
         }
+        // The receipt is kept, with the notes as they stood when the cook ended.
+        if finished.finished { records = Array(([CookRecord(session: finished, ended: Date())] + records).prefix(40)) }
         ringTask?.cancel(); ringTask = nil
         if dialing != nil { dialing = nil; onDial?(false) }
         assistant.dismiss()
@@ -734,7 +752,7 @@ final class CookStore: ObservableObject {
 
     private func persist() {
         guard !previewOnly else { return }
-        let saved = Saved(recipes: recipes, controls: controls, sounds: sounds, session: session, buzz: buzz.rawValue, dial: dial, spoken: spoken, reads: reads,
+        let saved = Saved(recipes: recipes, controls: controls, sounds: sounds, session: session, buzz: buzz.rawValue, dial: dial, spoken: spoken, reads: reads, records: records,
                           listLook: listLook.rawValue, cookingLook: cookingLook.rawValue)
         if let data = try? JSONEncoder().encode(saved) { UserDefaults.standard.set(data, forKey: Self.key) }
     }
