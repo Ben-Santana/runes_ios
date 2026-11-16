@@ -36,8 +36,9 @@ final class SessionCore: @unchecked Sendable {
     var onSettings: ((String) -> Void)?
     /// The band's answer to one of its own patterns, with the reply's shape.
     var onPattern: ((UInt64, WristFeedbackResult, String) -> Void)?
-    /// Each line of the band's named settings as it is read, then nil when the read ends.
-    var onNamedSetting: ((String?) -> Void)?
+    /// Each named setting as it is read or written back, with a line saying so. A line alone is a
+    /// note, and an empty one ends a read.
+    var onNamedSetting: ((NamedSettings.Setting?, String) -> Void)?
     /// Orientation and gyroscope samples, whether they were started for the Mac or for this phone.
     var onMotion: ((RelayWire.Event.Kind, [Double]) -> Void)?
     var onGesture: ((GestureEvent) -> Void)?
@@ -79,8 +80,10 @@ final class SessionCore: @unchecked Sendable {
     private var buzzGeneration = 0
     private var pulseSentAt: TimeInterval?
     private var patternInFlight: UInt64?
-    /// Where the read of the named settings has got to: the group, its size, the place in it, and the setting just described.
-    private var settingRead: (group: UInt64, count: UInt64, index: UInt64, id: UInt64, name: String)?
+    /// Where the read of the named settings has got to: how many there are, the place in the list, and the setting just described.
+    private var settingRead: (count: UInt64, index: UInt64, setting: NamedSettings.Setting?)?
+    /// The named setting being written, until its value has been read back.
+    private var settingWrite: NamedSettings.Setting?
     private var lastSettings: String?
     private var pendingHandTarget: (band: UUID, attempt: Date)?
     private static let notNearbyAfter: TimeInterval = 30
@@ -453,58 +456,84 @@ final class SessionCore: @unchecked Sendable {
         sendNextPulse()
     }
 
-    /// Reads every setting the band can name, one request at a time. Reading only.
+    /// Reads every setting the band can name, one request at a time.
     func readNamedSettings() {
-        guard snapshot.state == .streaming, settingRead == nil else { return }
+        guard snapshot.state == .streaming, settingRead == nil, settingWrite == nil else { return }
         record("band_settings", "Named settings: reading.")
-        askCount(group: NamedSettings.groups.lowerBound)
+        settingRead = (0, 0, nil)
+        askSetting("named_count", NamedSettings.count())
     }
 
-    private func askCount(group: UInt64) {
-        guard NamedSettings.groups.contains(group) else { return endSettingRead("Named settings: done.") }
-        settingRead = (group, 0, 0, 0, "")
-        askSetting("named_count", NamedSettings.count(group: group))
+    /// Writes a whole number to one named setting, then reads it back. The band keeps it.
+    func writeNamedSetting(_ setting: NamedSettings.Setting, value: UInt64) {
+        guard snapshot.state == .streaming, settingRead == nil, settingWrite == nil, setting.writable else { return }
+        record("band_settings", "Writing \(setting.name) = \(value) (was \(setting.value.map(String.init) ?? "unknown")).")
+        settingWrite = setting
+        askSetting("named_write", NamedSettings.write(id: setting.id, value: value))
     }
 
     private func askNext() {
         guard var read = settingRead else { return }
-        guard read.index < read.count else { return askCount(group: read.group + 1) }
-        read.index += 1; settingRead = read
-        askSetting("named_describe", NamedSettings.describe(group: read.group, index: read.index))
+        guard read.index < read.count else {
+            settingRead = nil
+            record("band_settings", "Named settings: done."); onNamedSetting?(nil, "")
+            return
+        }
+        read.index += 1; read.setting = nil; settingRead = read
+        askSetting("named_describe", NamedSettings.describe(index: read.index))
     }
 
     private func askSetting(_ operation: String, _ payload: Data) {
         do { try rpc(operation, NamedSettings.channel, NamedSettings.field, payload) }
-        catch { endSettingRead("Named settings: could not ask.") }
-    }
-
-    private func endSettingRead(_ line: String) {
-        settingRead = nil
-        record("band_settings", line); onNamedSetting?(line); onNamedSetting?(nil)
+        catch {
+            settingRead = nil; settingWrite = nil
+            record("band_settings", "Named settings: could not ask."); onNamedSetting?(nil, "Could not ask the band."); onNamedSetting?(nil, "")
+        }
     }
 
     private func namedSetting(_ operation: String, _ payload: Data) {
-        guard var read = settingRead else { return }
-        func line(_ text: String) { record("band_settings", text); onNamedSetting?(text) }
+        func line(_ setting: NamedSettings.Setting?, _ text: String) {
+            if !text.isEmpty { record("band_settings", text) }
+            onNamedSetting?(setting, text)
+        }
         switch operation {
         case "named_count":
             guard let count = NamedSettings.count(from: payload) else {
-                line("Group \(read.group): no list (\(WristFeedbackResult.shape(payload))).")
-                return askCount(group: read.group + 1)
+                settingRead = nil
+                line(nil, "No list (\(WristFeedbackResult.shape(payload))).")
+                return line(nil, "")
             }
-            read.count = count; settingRead = read
-            line("Group \(read.group): \(count) settings.")
+            settingRead = (count, 0, nil)
+            line(nil, "\(count) settings.")
             askNext()
         case "named_describe":
-            guard let setting = NamedSettings.name(from: payload) else {
-                line("\(read.group).\(read.index): not described.")
+            guard var read = settingRead else { return }
+            guard let setting = NamedSettings.setting(from: payload) else {
+                line(nil, "\(read.index): not described.")
                 return askNext()
             }
-            read.id = setting.id; read.name = setting.name; settingRead = read
+            read.setting = setting; settingRead = read
             askSetting("named_read", NamedSettings.read(id: setting.id))
-        default:
-            line("\(read.group).\(read.index) #\(read.id) \(read.name) = \(NamedSettings.value(from: payload) ?? "not read")")
+        case "named_read":
+            guard let read = settingRead, var setting = read.setting else { return }
+            let answer = NamedSettings.value(of: setting.id, from: payload)
+            setting.kind = answer?.kind; setting.value = answer?.value
+            let range = setting.range.map { " [\($0.lowerBound) to \($0.upperBound)]" } ?? ""
+            line(setting, "#\(setting.id) \(setting.name)\(range) = \(answer?.text ?? "not readable")")
             askNext()
+        case "named_write":
+            guard let setting = settingWrite else { return }
+            guard NamedSettings.value(of: setting.id, from: payload) != nil else {
+                settingWrite = nil
+                return line(setting, "\(setting.name): the band refused the write (\(WristFeedbackResult.shape(payload))).")
+            }
+            askSetting("named_verify", NamedSettings.read(id: setting.id))
+        default:
+            guard var setting = settingWrite else { return }
+            settingWrite = nil
+            let answer = NamedSettings.value(of: setting.id, from: payload)
+            setting.kind = answer?.kind; setting.value = answer?.value
+            line(setting, "\(setting.name): the band now reports \(answer?.value.map(String.init) ?? "nothing readable").")
         }
     }
 
@@ -586,12 +615,14 @@ final class SessionCore: @unchecked Sendable {
                         failures = 0
                         snapshot.startedAt = Date()
                         transition(.streaming, candidate?.bandPoint == nil ? "Receiving band gestures. Compatibility mode: band identity is unverified." : "Receiving band gestures.")
+                        // A read or write of a named setting cut off by a lost link is not carried over.
+                        settingRead = nil; settingWrite = nil
                         requestHand()
                     }
                     try reconcileStreams()
                 }
             case "stop_streams": finishDisconnect()
-            case "named_count", "named_describe", "named_read": namedSetting(operation, payload)
+            case "named_count", "named_describe", "named_read", "named_write", "named_verify": namedSetting(operation, payload)
             case "set_hand":
                 if snapshot.handSetting.wrote() { try rpc("read_hand", 6, 5) }
             case "read_hand":

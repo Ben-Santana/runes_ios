@@ -394,29 +394,60 @@ enum BandSettings {
     }
 }
 
-/// The band's own list of settings, which it can name. Each is asked for by its place in a
-/// group, described, and then read. Nothing here writes to the band.
+/// The band's own list of settings, which it can name. Each is asked for by its place in the
+/// list, described, and then read. Whole numbers can also be written, and are read back after.
 enum NamedSettings {
     static let channel: UInt16 = 1, field = 14
-    static let groups: ClosedRange<UInt64> = 1...4
+    /// The list the band is asked for. Every number tried returned the same list; 2 is the one the Mac app uses.
+    private static let list: UInt64 = 2
 
-    static func count(group: UInt64) -> Data { PB.field(1, PB.field(1, group)) }
-    static func describe(group: UInt64, index: UInt64) -> Data { PB.field(2, PB.field(1, group) + PB.field(2, index)) }
+    /// One setting as the band describes and reports it.
+    struct Setting: Equatable, Sendable {
+        let id: UInt64
+        let name: String
+        /// The lowest and highest value the band says it takes, when it says.
+        var range: ClosedRange<UInt64>?
+        /// The field of the answer its value came in, which tells its kind: 4 a whole number, 8 a yes or no.
+        var kind: Int?
+        var value: UInt64?
+        /// Whether a new value can be written: only whole numbers, and only once one has been read.
+        var writable: Bool { kind == 4 && value != nil }
+    }
+
+    static func count() -> Data { PB.field(1, PB.field(1, list)) }
+    /// Places run from 1. The Mac app notes that asking for place 0 can close the band's connection.
+    static func describe(index: UInt64) -> Data { PB.field(2, PB.field(1, list) + PB.field(2, max(1, index))) }
     static func read(id: UInt64) -> Data { PB.field(3, PB.field(1, id) + PB.field(2, 0)) }
+    /// Writes a whole number. A value read in field 4 is written in field 3.
+    static func write(id: UInt64, value: UInt64) -> Data { PB.field(3, PB.field(1, id) + PB.field(2, 1) + PB.field(3, PB.field(1, value))) }
 
-    /// How many settings a group holds, from the answer to `count`. Nil for no answer, a refusal or a count that cannot be right.
+    /// How many settings the band holds, from the answer to `count`. Nil for no answer, a refusal or a count that cannot be right.
     static func count(from reply: Data) -> UInt64? {
         guard let inner = part(1, of: reply), let count = try? inner.integer(1), count > 0, count < 256 else { return nil }
         return count
     }
-    /// A setting's number and name, from the answer to `describe`. The name is cut to 48 plain characters.
-    static func name(from reply: Data) -> (id: UInt64, name: String)? {
+    /// A setting's number, name and range, from the answer to `describe`. The name is cut to 48 plain characters.
+    static func setting(from reply: Data) -> Setting? {
         guard let info = part(2, of: reply), let id = try? info.integer(4), let raw = try? info.bytes(3) else { return nil }
         let name = String(decoding: raw.prefix(48), as: UTF8.self).filter { $0.isLetter || $0.isNumber || "-_. ".contains($0) }
-        return (id, name)
+        var range: ClosedRange<UInt64>?
+        if let bounds = try? Fields(info.bytes(7)) {
+            let low = (try? bounds.integer(2)) ?? 0
+            if let high = try? bounds.integer(3), high >= low { range = low...high }
+        }
+        return Setting(id: id, name: name, range: range)
     }
-    /// A setting's value written as numbers (`BandSettings`), from the answer to `read`.
-    static func value(from reply: Data) -> String? { part(3, of: reply).map { BandSettings.describe($0, depth: 0) } }
+    /// A setting's value, from the answer to `read` or to a `write`: its kind and number when it is a
+    /// single value, and all of it written as numbers (`BandSettings`). Nil when the band refused.
+    static func value(of id: UInt64, from reply: Data) -> (kind: Int?, value: UInt64?, text: String)? {
+        guard let result = part(3, of: reply), (try? result.integer(1)) == id, result.values[3] == nil else { return nil }
+        let kinds = (4...11).filter { result.values[$0] != nil }
+        var value: UInt64?
+        if kinds.count == 1, let wrapper = try? Fields(result.bytes(kinds[0])) {
+            value = wrapper.values[1] == nil ? 0 : try? wrapper.integer(1)
+        }
+        return (kinds.count == 1 ? kinds[0] : nil, value, BandSettings.describe(result, depth: 0))
+    }
 
     private static func part(_ number: Int, of reply: Data) -> Fields? {
         guard let fields = try? Fields(reply), (try? fields.integer(2)) == 1 else { return nil }
