@@ -964,12 +964,20 @@ struct CookSettingsScreen: View {
                         Note("Hold the Ask gesture, or tap the microphone, and ask about the recipe out loud. The answer is worked out on this phone and shown in the step’s place; Spoken also says it. It needs Apple Intelligence and Runes in front.")
                     }
                     Block {
+                        HairlineSegments(selection: Binding(get: { store.reads ? Sound.on : .off }, set: { store.setReads($0 == .on) }),
+                                         options: Sound.allCases, title: \.rawValue)
+                    } header: {
+                        Heading("Read aloud")
+                    } footer: {
+                        Note("Says each step as you arrive at it, for when your eyes are on the pan.")
+                    }
+                    Block {
                         HairlineSegments(selection: Binding(get: { store.dial ? Sound.on : .off }, set: { store.setDial($0 == .on) }),
                                          options: Sound.allCases, title: \.rawValue)
                     } header: {
                         Heading("Wrist dial")
                     } footer: {
-                        Note("Pinch your index finger and hold, turn your wrist to set the selected timer like the dial of a kitchen timer, and let go. On a step with no time it starts one. It keeps the band’s motion sensors on while you cook, which uses more battery.")
+                        Note("Pinch your index finger and hold, turn your wrist to set the selected timer like the dial of a kitchen timer, and let go. On a step with no time it starts one, and while you get the ingredients out it sets how many you cook for. It keeps the band’s motion sensors on while you cook, which uses more battery.")
                     }
                     Block {
                         HairlineSegments(selection: Binding(get: { store.listLook }, set: { store.setListLook($0) }),

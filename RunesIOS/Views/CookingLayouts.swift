@@ -84,12 +84,74 @@ struct Hob: View {
     }
 }
 
+// MARK: Getting ready
+
+/// Before step one: everything the recipe needs, in type large enough to read from across
+/// the counter, to tick off as it is got out. The band's up and down move the mark along
+/// the list and its timer gesture ticks the marked line; a tap ticks any line.
+struct GatherPage: View {
+    let session: CookSession
+    let toggle: (Int) -> Void
+
+    var body: some View {
+        let items = session.recipe.ingredients
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("Get everything out.").font(.geist(32, relativeTo: .title)).tracking(-0.5)
+                    Text(["\(session.ready.count) of \(items.count) out", session.recipe.yield].compactMap { $0 }.joined(separator: " · "))
+                        .font(.caption).monospacedDigit().foregroundStyle(Color.muted)
+                        .contentTransition(.numericText()).padding(.top, 8).padding(.bottom, 18)
+                    ForEach(Array(items.enumerated()), id: \.offset) { index, item in
+                        Hairline(delay: 0.02 * Double(index))
+                        row(index, item).id(index)
+                    }
+                    Hairline()
+                }
+                .padding(.horizontal, Metric.gutter).padding(.top, 28).padding(.bottom, 16)
+                .animation(.standard, value: session.ready)
+                .animation(.standard, value: session.marked)
+            }
+            .onChange(of: session.marked) { _, marked in withAnimation(.standard) { proxy.scrollTo(marked, anchor: .center) } }
+        }
+        .sensoryFeedback(.selection, trigger: session.ready)
+    }
+
+    private func row(_ index: Int, _ item: String) -> some View {
+        let line = Ingredients.split(item), out = session.ready.contains(index)
+        return Button { toggle(index) } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text(line.amount ?? "").monospacedDigit().foregroundStyle(Color.muted)
+                    .lineLimit(1).minimumScaleFactor(0.6).frame(width: 96, alignment: .trailing)
+                    .contentTransition(.numericText())
+                Text(line.name).strikethrough(out, color: Color.muted).foregroundStyle(out ? Color.muted : Color.ink)
+                    .multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                LucideIcon(.check, size: 16).opacity(out ? 1 : 0)
+            }
+            .font(.geist(20, relativeTo: .title3))
+            .padding(.vertical, 14).contentShape(Rectangle())
+            // The line the band's gestures are on.
+            .overlay(alignment: .leading) {
+                Capsule().fill(Color.ink).frame(width: 2.5).padding(.vertical, 10).offset(x: -Metric.gutter + 6)
+                    .opacity(index == session.marked ? 1 : 0)
+            }
+        }
+        .buttonStyle(PressRow())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(item)
+        .accessibilityAddTraits(out ? [.isButton, .isSelected] : .isButton)
+    }
+}
+
 // MARK: A question
 
 /// A question and its answer, in the page's place while they last: what was heard, a
 /// hairline, and the answer in type large enough to read from the stove. A tap clears it.
 struct AskCard: View {
     let phase: CookAssistant.Phase
+    /// How loud the voice is while listening; the line under the words follows it.
+    var level: Float = 0
     let dismiss: () -> Void
 
     var body: some View {
@@ -101,7 +163,12 @@ struct AskCard: View {
                 case .listening:
                     Text("Listening").font(.caption).foregroundStyle(Color.muted)
                     Text("Ask about this recipe.").font(.geist(32, relativeTo: .title)).tracking(-0.5)
-                    Hairline()
+                    ZStack(alignment: .leading) {
+                        Rectangle().fill(Color.rule).frame(height: Metric.hairline)
+                        Rectangle().fill(Color.ink).frame(height: 2).scaleEffect(x: CGFloat(min(1, max(0, level))), anchor: .leading)
+                    }
+                    .animation(.standard, value: level)
+                    .accessibilityHidden(true)
                     Text("How much, how hot, how long, what can stand in for what. Let go when you’re done.")
                         .font(.bodyText).foregroundStyle(Color.muted)
                 case .thinking(let question):
@@ -139,15 +206,18 @@ struct AskCard: View {
 /// that turns one tick for each step of the wrist under a fixed mark, round the time the
 /// timer will be set to. It moves only as the hand does.
 struct TimerDial: View {
-    let seconds: Int
-    /// What is being set: "Simmer", or the step when it has no name.
+    /// What the dial is on, in steps from nothing: the ring has turned one tick for each.
+    let steps: Int
+    /// What it shows in the middle: "7:30", or "6" people.
+    let value: String
+    /// What is being set: "Simmer", the step when it has no name, or "Servings".
     let label: String
-    /// Whether letting go starts a timer, or sets one already going.
-    let starts: Bool
+    /// What letting go does.
+    let hint: String
     private static let size: CGFloat = 264
 
-    /// Steps of the dial from nothing to this time, one tick each.
-    private var steps: Int {
+    /// Steps of the dial from nothing to a time, one tick each.
+    static func steps(for seconds: Int) -> Int {
         seconds < 120 ? seconds / 10 : seconds < 900 ? 12 + (seconds - 120) / 30 : 38 + (seconds - 900) / 60
     }
 
@@ -169,20 +239,19 @@ struct TimerDial: View {
                 .rotationEffect(.degrees(Double(steps) * 6))
                 .animation(.standard, value: steps)
                 Capsule().fill(Color.ink).frame(width: 2.5, height: 26).offset(y: -Self.size / 2 + 4)
-                Text(DurationFinder.clock(seconds))
+                Text(value)
                     .font(.geist(64, .medium, relativeTo: .largeTitle)).monospacedDigit().tracking(-2)
                     .lineLimit(1).minimumScaleFactor(0.5).frame(width: Self.size - 70)
-                    .contentTransition(.numericText(value: Double(seconds)))
-                    .animation(.standard, value: seconds)
+                    .contentTransition(.numericText(value: Double(steps)))
+                    .animation(.standard, value: steps)
             }
             .frame(width: Self.size, height: Self.size)
-            Text(seconds == 0 ? (starts ? "Turn your wrist to set a time" : "Let go to clear it") : starts ? "Let go to start" : "Let go to set")
-                .font(.caption).foregroundStyle(Color.muted)
+            Text(hint).font(.caption).foregroundStyle(Color.muted)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.paper)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Setting \(label) to \(DurationFinder.short(seconds))")
+        .accessibilityLabel("Setting \(label) to \(value)")
     }
 }
 
