@@ -242,6 +242,10 @@ final class SessionController: ObservableObject {
         } else if !WorkoutStore.shared.consume(gesture), !ScoreStore.shared.consume(gesture),
                   !CookStore.shared.consume(gesture), !CaptureStore.shared.consume(gesture),
                   !ReelsStore.shared.consume(gesture) { MappingStore.shared.receive(gesture) }
+        // The band's own buzz may be turned off; then Runes answers on the wrist, locked or not.
+        if UserDefaults.standard.object(forKey: Preferences.bandAnswers) as? Bool ?? true {
+            core.transport.perform { [core] in core.answer(gesture.kind) }
+        }
         guard foreground else { return }
         BandBuzzFeed.shared.heard(gesture)
         guard UserDefaults.standard.object(forKey: Preferences.haptics) as? Bool ?? true else { return }
@@ -444,6 +448,7 @@ enum Preferences {
     static let setupComplete = "setupComplete"
     static let haptics = "hapticsOnGesture"
     static let batteryAlerts = "bandBatteryAlerts"
+    static let bandAnswers = "bandAnswersGestures"
 }
 
 /// A local notification when the band runs low. It is checked whenever the band reports
