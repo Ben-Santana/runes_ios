@@ -751,7 +751,8 @@ final class SessionCore: @unchecked Sendable {
     }
     private func protocolProgress() {
         updateConnectionProgress()
-        let message = "Protocol: \(proto?.stage ?? "closed"); enrollment: \(enrollment?.record.stage ?? "none")."
+        let link = proto?.linkNote ?? ""
+        let message = "Protocol: \(proto?.stage ?? "closed"); enrollment: \(enrollment?.record.stage ?? "none")\(link.isEmpty ? "" : "; link: " + link)."
         logger.info("\(message, privacy: .public)")
         record("protocol", message)
         publish()
