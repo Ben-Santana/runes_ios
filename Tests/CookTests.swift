@@ -442,6 +442,15 @@ struct CookTests {
                      == ["Preheat the oven to 200°C", "Bring a large pot of salted water to a boil", "Heat the oven to 200°C again"])
         precondition(StepDetails.headStarts(in: Recipe.starter.steps).isEmpty && StepDetails.headStarts(in: Recipe.salmonPasta.steps).isEmpty, "The first step is next anyway")
 
+        // MARK: Where each step happens
+        let salmonPlan = StationPlan(steps: Recipe.salmonPasta.steps)
+        precondition(salmonPlan.spots.map(\.vessel) == ["Air fryer", "Pot", "Skillet", "Blender", "Skillet", "Board"], "\(salmonPlan.spots.map(\.vessel))")
+        precondition(salmonPlan.spots.map(\.place) == [.oven, .frontLeft, .frontRight, .counter, .frontRight, .counter], "The skillet stays on its burner")
+        let starterPlan = StationPlan(steps: Recipe.starter.steps)
+        precondition(starterPlan.spots.map(\.vessel) == ["Pot", "Skillet", "Skillet", "Pot", "Pot", "Board"], "\(starterPlan.spots.map(\.vessel))")
+        precondition(starterPlan.vessel(at: .frontLeft) == "Pot" && starterPlan.vessel(at: .backLeft) == nil && starterPlan.spot(step: 99).place == .counter)
+        precondition(StationPlan(steps: ["Wait.", "Wait more."]).spots.map(\.vessel) == ["Counter", "Counter"], "No place named: the counter")
+
         // MARK: The wrist dial
         // Still, the sensor's offset is learned; held, a steady turn about one axis comes out in degrees.
         var wrist = WristDial()
