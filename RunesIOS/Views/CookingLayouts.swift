@@ -750,10 +750,21 @@ struct AskCard: View {
     /// How loud the voice is while listening; the line under the words follows it.
     var level: Float = 0
     let dismiss: () -> Void
+    /// What the ring of beads is doing: it lifts and charges while it listens and thinks,
+    /// and drops with a ripple when it has the answer.
+    @State private var beads: BandGesture?
+
+    /// The stage of the question, without its words, so the beads react once to each.
+    private var stage: Int {
+        switch phase { case .idle: 0; case .listening: 1; case .thinking: 2; case .answered: 3; case .failed: 4 }
+    }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
+                // The band's own face listens: the same ring as the home screen.
+                HairlineRing(phase: .connected, gesture: beads).frame(height: 150).frame(maxWidth: .infinity)
+                    .accessibilityHidden(true)
                 switch phase {
                 case .idle:
                     EmptyView()
@@ -784,12 +795,16 @@ struct AskCard: View {
             }
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, Metric.gutter).padding(.top, 28).padding(.bottom, 16)
+            .padding(.horizontal, Metric.gutter).padding(.top, 8).padding(.bottom, 16)
         }
         .scrollBounceBehavior(.basedOnSize)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.paper)
         .contentShape(Rectangle())
+        .onChange(of: stage, initial: true) { was, now in
+            if now == 1 || (now == 2 && was != 1) { beads = BandGesture(id: now * 10, kind: .holdBegan, finger: 3, at: Date()) }
+            if now >= 3 { beads = BandGesture(id: now * 10, kind: .holdEnded, finger: 3, at: Date()) }
+        }
         .onTapGesture(perform: dismiss)
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
