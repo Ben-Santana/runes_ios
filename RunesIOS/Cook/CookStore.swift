@@ -12,9 +12,9 @@ enum CookListLook: String, Codable, CaseIterable, Sendable {
     var title: String { self == .contents ? "Contents" : "Ledger" }
 }
 enum CookingLook: String, Codable, CaseIterable, Sendable {
-    case hob, rail, poster, numbers
+    case focus, hob, rail, poster, numbers
     var title: String {
-        switch self { case .hob: "Hob"; case .rail: "Rail"; case .poster: "Poster"; case .numbers: "Numbers" }
+        switch self { case .focus: "Focus"; case .hob: "Hob"; case .rail: "Rail"; case .poster: "Poster"; case .numbers: "Numbers" }
     }
 }
 
@@ -61,6 +61,29 @@ final class CookStore: ObservableObject {
     /// The wrist dial: pinch the index finger and hold, turn the wrist to set the selected
     /// timer, let go. It keeps the band's motion sensors on while a recipe is being cooked.
     @Published private(set) var dial: Bool
+    /// What the band was just told to do, so the screen can show the same rhythm.
+    struct Pulse: Equatable {
+        var id = 0
+        var pattern: [BandBuzz] = []
+    }
+    @Published private(set) var pulse = Pulse()
+    private var pulsing: Task<Void, Never>?
+
+    /// Buzzes the wrist, one after another, and shows the pattern.
+    private func wrist(_ pattern: [BandBuzz]) {
+        guard !pattern.isEmpty else { return }
+        pulse = Pulse(id: pulse.id + 1, pattern: pattern)
+        guard !previewOnly else { return }
+        pulsing?.cancel()
+        pulsing = Task { [weak self] in
+            for buzz in pattern {
+                guard !Task.isCancelled else { return }
+                self?.onBuzz?(buzz)
+                try? await Task.sleep(for: .milliseconds(buzz == .long ? 650 : 420))
+            }
+        }
+    }
+
     /// Hears a question about the recipe and answers it.
     let assistant: CookAssistant
     /// Whether its answers are said aloud as well as shown.
@@ -155,8 +178,9 @@ final class CookStore: ObservableObject {
         reads = saved.reads ?? false
         assistant = CookAssistant()
         listLook = saved.listLook.flatMap(CookListLook.init) ?? .contents
-        cookingLook = saved.cookingLook.flatMap(CookingLook.init) ?? .hob
+        cookingLook = saved.cookingLook.flatMap(CookingLook.init) ?? .focus
         session = saved.session
+        session?.paced = cookingLook == .focus
         scheduled = Set((saved.session?.timers ?? []).map { Self.notificationPrefix + $0.id })
         decider.onFire = { [weak self] id in
             guard let self else { return }
@@ -181,6 +205,7 @@ final class CookStore: ObservableObject {
         self.recipes = recipes; controls = .standard; sounds = true; buzz = .timers; dial = true; self.dialing = dialing
         spoken = true; reads = false; assistant = CookAssistant(preview: asking)
         self.listLook = listLook; self.cookingLook = cookingLook; self.session = session; previewOnly = true
+        self.session?.paced = cookingLook == .focus
     }
     #endif
 
@@ -223,7 +248,7 @@ final class CookStore: ObservableObject {
         if !previewOnly { onReserve?(reservedNow) }
     }
     func setListLook(_ look: CookListLook) { listLook = look; persist() }
-    func setCookingLook(_ look: CookingLook) { cookingLook = look; persist() }
+    func setCookingLook(_ look: CookingLook) { cookingLook = look; session?.paced = look == .focus; persist() }
 
     /// What a link gave: the recipe its page publishes for search engines, or, when it
     /// publishes none, the page as the text a reader sees.
@@ -258,6 +283,7 @@ final class CookStore: ObservableObject {
         // With things still to get out, cooking opens on the ingredients.
         var fresh = CookSession(recipe: recipe, gather: ready.count < recipe.ingredients.count)
         for index in ready { fresh.toggle(ingredient: index) }
+        fresh.paced = cookingLook == .focus
         session = fresh
         changed()
     }
@@ -361,7 +387,11 @@ final class CookStore: ObservableObject {
             return
         }
         let target = current.selectedTimer
-        guard let event = current.dial(to: seconds) else { return }
+        guard let event = current.dial(to: seconds) else {
+            // Held and let go without a turn: the time left is counted out on the wrist.
+            if buzz != .off, let target, target.isLive { wrist(DialTime.count(seconds)) }
+            return
+        }
         session = current
         react(to: event, about: target)
     }
@@ -412,6 +442,12 @@ final class CookStore: ObservableObject {
         guard var current = session, let timer = current.timers.first(where: { $0.id == id }) else { return }
         current.cancel(id); session = current
         react(to: .reset, about: timer)
+    }
+    /// Selects a timer, wherever its step is, without starting or pausing it.
+    func pick(_ id: String) {
+        guard var current = session, current.selectedTimer?.id != id else { return }
+        current.pick(id); session = current
+        react(to: .selected(current.selection ?? 0))
     }
     func addMinute(to id: String) {
         guard var current = session, let timer = current.addMinute(to: id) else { return }
@@ -473,7 +509,7 @@ final class CookStore: ObservableObject {
             cue = .nothing
         }
         if sounds, !previewOnly { onCue?(cue) }
-        if buzz == .all, event != nil, !previewOnly { onBuzz?(.tap) }
+        if buzz == .all, let event { wrist([event.wrist]) }
         // With Runes open the screen shows the change; an alert is for a locked phone.
         changed(alert: UIApplication.shared.applicationState == .active ? nil : alert)
     }
@@ -501,7 +537,7 @@ final class CookStore: ObservableObject {
         guard !due.isEmpty else { return }
         warned.formUnion(due.map(\.timer.id))
         if sounds { onCue?(.soon) }
-        if buzz != .off { onBuzz?(.double) }
+        if buzz != .off { wrist([.double]) }
     }
 
     /// Wakes at the next timer's end, so the screen and the Lock Screen turn to ringing,
@@ -539,11 +575,18 @@ final class CookStore: ObservableObject {
     /// behind a locked phone; the timer's notification is there in case it could not be.
     private func ring() {
         guard ringTask == nil, !previewOnly, sounds || buzz != .off else { return }
+        // An alarm that only rings leaves the cook guessing which pan it means. This one
+        // says its name, and what to look for.
+        if spoken, let rung = session?.ringing(at: Date()).first, let session {
+            let times = session.recipe.durations(step: rung.step)
+            let cue = times.indices.contains(rung.slot) ? StepDetails.cue(for: times[rung.slot], in: session.recipe.steps[rung.step]) : nil
+            assistant.read("\(rung.label). Time’s up." + (cue.map { " Check: \($0)." } ?? ""))
+        }
         ringTask = Task { [weak self] in
             for _ in 0..<30 {
                 guard let self, !Task.isCancelled, let session = self.session, !session.ringing(at: Date()).isEmpty else { break }
                 if self.sounds { self.onCue?(.ring) }
-                if self.buzz != .off { self.onBuzz?(.triple) }
+                if self.buzz != .off { self.wrist([.triple]) }
                 try? await Task.sleep(for: .seconds(2))
             }
             self?.ringTask = nil
