@@ -1,6 +1,6 @@
 // Offline checks that the app speaks the band's link on both firmware generations: public test
 // vectors, the frame reader, and whole sessions against a pretend band. No Bluetooth, Keychain or network.
-// swiftc -module-cache-path /private/tmp/runes-swift-module-cache RunesIOS/Session/Models.swift RunesIOS/Session/BandStatus.swift RunesIOS/Protocol/Wire.swift RunesIOS/Protocol/BandCrypto.swift RunesIOS/Protocol/BandLink.swift RunesIOS/Protocol/BandProtocol.swift RunesIOS/Protocol/EMG.swift RunesIOS/Authentication/OwnershipCeremony.swift RunesIOS/Persistence/IdentityStore.swift RunesIOS/Relay/RelayWire.swift Tests/BandLinkTests.swift -o /private/tmp/runes-band-link-tests && /private/tmp/runes-band-link-tests
+// swiftc -module-cache-path /private/tmp/runes-swift-module-cache RunesIOS/Session/Models.swift RunesIOS/Session/BandStatus.swift RunesIOS/Protocol/Wire.swift RunesIOS/Protocol/BandCrypto.swift RunesIOS/Protocol/BandLink.swift RunesIOS/Protocol/BandStreams.swift RunesIOS/Protocol/BandProtocol.swift RunesIOS/Protocol/EMG.swift RunesIOS/Authentication/OwnershipCeremony.swift RunesIOS/Persistence/IdentityStore.swift RunesIOS/Relay/RelayWire.swift Tests/BandLinkTests.swift -o /private/tmp/runes-band-link-tests && /private/tmp/runes-band-link-tests
 // The vectors, the padding cases and the recorded gestures come from the public band-core project. See THIRD_PARTY_NOTICES.md.
 import Foundation
 import CryptoKit
@@ -211,7 +211,7 @@ private final class Pair {
     }
 
     /// Mutual trust and the device information read, up to the point the app starts its requests.
-    func authenticate(after first: [Frame]) throws {
+    func authenticate(after first: [Frame], version: UInt64? = nil) throws {
         precondition(first.count == 1 && first[0].channel == 0x8002)
         precondition(first[0].words == (first[0].words.count == 1 ? [0x02001000] : [0x81000024, 0x02001000]))
         try expect(try deliver(Frame(channel: 2, words: [0x03001000], payload: Data())).isEmpty)
@@ -221,7 +221,7 @@ private final class Pair {
         precondition(end[1].channel == 0x8001 && end[1].words == [0x02001000])
         let info = try deliver(Frame(channel: 0x8001, words: [0x02001000], payload: PB.field(1, 1) + PB.field(2, Data(repeating: 4, count: 16))))
         precondition(info.count == 1 && info[0].channel == 0x8003 && info[0].words == [0x8100ce56, 0x02000314])
-        let about = PB.field(2, Data("fw".utf8)) + PB.field(3, Data("sw".utf8)) + PB.field(6, Data("SERIAL".utf8))
+        let about = PB.field(2, Data("fw".utf8)) + PB.field(3, Data("sw".utf8)) + PB.field(6, Data("SERIAL".utf8)) + (version.map { PB.field(15, $0) } ?? Data())
         try deliver(Frame(channel: 3, words: [0x02000315], payload: PB.field(1, Fields(info[0].payload).integer(1)) + PB.field(2, 1) + PB.field(4, about)))
         precondition(host.stage == "ready")
     }
@@ -284,6 +284,7 @@ struct BandLinkTests {
         print("Sessions passed: trust, device information, streams, gestures, motion, EMG, wrist setting, vibration, named settings and update status on early and late firmware, whole, bytewise and with frames cut across records.")
 
         try recording()
+        try streams()
         try enrollment()
         try refusals()
         print("Band link checks passed.")
@@ -524,6 +525,43 @@ struct BandLinkTests {
         }
         precondition(Array(pair.log.suffix(expected.count)) == expected)
         print("Recording passed: \(expected.count) gestures recorded on late firmware read back through the late link.")
+    }
+
+    /// How streams are asked for, by the protocol version the band reports about itself.
+    static func streams() throws {
+        let flags = BandProtocol.streamFlags(gyro: true, orientation: false)
+        for version: UInt64 in [0, 1] { precondition(BandStreams.request(flags, version: version) == flags, "Earlier bands get the request they always got") }
+        precondition(BandStreams.version(from: PB.field(4, PB.field(2, Data("fw".utf8)))) == 1 && BandStreams.version(from: Data()) == 1)
+        precondition(BandStreams.version(from: PB.field(4, PB.field(15, 2))) == 2)
+        let listed = try Fields(BandStreams.request(flags, version: 2))
+        try expect(try listed.integer(3) == 1 && listed.integer(6) == 1 && listed.integer(8) == 0 && listed.integer(35) == 90)
+        precondition(listed.values[37].map { if case .bytes(2, let name) = $0[0] { return name == Data("GenericC50".utf8) } else { return false } } == true)
+        var entries: [UInt64: UInt64] = [:]
+        for case .bytes(2, let entry) in listed.values[36] ?? [] { let pair = try Fields(entry); entries[try pair.integer(1)] = try pair.integer(2) }
+        precondition(entries.count == 31 && entries[60] == 1 && entries[109] == 1 && entries[156] == 1 && entries[200] == 1 && entries[15] == 1 && entries[18] == 0 && entries[13] == nil)
+        precondition(BandStreams.isGesture(0x0200020d, version: 1) && BandStreams.isGesture(0x0200020d, version: 2))
+        for kind: UInt32 in [0x0200023c, 0x02000264, 0x020002c8] { precondition(BandStreams.isGesture(kind, version: 2) && !BandStreams.isGesture(kind, version: 1)) }
+        for kind: UInt32 in [0x0200020f, 0x02000212, 0x0200020a, 0x0200023b, 0x020002c9, 0x0200033c, 0x02000315] { precondition(!BandStreams.isGesture(kind, version: 2)) }
+
+        // A band on late firmware that reports version 2: the list goes out, the answer carries
+        // stream states where the switches were, and gestures come under their own kinds.
+        for version: UInt64 in [1, 2] {
+            let pair = try Pair(late: true)
+            try pair.authenticate(after: pair.handshake(), version: version)
+            let states = PB.field(35, PB.field(1, 60) + PB.field(2, 2)) + PB.field(35, PB.field(1, 200) + PB.field(2, 2))
+            let request = try pair.band.read(pair.host.request("start_streams", channel: 5, field: 4, payload: flags, now: pair.now))
+            let sent = try Fields(Fields(request[0].payload).bytes(4))
+            precondition((sent.values[36]?.count ?? 0) == (version == 2 ? 31 : 0))
+            try pair.deliver(Frame(channel: 5, words: [0x02000315], payload: PB.field(1, Fields(request[0].payload).integer(1)) + PB.field(2, 1) + PB.field(5, version == 2 ? states : flags)))
+            precondition(pair.log.last == "reply start_streams")
+            let tap = PB.field(1, 5) + PB.field(2, 500) + PB.field(3, 2) + PB.field(4, 3)
+            try pair.deliver(Frame(channel: 0x8005, words: [0x0200023c], payload: tap), Frame(channel: 0x8006, words: [0x020002c8], payload: tap), Frame(channel: 0x8007, words: [0x0200020d], payload: tap))
+            precondition(pair.log.filter { $0 == "gesture 2 3 0 false 5 500" }.count == (version == 2 ? 3 : 1))
+            let stop = try pair.band.read(pair.host.request("stop_streams", channel: 5, field: 4, payload: BandProtocol.stopFlags, now: pair.now + 1))
+            let stopped = try Fields(Fields(stop[0].payload).bytes(4))
+            precondition((stopped.values[36]?.count ?? 0) == (version == 2 ? 31 : 0))
+        }
+        print("Streams passed: the request by protocol version, the listed kinds, and gestures under their own kinds on version 2 only.")
     }
 
     /// Taking ownership of a band, which is the way back if a band ever refuses its saved owner.

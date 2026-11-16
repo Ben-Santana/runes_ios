@@ -32,6 +32,8 @@ final class BandProtocol {
     private var link = BandLink.original
     /// What the band offered and which rules were chosen, for the journal.
     private(set) var linkNote = ""
+    /// The protocol version the band reported about itself, which decides how streams are asked for.
+    private var version: UInt64 = 1
     private let clear = DataXReceiver(), frames = DataXReceiver()
     private var types: [UInt16: UInt32] = [:], pending: [UInt16: Pending] = [:], opened: Set<UInt16> = []
     private var nextID: UInt64 = 0
@@ -89,7 +91,8 @@ final class BandProtocol {
         if !words.isEmpty { types[channel] = nil; types[channel | 0x8000] = nil }
         opened.insert(channel)
         pending[channel] = Pending(operation: operation, id: nextID, deadline: now + (["wrist_feedback", "band_pattern"].contains(operation) ? 5 : 8), flags: ["start_streams", "stop_streams"].contains(operation) ? payload : nil)
-        return try encrypt(frame(channel | 0x8000, words, PB.field(1, nextID) + PB.field(field, payload)))
+        let body = pending[channel]?.flags == nil ? payload : BandStreams.request(payload, version: version)
+        return try encrypt(frame(channel | 0x8000, words, PB.field(1, nextID) + PB.field(field, body)))
     }
     func feed(_ input: Data, now: TimeInterval) throws -> (Data, [Signal]) {
         var signals = try tick(now: now)
@@ -213,16 +216,20 @@ final class BandProtocol {
             }
             guard try f.integer(2) == 1 else { throw BandError.wire("Band rejected \(p.operation).") }
             if p.operation == "device_info" {
-                _ = try Fields(f.bytes(4)); stage = "ready"; deadline = .infinity
+                _ = try Fields(f.bytes(4)); version = BandStreams.version(from: packet.payload); stage = "ready"; deadline = .infinity
                 return (Data(), [.reply(operation: p.operation, payload: packet.payload), .ready])
             }
             if let flags = p.flags {
-                let wanted = try Fields(flags), accepted = try Fields(f.bytes(5))
-                if try wanted.integer(2) == 1, try accepted.integer(2, default: 0) != 1 {
-                    return (Data(), [.emgUnavailable("Band acknowledged streams without EMG.")])
+                let wanted = try Fields(flags)
+                // A version 2 band answers with the state of each stream, so its switches are not compared.
+                if version < 2 {
+                    let accepted = try Fields(f.bytes(5))
+                    if try wanted.integer(2) == 1, try accepted.integer(2, default: 0) != 1 {
+                        return (Data(), [.emgUnavailable("Band acknowledged streams without EMG.")])
+                    }
+                    // A flag the band leaves out of its answer is off.
+                    for n in [2, 3, 6, 8] { guard try accepted.integer(n, default: 0) == wanted.integer(n) else { throw BandError.wire("Band stream acknowledgement differs from request.") } }
                 }
-                // A flag the band leaves out of its answer is off.
-                for n in [2, 3, 6, 8] { guard try accepted.integer(n, default: 0) == wanted.integer(n) else { throw BandError.wire("Band stream acknowledgement differs from request.") } }
                 gesturesEnabled = try wanted.integer(3) == 1
                 gyroEnabled = try wanted.integer(6) == 1
                 orientationEnabled = try wanted.integer(8) == 1
@@ -230,7 +237,7 @@ final class BandProtocol {
             }
             return (Data(), [.reply(operation: p.operation, payload: packet.payload)])
         }
-        if stage == "ready", gesturesEnabled, kind == 0x0200020d {
+        if stage == "ready", gesturesEnabled, BandStreams.isGesture(kind, version: version) {
             let f = try Fields(packet.payload), synthetic = try f.integer(12, default: 0)
             guard synthetic <= 1 else { throw BandError.wire("Invalid gesture synthetic flag.") }
             return (Data(), [.gesture(finger: try f.integer(3, default: 0), action: try f.integer(4, default: 0), derived: try f.integer(5, default: 0), synthetic: synthetic == 1, sequence: try f.integer(1), timestamp: try f.integer(2))])
