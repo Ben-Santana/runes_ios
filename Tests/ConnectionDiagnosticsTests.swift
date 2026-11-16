@@ -163,20 +163,31 @@ struct ConnectionDiagnosticsTests {
         let settings = PB.field(6, PB.field(6, 2) + PB.field(10, 1) + PB.field(46, PB.field(3, 1)) + PB.field(9, Data([0xff, 0xff])))
         precondition(BandSettings.describe(settings) == "6=2 9=bytes(2) 10=1 46={3=1}")
         precondition(BandSettings.describe(PB.field(2, 1)) == nil)
-        // The band's named settings: the three requests, and what is read from their answers.
-        precondition(NamedSettings.count(group: 2) == Data([0x0a, 0x02, 0x08, 0x02]))
-        precondition(NamedSettings.describe(group: 2, index: 5) == Data([0x12, 0x04, 0x08, 0x02, 0x10, 0x05]))
+        // The band's named settings: the requests, and what is read from their answers.
+        precondition(NamedSettings.count() == Data([0x0a, 0x02, 0x08, 0x02]))
+        precondition(NamedSettings.describe(index: 5) == Data([0x12, 0x04, 0x08, 0x02, 0x10, 0x05]))
+        precondition(NamedSettings.describe(index: 0) == NamedSettings.describe(index: 1))
         precondition(NamedSettings.read(id: 27) == Data([0x1a, 0x04, 0x08, 0x1b, 0x10, 0x00]))
+        precondition(NamedSettings.write(id: 22, value: 0) == Data([0x1a, 0x08, 0x08, 0x16, 0x10, 0x01, 0x1a, 0x02, 0x08, 0x00]))
         func named(_ part: Int, _ body: Data, status: UInt64 = 1) -> Data { PB.field(2, status) + PB.field(14, PB.field(part, body)) }
-        precondition(NamedSettings.count(from: named(1, PB.field(1, 12))) == 12)
+        precondition(NamedSettings.count(from: named(1, PB.field(1, 27))) == 27)
         precondition(NamedSettings.count(from: named(1, PB.field(1, 0))) == nil)
-        precondition(NamedSettings.count(from: named(1, PB.field(1, 12), status: 0)) == nil)
+        precondition(NamedSettings.count(from: named(1, PB.field(1, 27), status: 0)) == nil)
         precondition(NamedSettings.count(from: Data()) == nil)
-        let described = NamedSettings.name(from: named(2, PB.field(3, Data("data-collection".utf8)) + PB.field(4, 27)))
-        precondition(described?.id == 27 && described?.name == "data-collection")
-        precondition(NamedSettings.name(from: named(2, PB.field(4, 27))) == nil)
-        precondition(NamedSettings.value(from: named(3, PB.field(1, 27) + PB.field(8, PB.field(1, 1)))) == "1=27 8={1=1}")
-        precondition(NamedSettings.value(from: Data()) == nil)
+        let described = NamedSettings.setting(from: named(2, PB.field(3, Data("haptics".utf8)) + PB.field(4, 22) + PB.field(7, PB.field(1, 3) + PB.field(3, 3))))
+        precondition(described == NamedSettings.Setting(id: 22, name: "haptics", range: 0...3))
+        precondition(described?.writable == false)
+        precondition(NamedSettings.setting(from: named(2, PB.field(4, 22))) == nil)
+        // A whole number comes in field 4, and zero is an empty one. A yes or no comes in field 8.
+        let three = NamedSettings.value(of: 22, from: named(3, PB.field(1, 22) + PB.field(4, PB.field(1, 3))))
+        precondition(three?.kind == 4 && three?.value == 3 && three?.text == "1=22 4={1=3}")
+        let zero = NamedSettings.value(of: 21, from: named(3, PB.field(1, 21) + PB.field(4, Data())))
+        precondition(zero?.kind == 4 && zero?.value == 0)
+        precondition(NamedSettings.value(of: 11, from: named(3, PB.field(1, 11) + PB.field(8, PB.field(1, 1))))?.kind == 8)
+        // A refusal carries a status in field 3; an answer about another setting is not this one's.
+        precondition(NamedSettings.value(of: 23, from: named(3, PB.field(1, 23) + PB.field(3, 1))) == nil)
+        precondition(NamedSettings.value(of: 22, from: named(3, PB.field(1, 21) + PB.field(4, PB.field(1, 3)))) == nil)
+        precondition(NamedSettings.value(of: 22, from: Data()) == nil)
         let responses: [(Data, WristFeedbackResult)] = [
             // The band's real reply: status 1 and an empty result block, zero being left off the wire.
             (PB.field(2, 1) + PB.field(18, Data()), .accepted),

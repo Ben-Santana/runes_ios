@@ -118,7 +118,7 @@ final class SessionController: ObservableObject {
         core.onPattern = { pattern, result, note in
             Task { @MainActor in BandTests.shared.patternAnswer = "Pattern \(pattern): \(result.rawValue). \(note)" }
         }
-        core.onNamedSetting = { line in Task { @MainActor in BandTests.shared.named(line) } }
+        core.onNamedSetting = { setting, line in Task { @MainActor in BandTests.shared.named(setting, line) } }
         WorkoutStore.shared.onSound = { voice, volume in ScoreAudio.shared.cue(voice, volume: volume) }
         WorkoutStore.shared.onSoundsLive = { ScoreAudio.shared.setLive($0, for: "workout") }
         ScoreStore.shared.onReserve = { [weak self] in self?.reserve($0, for: .score) }
@@ -288,6 +288,9 @@ final class SessionController: ObservableObject {
     func vibrate(_ pulses: [BandPulse]) { core.transport.perform { [core] in core.play(pulses, name: "lab") } }
     func performBandPattern(_ pattern: UInt64) { core.transport.perform { [core] in core.perform(pattern: pattern) } }
     func readNamedSettings() { core.transport.perform { [core] in core.readNamedSettings() } }
+    func writeNamedSetting(_ setting: NamedSettings.Setting, value: UInt64) {
+        core.transport.perform { [core] in core.writeNamedSetting(setting, value: value) }
+    }
     func cancelWristFeedback(change: UUID) {
         core.transport.perform { [core] in core.cancelWristFeedback(change: change) }
     }
