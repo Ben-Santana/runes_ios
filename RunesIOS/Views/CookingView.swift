@@ -119,9 +119,10 @@ struct CookingView: View {
         let ringing = !rung.isEmpty
         VStack(spacing: 0) {
             // The hob look draws the recipe as its line of time, so a long wait ahead is seen coming.
+            // The rail look keeps its place down the side instead.
             Group {
                 if look == .hob { TimeLine(recipe: session.recipe, step: session.gathering ? -1 : session.step, finished: session.finished) }
-                else { StepProgress(count: session.count, step: session.step, finished: session.finished, height: 3) }
+                else if look != .rail { StepProgress(count: session.count, step: session.gathering ? -1 : session.step, finished: session.finished, height: look == .poster ? 2 : 3) }
             }
             .padding(.horizontal, Metric.gutter).padding(.top, 4)
             if let first = rung.first {
@@ -131,7 +132,23 @@ struct CookingView: View {
                     .padding(.top, 10)
                     .transition(reduceMotion ? .opacity : .wipe)
             }
+            HStack(spacing: 0) {
+            if look == .rail, !session.finished {
+                StepRail(session: session) { actions.go($0, nil) }.frame(width: 40).padding(.leading, 6).transition(.opacity)
+            }
             ZStack {
+                // The poster look sets the step's number behind its words, as large as the page.
+                if look == .poster, !session.finished, !session.gathering {
+                    Text(String(format: "%02d", session.step + 1))
+                        .font(.geist(236, .medium, relativeTo: .largeTitle)).monospacedDigit().tracking(-14)
+                        .foregroundStyle(Color.rule)
+                        .contentTransition(.numericText(value: Double(session.step)))
+                        .lineLimit(1).fixedSize()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                        .offset(x: 6, y: 44)
+                        .allowsHitTesting(false).accessibilityHidden(true)
+                        .transition(.opacity)
+                }
                 if session.finished { finished.transition(.opacity.combined(with: .scale(scale: 0.96))) }
                 else if session.gathering { gather.transition(.opacity) }
                 else { pages.transition(.opacity) }
@@ -153,8 +170,14 @@ struct CookingView: View {
             .animation(.standard, value: dialing != nil)
             .animation(.standard, value: asking)
             .animation(reduceMotion ? nil : .entrance, value: session.gathering)
+            .animation(reduceMotion ? nil : .entrance, value: session.step)
+            }
             if !session.finished { NextPeek(session: session) }
-            if look == .hob { Hob(session: session, actions: actions) } else { TimerShelf(session: session, actions: actions) }
+            switch look {
+            case .hob: Hob(session: session, actions: actions)
+            case .numbers: TimerShelf(session: session, actions: actions)
+            case .rail, .poster: TimerBars(session: session, actions: actions)
+            }
             legend(ringing: ringing, now: now).padding(.top, 16).padding(.bottom, 10).padding(.horizontal, 12)
             if session.finished {
                 Button(action: actions.done) { Text("Done") }.buttonStyle(CapsuleAction(filled: true))
@@ -795,10 +818,46 @@ extension PreviewFixtures {
             session.apply(.timerDown, at: now)
         }
         if name == "cooking-salmon-done" { session.go(to: session.count - 1); session.apply(.next, at: now) }
-        return CookStore(preview: Recipe.samples, session: session, cookingLook: name == "cooking-salmon-numbers" ? .numbers : .hob,
+        let look: CookingLook = name.hasSuffix("numbers") ? .numbers : name.hasSuffix("rail") ? .rail : name.hasSuffix("poster") ? .poster : .hob
+        if name.hasPrefix("demo") { session = CookSession(recipe: .salmonPasta, at: now, gather: true) }
+        return CookStore(preview: Recipe.samples, session: session, cookingLook: look,
                          dialing: name == "cooking-dial" ? 450 : name == "cooking-servings" ? 6 : nil,
                          asking: name == "cooking-ask" ? .listening : name == "cooking-answer"
                             ? .answered(question: "How much garlic goes in now?", answer: "Three cloves, minced, with the peas and the spinach. The other two go in the sauce at the next step.") : .idle)
+    }
+
+    /// The same walkthrough for every look, so recordings of them can be set side by
+    /// side: get ready, set servings, three steps with their timers, the dial, a
+    /// question, and a timer whose time is up.
+    @MainActor static func walkthrough(_ store: CookStore) async {
+        func wait(_ seconds: Double) async { try? await Task.sleep(for: .seconds(seconds)) }
+        await wait(2)
+        for _ in 0..<3 { store.perform(.timer); await wait(0.5) }
+        store.demoDial(true); await wait(0.6)
+        for _ in 0..<2 { store.turn(15); await wait(0.5) }
+        await wait(0.5); store.demoDial(false); await wait(1.2)
+        store.perform(.next); await wait(1.6)
+        store.perform(.timer); await wait(1.2)
+        store.perform(.next); await wait(1.4)
+        store.perform(.timer); await wait(1.2)
+        store.perform(.next); await wait(1.6)
+        store.perform(.timer); await wait(1)
+        store.perform(.timerDown); await wait(0.9)
+        store.perform(.timerDown); await wait(0.9)
+        store.perform(.timerUp); store.perform(.timerUp); await wait(0.8)
+        store.demoDial(true); await wait(0.6)
+        for _ in 0..<12 { store.turn(4); await wait(0.12) }
+        for _ in 0..<4 { store.turn(-4); await wait(0.18) }
+        await wait(0.6); store.demoDial(false); await wait(1.4)
+        store.assistant.show(.listening, level: 0.2); await wait(0.5)
+        for level in [0.7, 0.4, 0.9, 0.5, 0.2] as [Float] { store.assistant.show(.listening, level: level); await wait(0.25) }
+        store.assistant.show(.thinking(question: "How much garlic goes in now?")); await wait(0.9)
+        store.assistant.show(.answered(question: "How much garlic goes in now?", answer: "Three cloves, minced, with the peas and the spinach. The other two go in the sauce at the next step."))
+        await wait(3.4)
+        store.assistant.show(.idle); await wait(1)
+        store.demoExpire(); await wait(3)
+        store.stopRinging(); await wait(1.2)
+        store.perform(.next); await wait(2)
     }
 
     /// Recipes with nothing cooking, some cooked before.

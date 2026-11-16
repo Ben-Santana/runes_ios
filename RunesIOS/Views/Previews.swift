@@ -116,7 +116,10 @@ struct SnapshotGallery: View {
             NavigationStack { CookScreen(store: name == "cook-idle" ? PreviewFixtures.cookShelf() : PreviewFixtures.cook(listLook: name == "cook" ? .contents : .ledger), path: .constant([])) }
         } else if name == "recipe" || name == "recipe-salmon" {
             NavigationStack { RecipeScreen(store: PreviewFixtures.cookShelf(), recipeID: name == "recipe" ? Recipe.starter.id : Recipe.salmonPasta.id, path: .constant([])) }
-        } else if ["cooking-salmon", "cooking-salmon-ringing", "cooking-salmon-numbers", "cooking-picked", "cooking-salmon-done", "cooking-dial", "cooking-ask", "cooking-answer", "cooking-gather", "cooking-servings"].contains(name) {
+        } else if name.hasPrefix("demo") {
+            let store = PreviewFixtures.cookSalmon(name)
+            NavigationStack { CookingScreen(store: store) }.task { await PreviewFixtures.walkthrough(store) }
+        } else if ["cooking-salmon-rail", "cooking-salmon-poster", "cooking-salmon", "cooking-salmon-ringing", "cooking-salmon-numbers", "cooking-picked", "cooking-salmon-done", "cooking-dial", "cooking-ask", "cooking-answer", "cooking-gather", "cooking-servings"].contains(name) {
             NavigationStack { CookingScreen(store: PreviewFixtures.cookSalmon(name)) }
         } else if name == "cooking-numbers" || name == "cooking-numbers-ringing" {
             NavigationStack { CookingScreen(store: PreviewFixtures.cook(step: name == "cooking-numbers" ? 2 : 1, ringing: name != "cooking-numbers", cookingLook: .numbers)) }
