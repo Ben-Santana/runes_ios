@@ -17,6 +17,8 @@ final class CookAssistant: NSObject, ObservableObject, AVSpeechSynthesizerDelega
     }
 
     @Published private(set) var phase = Phase.idle
+    /// How loud the voice is while listening, 0 to 1.
+    @Published private(set) var level: Float = 0
     /// Whether an answer is said aloud as well as shown.
     var speaks = true
     /// The recipe being cooked when the answer is worked out.
@@ -34,6 +36,7 @@ final class CookAssistant: NSObject, ObservableObject, AVSpeechSynthesizerDelega
     override init() {
         super.init()
         voice.delegate = self
+        recorder.onLevel = { [weak self] level in Task { @MainActor in self?.level = level } }
     }
 
     #if DEBUG
@@ -65,6 +68,7 @@ final class CookAssistant: NSObject, ObservableObject, AVSpeechSynthesizerDelega
                 try recorder.start()
                 try? FileManager.default.removeItem(at: Self.clip)
                 try recorder.begin(to: Self.clip, preroll: 0)
+                recorder.measuresLevel = true
             } catch {
                 closeMicrophone()
                 fail("The microphone couldn’t be opened.")
@@ -149,7 +153,16 @@ final class CookAssistant: NSObject, ObservableObject, AVSpeechSynthesizerDelega
         }
     }
 
+    /// Says a step as it arrives, unless a question is in the way.
+    func read(_ text: String) {
+        guard phase == .idle else { return }
+        if voice.isSpeaking { voice.stopSpeaking(at: .immediate) }
+        say(text)
+    }
+
     private func closeMicrophone() {
+        recorder.measuresLevel = false
+        level = 0
         recorder.stop()
         AudioHub.setMicrophone(nil)
         AudioHub.release(Self.microphone)

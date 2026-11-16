@@ -45,6 +45,7 @@ final class CookStore: ObservableObject {
         var buzz: String?
         var dial: Bool?
         var spoken: Bool?
+        var reads: Bool?
         var listLook: String?
         var cookingLook: String?
     }
@@ -62,8 +63,12 @@ final class CookStore: ObservableObject {
     let assistant: CookAssistant
     /// Whether its answers are said aloud as well as shown.
     @Published private(set) var spoken: Bool
-    /// The time the dial shows while the pinch is held.
+    /// Whether each step is said aloud as it arrives.
+    @Published private(set) var reads: Bool
+    /// What the dial shows while the pinch is held: seconds on a timer, or people to cook
+    /// for while the ingredients are being got out.
     @Published private(set) var dialing: Int?
+    private var servingTurn = 0.0
     /// Told to start and stop reading the wrist's turn.
     var onDial: ((Bool) -> Void)?
     private var dialTime = DialTime()
@@ -145,6 +150,7 @@ final class CookStore: ObservableObject {
         buzz = saved.buzz.flatMap(CookBuzz.init) ?? .timers
         dial = saved.dial ?? true
         spoken = saved.spoken ?? true
+        reads = saved.reads ?? false
         assistant = CookAssistant()
         listLook = saved.listLook.flatMap(CookListLook.init) ?? .contents
         cookingLook = saved.cookingLook.flatMap(CookingLook.init) ?? .hob
@@ -171,7 +177,7 @@ final class CookStore: ObservableObject {
     init(preview recipes: [Recipe], session: CookSession? = nil, listLook: CookListLook = .contents, cookingLook: CookingLook = .hob, dialing: Int? = nil,
          asking: CookAssistant.Phase = .idle) {
         self.recipes = recipes; controls = .standard; sounds = true; buzz = .timers; dial = true; self.dialing = dialing
-        spoken = true; assistant = CookAssistant(preview: asking)
+        spoken = true; reads = false; assistant = CookAssistant(preview: asking)
         self.listLook = listLook; self.cookingLook = cookingLook; self.session = session; previewOnly = true
     }
     #endif
@@ -209,6 +215,7 @@ final class CookStore: ObservableObject {
     func setSounds(_ on: Bool) { sounds = on; persist() }
     func setBuzz(_ value: CookBuzz) { buzz = value; persist() }
     func setSpoken(_ on: Bool) { spoken = on; assistant.speaks = on; persist() }
+    func setReads(_ on: Bool) { reads = on; persist() }
     func setDial(_ on: Bool) {
         dial = on; persist(); motionChanged()
         if !previewOnly { onReserve?(reservedNow) }
@@ -246,7 +253,8 @@ final class CookStore: ObservableObject {
     func start(_ recipe: Recipe, ready: Set<Int> = []) {
         guard recipe.isUsable else { return }
         if session != nil { end() }
-        var fresh = CookSession(recipe: recipe)
+        // With things still to get out, cooking opens on the ingredients.
+        var fresh = CookSession(recipe: recipe, gather: ready.count < recipe.ingredients.count)
         for index in ready { fresh.toggle(ingredient: index) }
         session = fresh
         changed()
@@ -314,16 +322,27 @@ final class CookStore: ObservableObject {
 
     private func beginDial() {
         guard let session, !session.finished, dialing == nil else { return }
-        dialTime = DialTime()
-        dialing = session.dialSeconds(at: Date())
+        // Getting ready, the dial is how many to cook for.
+        if session.gathering { guard session.recipe.servings != nil else { return } }
+        dialTime = DialTime(); servingTurn = 0
+        dialing = session.gathering ? session.recipe.servings : session.dialSeconds(at: Date())
         onDial?(true)
         if buzz != .off { onBuzz?(.tap) }
     }
 
     /// Degrees the wrist turned while the pinch is held. Each step of the dial ticks.
     func turn(_ degrees: Double) {
-        guard let showing = dialing else { return }
-        let next = dialTime.turn(degrees, from: showing)
+        guard let showing = dialing, degrees.isFinite else { return }
+        var next = showing
+        if session?.gathering == true {
+            // A person for every fifteen degrees: coarse, since there are few to choose from.
+            servingTurn += degrees
+            let people = Int((servingTurn / 15).rounded(.towardZero))
+            servingTurn -= Double(people) * 15
+            next = min(99, max(1, showing + people))
+        } else {
+            next = dialTime.turn(degrees, from: showing)
+        }
         guard next != showing else { return }
         dialing = next
         if sounds { onCue?(.select) }
@@ -334,6 +353,11 @@ final class CookStore: ObservableObject {
         dialing = nil
         onDial?(false)
         guard var current = session else { return }
+        if current.gathering {
+            current.serve(seconds); session = current
+            changed()
+            return
+        }
         let target = current.selectedTimer
         guard let event = current.dial(to: seconds) else { return }
         session = current
@@ -407,7 +431,8 @@ final class CookStore: ObservableObject {
         let cue: CookCue
         switch event {
         case .step:
-            cue = .step; alert = LiveAlert(title: session.position, body: session.text)
+            cue = .step; alert = LiveAlert(title: session.position, body: session.gathering ? session.recipe.title : session.text)
+            if reads, !previewOnly, !session.gathering { assistant.read("Step \(session.step + 1). \(session.text)") }
         case .finished:
             cue = .finish; alert = LiveAlert(title: "Recipe finished", body: session.recipe.title)
         case .started(let timer):
@@ -561,7 +586,7 @@ final class CookStore: ObservableObject {
 
     private func persist() {
         guard !previewOnly else { return }
-        let saved = Saved(recipes: recipes, controls: controls, sounds: sounds, session: session, buzz: buzz.rawValue, dial: dial, spoken: spoken,
+        let saved = Saved(recipes: recipes, controls: controls, sounds: sounds, session: session, buzz: buzz.rawValue, dial: dial, spoken: spoken, reads: reads,
                           listLook: listLook.rawValue, cookingLook: cookingLook.rawValue)
         if let data = try? JSONEncoder().encode(saved) { UserDefaults.standard.set(data, forKey: Self.key) }
     }
