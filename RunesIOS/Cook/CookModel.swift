@@ -157,6 +157,21 @@ enum CookEvent: Equatable, Sendable {
     case selected(Int)
 }
 
+extension CookEvent {
+    /// How it feels on the wrist, so what happened is known without looking: a tap for a
+    /// page, a rise for a timer starting, a fade for one pausing, a flutter for one cleared.
+    var wrist: BandBuzz {
+        switch self {
+        case .step, .selected, .extended: .tap
+        case .started, .resumed: .rise
+        case .paused: .fade
+        case .reset: .flutter
+        case .stopped: .buzz
+        case .finished: .heartbeat
+        }
+    }
+}
+
 struct CookSession: Codable, Equatable, Sendable {
     var recipe: Recipe
     private(set) var step = 0
@@ -175,6 +190,9 @@ struct CookSession: Codable, Equatable, Sendable {
     private var cursor: Int? = nil
     /// The recipe as it was when cooking began, once the servings have been changed since.
     private var written: Recipe? = nil
+    /// Read a sentence at a time: next and previous move through a step's sentences first.
+    private var pacing: Bool? = nil
+    private var beat: Int? = nil
 
     /// `gather` opens on the ingredients, to tick off as they are got out, before step one.
     init(recipe: Recipe, at now: Date = Date(), gather: Bool = false) {
@@ -185,6 +203,16 @@ struct CookSession: Codable, Equatable, Sendable {
     var count: Int { recipe.steps.count }
     var text: String { recipe.steps.indices.contains(step) ? recipe.steps[step] : "" }
     var isLast: Bool { step >= count - 1 }
+    /// Whether a step is read one sentence at a time, each a thing to do before the next.
+    var paced: Bool {
+        get { pacing == true }
+        set { pacing = newValue ? true : nil; if !newValue { beat = nil } }
+    }
+    /// The sentences of the step showing.
+    var beats: [String] { let parts = RecipeParser.sentences(text); return parts.isEmpty ? [text] : parts }
+    /// Which of them is showing, when paced.
+    var beatIndex: Int { min(max(beat ?? 0, 0), max(0, beats.count - 1)) }
+
     /// Getting ready: the ingredients are showing, not a step.
     var gathering: Bool { getting == true }
     /// The ingredient the gestures are on while getting ready.
@@ -229,15 +257,19 @@ struct CookSession: Codable, Equatable, Sendable {
         case .next:
             guard !finished else { return nil }
             if gathering { getting = nil; return .step(step) }
+            if paced, beatIndex < beats.count - 1 { beat = beatIndex + 1; return .step(step) }
             if isLast { finished = true; return .finished }
-            step += 1; chosen = nil; picked = nil
+            step += 1; chosen = nil; picked = nil; beat = nil
             return .step(step)
         case .previous:
             if finished { finished = false; return .step(step) }
+            if paced, !gathering, beatIndex > 0 { beat = beatIndex - 1; return .step(step) }
             // Back from the first step is the ingredients again.
             if step == 0, !gathering, !recipe.ingredients.isEmpty { getting = true; picked = nil; return .step(step) }
             guard step > 0 else { return nil }
             step -= 1; chosen = nil; picked = nil
+            // Going back arrives at the end of the step before, where the cook just was.
+            beat = paced ? beats.count - 1 : nil
             return .step(step)
         case .timer:
             // A ringing timer is the urgent thing, whichever step is showing.
@@ -397,7 +429,7 @@ struct CookSession: Codable, Equatable, Sendable {
     /// Shows a step, with one of its times selected.
     mutating func go(to index: Int, slot: Int? = nil) {
         guard recipe.steps.indices.contains(index) else { return }
-        step = index; finished = false; chosen = slot; picked = nil; getting = nil
+        step = index; finished = false; chosen = slot; picked = nil; getting = nil; beat = nil
     }
 
     /// Cooks for another number of people. Amounts in the list and in the steps follow;

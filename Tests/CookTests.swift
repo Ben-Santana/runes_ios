@@ -190,6 +190,7 @@ struct CookTests {
         precondition(uses(.salmonPasta, 1) == ["8 oz protein penne", "12 oz frozen broccoli florets"], "\(uses(.salmonPasta, 1))")
         precondition(uses(.salmonPasta, 2) == ["8 oz sliced mushrooms", "1 cup frozen green peas", "5 oz baby spinach", "1 tsp Italian seasoning"], "\(uses(.salmonPasta, 2))")
         precondition(uses(.salmonPasta, 3) == ["16 oz 2% cottage cheese", "25 g Parmesan", "½ cup low-sodium vegetable broth"], "\(uses(.salmonPasta, 3))")
+        precondition(Ingredients.uses(in: "Stir in the butter.", of: ["100 g butter, divided"]).map(\.text) == ["100 g butter (divided)"], "Only part of it goes in here")
         // Scaled, a step's own amounts follow; its times and temperatures don't.
         let big = Recipe.salmonPasta.scaled(by: 2)
         precondition(big.steps[0].hasPrefix("Mix 2 tsp smoked paprika, 2 tsp garlic powder, 1 tsp salt, 1 tsp black pepper") && big.steps[0].contains("390°F for 8–12 minutes"), big.steps[0])
@@ -418,6 +419,28 @@ struct CookTests {
         precondition(try! JSONDecoder().decode(CookSession.self, from: try! JSONEncoder().encode(ready)) == ready)
         precondition(!CookSession(recipe: Recipe(title: "x", ingredients: [], steps: ["Eat."]), at: t0, gather: true).gathering, "Nothing to get out")
         precondition(CookAsk.context(CookSession(recipe: .starter, at: t0, gather: true), at: t0).contains("Now: the cook is getting the ingredients out."))
+
+        // MARK: A sentence at a time
+        var paced = CookSession(recipe: .starter, at: t0)
+        paced.paced = true
+        paced.go(to: 1)
+        precondition(paced.beats.count == 2 && paced.beatIndex == 0 && paced.beats[1].hasPrefix("Add the garlic"), "\(paced.beats)")
+        precondition(paced.apply(.next, at: t0) == .step(1) && paced.beatIndex == 1 && paced.step == 1, "Next is the step's next sentence")
+        precondition(paced.apply(.next, at: t0) == .step(2) && paced.beatIndex == 0, "and after its last, the next step")
+        precondition(paced.apply(.previous, at: t0) == .step(1) && paced.beatIndex == 1, "Back arrives where the cook just was")
+        precondition(paced.apply(.previous, at: t0) == .step(1) && paced.beatIndex == 0 && paced.durations.count == 1, "The step's timers stay the step's")
+        paced.paced = false
+        precondition(paced.apply(.next, at: t0) == .step(2) && paced.beatIndex == 0)
+        precondition(try! JSONDecoder().decode(CookSession.self, from: try! JSONEncoder().encode(paced)) == paced)
+
+        // MARK: The wrist, felt
+        precondition(DialTime.count(0) == [] && DialTime.count(40) == [.tap] && DialTime.count(7 * 60) == [.long, .tap, .tap] && DialTime.count(15 * 60 + 1) == [.long, .long, .long, .tap])
+        precondition(CookEvent.step(1).wrist == .tap && CookEvent.reset.wrist == .flutter && CookEvent.finished.wrist == .heartbeat)
+
+        // What to start before step one.
+        precondition(StepDetails.headStarts(in: ["Chop the onions.", "Preheat the oven to 200°C. Line a tray.", "Meanwhile, bring a large pot of salted water to a boil.", "Heat the oven to 200°C again."])
+                     == ["Preheat the oven to 200°C", "Bring a large pot of salted water to a boil", "Heat the oven to 200°C again"])
+        precondition(StepDetails.headStarts(in: Recipe.starter.steps).isEmpty && StepDetails.headStarts(in: Recipe.salmonPasta.steps).isEmpty, "The first step is next anyway")
 
         // MARK: The wrist dial
         // Still, the sensor's offset is learned; held, a steady turn about one axis comes out in degrees.

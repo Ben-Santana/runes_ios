@@ -267,7 +267,9 @@ enum Ingredients {
         }
         return first.sorted { $0.value < $1.value }.map { entry in
             let line = split(ingredients[entry.key])
-            return StepUse(index: entry.key, text: [line.amount, line.short].compactMap { $0 }.joined(separator: " "))
+            // "Divided" means only part goes in here, the mistake cooks say they make most.
+            let divided = line.name.range(of: "divided", options: .caseInsensitive) != nil
+            return StepUse(index: entry.key, text: [line.amount, line.short].compactMap { $0 }.joined(separator: " ") + (divided ? " (divided)" : ""))
         }
     }
 }
@@ -283,6 +285,25 @@ enum StepDetails {
     /// Where a step names a temperature or a heat: "390°F", "medium-high heat".
     static func heat(in step: String) -> [NSRange] {
         heat.matches(in: step, range: NSRange(location: 0, length: (step as NSString).length)).map(\.range)
+    }
+
+    private static let headStart = try! NSRegularExpression(
+        pattern: #"\b(?:pre-?heat|heat)\s+(?:the\s+|your\s+|an?\s+)?(?:oven|grill|broiler|air fryer)\b[^.;]*|\bbring\s[^.;]{0,60}?\bto\s+(?:a\s+|the\s+)?(?:rolling\s+)?boil"#,
+        options: [.caseInsensitive])
+
+    /// What is worth starting before step one, because a later step needs it ready: an
+    /// oven to heat, water to bring to the boil. The first step is left out: it is next anyway.
+    static func headStarts(in steps: [String]) -> [String] {
+        var found: [String] = []
+        for step in steps.dropFirst() {
+            let ns = step as NSString
+            for match in headStart.matches(in: step, range: NSRange(location: 0, length: ns.length)) {
+                let phrase = ns.substring(with: match.range).trimmingCharacters(in: CharacterSet(charactersIn: " ,"))
+                let line = phrase.prefix(1).uppercased() + phrase.dropFirst()
+                if !found.contains(line) { found.append(line) }
+            }
+        }
+        return found
     }
 
     /// What to look for: "until fragrant but not coloured", with where it starts.

@@ -40,6 +40,16 @@ struct WristDial {
     }
 }
 
+extension DialTime {
+    /// A time as buzzes on the wrist, for asking how long is left without looking: a long
+    /// one for every five minutes, then a tap for each minute over. Part of a minute counts as one.
+    static func count(_ seconds: Int) -> [BandBuzz] {
+        guard seconds > 0 else { return [] }
+        let minutes = (seconds + 59) / 60
+        return Array(repeating: .long, count: min(12, minutes / 5)) + Array(repeating: .tap, count: minutes % 5)
+    }
+}
+
 /// Degrees of turn as time on a timer: small steps while the time is short, larger ones
 /// once it is long, so a quarter turn reaches a few minutes and fine times stay settable.
 struct DialTime {
