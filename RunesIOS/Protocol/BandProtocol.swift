@@ -13,6 +13,8 @@ final class BandProtocol {
         case emgUnavailable(String)
         case handUnavailable(String)
         case wristFeedback(WristFeedbackResult)
+        /// A frame that no request or stream here accounts for. Passed on only while `watchesOther` is set.
+        case other(kind: UInt32, channel: UInt16, payload: Data)
     }
     private struct Pending {
         let operation: String; let id: UInt64; let deadline: TimeInterval; let flags: Data?
@@ -38,6 +40,8 @@ final class BandProtocol {
     var wristFeedbackPending: Bool { pending[6]?.isWristFeedback == true }
     /// How the band last answered a wrist feedback request, for the journal.
     private(set) var feedbackNote = ""
+    /// Set while a test listens for whatever else the band sends.
+    var watchesOther = false
     init(identity: BandIdentity?, ceremony: OwnershipCeremony? = nil) throws {
         guard (identity == nil) != (ceremony == nil) else { throw BandError.authentication("Provide identity or explicit enrollment.") }
         self.identity = identity; self.ceremony = ceremony
@@ -183,7 +187,9 @@ final class BandProtocol {
         }
         if kind == 0x02000315, packet.channel & 0x8000 == 0 {
             let f = try Fields(packet.payload), id = try f.integer(1)
-            guard let p = pending[packet.channel], p.id == id else { return (Data(), []) }
+            guard let p = pending[packet.channel], p.id == id else {
+                return (Data(), watchesOther && stage == "ready" ? [.other(kind: kind, channel: packet.channel, payload: packet.payload)] : [])
+            }
             pending[packet.channel] = nil
             // EMG is optional: a refused configuration read is reported, never fatal.
             if p.operation == "emg_configuration" || p.isSettingRead { return (Data(), [.reply(operation: p.operation, payload: packet.payload)]) }
@@ -236,6 +242,7 @@ final class BandProtocol {
             let f = try Fields(packet.payload), bytes = try f.bytes(3, count: 256)
             return (Data(), [.emg(values: EMG.decode(bytes), sequence: try f.integer(1), timestamp: try f.integer(2))])
         }
+        if stage == "ready", watchesOther { return (Data(), [.other(kind: kind, channel: packet.channel, payload: packet.payload)]) }
         return (Data(), [])
     }
     private func result(_ packet: Frame, kind: UInt32) throws -> (Data, [Signal]) {
