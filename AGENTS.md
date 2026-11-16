@@ -89,6 +89,12 @@ of wireless deployment. Do not uninstall the app to repair an ordinary update.
   `Tests/ConnectionDiagnosticsTests.swift` uses ephemeral encrypted exchanges to
   distinguish trust rejection, invalid proof, timeout, and readiness. These
   offline tests do not perform Meta login or change a real band's ownership.
+- `Tests/BandLinkTests.swift` runs whole connections against a pretend band on early and
+  late firmware, with public vectors for both. Run it and the connection diagnostics after any
+  change to `Protocol/` or `Transport/`. Checks that compile `BandCrypto.swift` also need
+  `BandLink.swift`, and those that compile `BandProtocol.swift` also need `BandStreams.swift`.
+  `Documentation/FirmwareUpdate.md` holds the update flow, what is proven and what is not.
+  Nothing may send update data to a band without the confirmation described there.
 - Recovery requires explicit confirmation. Preserve saved credentials while
   staging enrollment; opening diagnostics or cancelling a dialog must not enroll.
 - Keep all `#Preview` declarations and fixtures within their debug guards.
