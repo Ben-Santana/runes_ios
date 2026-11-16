@@ -258,8 +258,11 @@ struct Ticket: View {
     let session: CookSession
     let plan: StationPlan
     let now: Date
-    /// The step's sentences as a row of beads, not a count in words.
+    /// The step's sentences as a row of beads, not a count in words, and the sentence set
+    /// with what to do first very large.
     var beads = false
+    /// Whether the wait before a start is printed on it.
+    var landing = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -278,15 +281,17 @@ struct Ticket: View {
             }
             .font(ticketFont(13, .semibold)).padding(.top, 12)
             VStack(alignment: .leading, spacing: 10) {
-                Text(sentence.uppercased())
-                    .font(ticketFont(sentence.count < 60 ? 24 : sentence.count < 110 ? 20 : 17, .bold)).lineSpacing(2)
-                    .minimumScaleFactor(0.7).fixedSize(horizontal: false, vertical: true)
+                if beads { TicketSetting(sentence: sentence) } else {
+                    Text(sentence.uppercased())
+                        .font(ticketFont(sentence.count < 60 ? 24 : sentence.count < 110 ? 20 : 17, .bold)).lineSpacing(2)
+                        .minimumScaleFactor(0.7).fixedSize(horizontal: false, vertical: true)
+                }
                 if !uses.isEmpty {
                     VStack(alignment: .leading, spacing: 2) { ForEach(uses.prefix(3), id: \.self) { Text($0.uppercased()) } }
                         .font(ticketFont(15))
                 }
                 // When to start this so it is done with what is already on.
-                if let landing = session.landing(at: now) {
+                if landing, let landing = session.landing(at: now) {
                     Text("START IN \(DurationFinder.clock(landing.wait)) · LANDS WITH \(landing.with.label.uppercased())")
                         .font(ticketFont(15, .semibold)).monospacedDigit()
                         .padding(.horizontal, 8).padding(.vertical, 5)
@@ -314,6 +319,52 @@ struct Ticket: View {
         .animation(reduceMotion ? nil : .entrance, value: index)
         .animation(reduceMotion ? nil : .entrance, value: session.step)
         .accessibilityElement(children: .combine)
+    }
+}
+
+/// A sentence of a step set the way a poster is: the word that says what to do, as large
+/// as the ticket is wide, and the rest under it with each time printed white on ink and
+/// each heat underlined, so both are found again at a glance from the stove.
+struct TicketSetting: View {
+    let sentence: String
+
+    /// The opening word, and "air fry" as the one thing it is.
+    private var parts: (head: String, rest: String) {
+        let words = sentence.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+        guard let first = words.first else { return ("", "") }
+        let take = words.count > 1 && first.lowercased() == "air" && words[1].lowercased().hasPrefix("fry") ? 2 : 1
+        let head = words.prefix(take).joined(separator: " ").trimmingCharacters(in: CharacterSet(charactersIn: ",;:."))
+        return (head, words.dropFirst(take).joined(separator: " "))
+    }
+
+    private func marked(_ rest: String) -> AttributedString {
+        var text = AttributedString(rest)
+        for heat in StepDetails.heat(in: rest) {
+            if let range = Range(heat, in: text) { text[range].underlineStyle = Text.LineStyle(pattern: .solid, color: Color.ink) }
+        }
+        for time in DurationFinder.find(in: rest) {
+            guard let range = Range(NSRange(location: time.location, length: time.length), in: text) else { continue }
+            text[range].backgroundColor = Color.ink
+            text[range].foregroundColor = Color.paper
+        }
+        return text
+    }
+
+    var body: some View {
+        let parts = parts
+        VStack(alignment: .leading, spacing: 2) {
+            // One width of letter, so the size that fills the line follows from the count.
+            Text(parts.head.uppercased())
+                .font(ticketFont(min(76, 520 / CGFloat(max(4, parts.head.count))), .black)).tracking(-2)
+                .lineLimit(1).minimumScaleFactor(0.4)
+            if !parts.rest.isEmpty {
+                Text(marked(parts.rest)).textCase(.uppercase)
+                    .font(ticketFont(parts.rest.count < 70 ? 21 : parts.rest.count < 120 ? 18 : 16, .bold)).lineSpacing(3)
+                    .minimumScaleFactor(0.75).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(sentence)
     }
 }
 

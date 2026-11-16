@@ -915,6 +915,12 @@ extension PreviewFixtures {
             session.apply(.timerDown, at: now)
         }
         if name.contains("done") { session.go(to: session.count - 1); session.apply(.next, at: now) }
+        if name.contains("now") {
+            // The fryer has less left than the penne takes: the boil is due.
+            session = CookSession(recipe: .salmonPasta, at: now)
+            session.start(step: 0, slot: 0, at: now.addingTimeInterval(-320))
+            session.go(to: 1)
+        }
         if name.contains("landing") {
             session = CookSession(recipe: .salmonPasta, at: now)
             session.start(step: 0, slot: 0, at: now.addingTimeInterval(-70))
