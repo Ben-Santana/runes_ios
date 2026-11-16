@@ -181,6 +181,12 @@ struct ConnectionDiagnosticsTests {
         precondition(GestureInterpreter.immediate(packet(derived: 2)) == nil)
         precondition(GestureInterpreter.immediate(packet(action: 3, derived: 0)) == nil)
         precondition(GestureInterpreter.immediate(packet(derived: 1, synthetic: true)) == nil)
+        // On touch the finger going down is answered and the tap that follows is not.
+        precondition(GestureInterpreter.immediate(packet(derived: 9), onTouch: true) == .tap)
+        precondition(GestureInterpreter.immediate(packet(derived: 1), onTouch: true) == nil)
+        precondition(GestureInterpreter.immediate(packet(derived: 9)) == nil)
+        precondition(GestureInterpreter.immediate(packet(derived: 3), onTouch: true) == .holdBegan)
+        precondition(GestureInterpreter.immediate(packet(derived: 8), onTouch: true) == .swipe(.right))
         precondition(BandGesture.Kind.holdBegan.answer.first!.duration > BandGesture.Kind.holdEnded.answer.first!.duration)
         precondition([BandGesture.Kind.tap, .holdBegan, .holdEnded, .swipe(.left)].allSatisfy { $0.answer.count == 1 && $0.answer[0].duration <= 150 })
         // Band tests: a gesture's acknowledgement, a stored pattern with its gap as a still segment, and stop.

@@ -802,10 +802,15 @@ struct GestureInterpreter: Sendable {
     /// each tap as it lands, without the wait that tells a double tap from two taps (the
     /// second tap of a double is a tap here too), a hold beginning or ending, and a swipe.
     /// Nil for the raw layer and for packets that are parts of a gesture.
-    static func immediate(_ event: GestureEvent) -> BandGesture.Kind? {
+    ///
+    /// The band reports a tap only once the finger has lifted, about a tenth of a second after
+    /// it touched. With `onTouch` the finger touching down is answered in its place, before the
+    /// band knows whether a tap or a hold is coming, so a hold starts with the same tick.
+    static func immediate(_ event: GestureEvent, onTouch: Bool = false) -> BandGesture.Kind? {
         guard event.stream == .derived, !event.synthetic else { return nil }
         switch event.derivedActionCode {
-        case 1: return .tap
+        case 1: return onTouch ? nil : .tap
+        case 9: return onTouch ? .tap : nil
         case 3: return .holdBegan
         case 10: return .holdEnded
         case 5: return .swipe(.up)
