@@ -189,7 +189,7 @@ struct CookingView: View {
             case .hob: Hob(session: session, actions: actions)
             case .numbers: TimerShelf(session: session, actions: actions)
             case .rail, .poster: TimerBars(session: session, actions: actions)
-            case .focus: TimerSlab(session: session, actions: actions)
+            case .focus: TimerPile(session: session, actions: actions)
             }
             legend(ringing: ringing, now: now).padding(.top, 16).padding(.bottom, 10).padding(.horizontal, 12)
             if session.finished {

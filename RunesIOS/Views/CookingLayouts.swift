@@ -229,12 +229,16 @@ struct FocusPage: View {
             }
             .padding(.bottom, 22)
             VStack(alignment: .leading, spacing: 22) {
-                Text(words(sentence))
-                    .font(.geist(size(sentence), .medium, relativeTo: .title)).tracking(-0.9).lineSpacing(1)
-                    .minimumScaleFactor(0.55).fixedSize(horizontal: false, vertical: false)
+                SetType(text: words(sentence), size: size(sentence))
                 if !uses.isEmpty {
-                    VStack(alignment: .leading, spacing: 4) { ForEach(uses, id: \.self) { Text($0) } }
-                        .font(.geist(22, relativeTo: .title3)).foregroundStyle(Color.muted)
+                    // The number first and in ink: it is what the eye comes back for.
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(uses, id: \.self) { use in
+                            let line = Ingredients.split(use)
+                            (Text(line.amount.map { $0 + " " } ?? "").foregroundStyle(Color.ink).fontWeight(.medium) + Text(line.name).foregroundStyle(Color.muted))
+                        }
+                    }
+                    .font(.geist(22, relativeTo: .title3)).monospacedDigit()
                 }
             }
             .id("\(session.step).\(index)")
@@ -259,6 +263,164 @@ struct FocusPage: View {
             if let range = Range(heat, in: result) { result[range].underlineStyle = Text.LineStyle(pattern: .solid, color: Color.muted) }
         }
         return result
+    }
+}
+
+/// A sentence that sets itself: each line rises into place a moment after the one above,
+/// once, when the sentence arrives.
+private struct SetType: View {
+    let text: AttributedString
+    let size: CGFloat
+    @State private var set = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Text(text)
+            .font(.geist(size, .medium, relativeTo: .title)).tracking(-0.9).lineSpacing(1)
+            .minimumScaleFactor(0.55)
+            .textRenderer(LineRise(progress: set || reduceMotion ? 1 : 0))
+            .onAppear { withAnimation(.easeOut(duration: 0.5)) { set = true } }
+    }
+}
+
+private struct LineRise: TextRenderer, Animatable {
+    var progress: Double
+    var animatableData: Double {
+        get { progress }
+        set { progress = newValue }
+    }
+
+    func draw(layout: Text.Layout, in context: inout GraphicsContext) {
+        let lines = Array(layout)
+        // Each line starts a little after the one before and takes the same time to arrive.
+        let lag = 0.16, span = 1 + lag * Double(max(0, lines.count - 1))
+        for (index, line) in lines.enumerated() {
+            let arrived = min(1, max(0, progress * span - lag * Double(index)))
+            var copy = context
+            copy.opacity = arrived
+            copy.translateBy(x: 0, y: (1 - arrived) * 18)
+            copy.draw(line)
+        }
+    }
+}
+
+/// Everything on the go at once, as a pile of blocks across the foot of the screen. What
+/// is due soonest is at the bottom and the largest, so the size of a block says how soon
+/// it wants attention. A time not started yet is an outline; one that is counting floods
+/// with ink from the leading edge, and a line along its foot simmers while it counts,
+/// harder in its last minute, and shortens as the time goes. Touch is the hob's.
+struct TimerPile: View {
+    let session: CookSession
+    let actions: CookActions
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        let hob = Hob(session: session, actions: actions)
+        TimelineView(.periodic(from: .now, by: 0.5)) { context in
+            let now = context.date
+            let pots = hob.pots
+            // Waiting ones on top, then the counting ones, the most time left first.
+            let order = pots.filter { $0.timer == nil } + pots.filter { $0.timer != nil }.sorted { left($0, now) > left($1, now) }
+            let shown = Array(order.suffix(4))
+            VStack(spacing: 3) {
+                ForEach(Array(shown.enumerated()), id: \.element.id) { index, pot in
+                    block(pot, rank: shown.count - 1 - index, selected: pots.count > 1 && !session.finished && hob.selected(pot), now: now)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+            .padding(.top, shown.isEmpty ? 0 : 6)
+            .animation(.entrance, value: shown.map(\.id))
+        }
+    }
+
+    private func left(_ pot: Hob.Pot, _ now: Date) -> Int {
+        pot.timer.map { $0.isRinging(at: now) ? 0 : $0.remaining(at: now) } ?? pot.seconds
+    }
+
+    private func block(_ pot: Hob.Pot, rank: Int, selected: Bool, now: Date) -> some View {
+        let timer = pot.timer
+        let ringing = timer?.isRinging(at: now) ?? false, paused = timer?.isPaused ?? false
+        let counting = timer != nil && !paused
+        let seconds = left(pot, now)
+        let remaining = timer.map { 1 - $0.progress(at: now) } ?? 1
+        let own = pot.step == session.step && !session.finished
+        let height: CGFloat = rank == 0 ? 108 : rank == 1 ? 62 : 46
+        let digits: CGFloat = rank == 0 ? 62 : rank == 1 ? 32 : 22
+        return HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(pot.label).font(rank == 0 ? .heading : .label).lineLimit(1)
+                if rank < 2 {
+                    Text(ringing ? "Time’s up" : paused ? "Paused" : timer == nil ? "Ready" : own ? "Counting" : "Step \(pot.step + 1)")
+                        .font(.caption).opacity(0.7)
+                }
+            }
+            Spacer(minLength: 8)
+            Text(DurationFinder.clock(seconds))
+                .font(.geist(digits, .medium, relativeTo: .largeTitle)).monospacedDigit().tracking(-digits * 0.04)
+                .lineLimit(1).minimumScaleFactor(0.5)
+                .contentTransition(.numericText(countsDown: true)).animation(.standard, value: seconds)
+        }
+        .foregroundStyle(counting ? Color.paper : Color.ink)
+        .padding(.leading, Metric.gutter + (selected ? 8 : 0)).padding(.trailing, Metric.gutter)
+        .frame(height: height)
+        .background {
+            // Ink floods in from the leading edge when the timer starts.
+            Rectangle().fill(Color.ink).scaleEffect(x: counting ? 1 : 0, anchor: .leading)
+            Rectangle().strokeBorder(Color.ink, lineWidth: 1.5).opacity(counting ? 0 : 1)
+        }
+        .overlay(alignment: .leading) {
+            // The one the band's gestures act on.
+            Rectangle().fill(counting ? Color.paper : Color.ink).frame(width: 5).padding(.vertical, 10).padding(.leading, 9).opacity(selected ? 1 : 0)
+        }
+        .overlay(alignment: .bottom) {
+            if counting, !ringing {
+                Simmer(remaining: remaining, urgent: seconds <= 60, still: reduceMotion)
+                    .frame(height: 10).padding(.horizontal, Metric.gutter).padding(.bottom, rank == 0 ? 10 : 3)
+            }
+        }
+        .animation(.entrance, value: counting)
+        .animation(.entrance, value: rank)
+        .animation(.standard, value: selected)
+        .contentShape(Rectangle())
+        .onTapGesture { if let timer { actions.toggleTimer(timer.id) } else { actions.toggle(pot.slot) } }
+        .onLongPressGesture(minimumDuration: 0.5) { if let timer { actions.cancelTimer(timer.id) } }
+        .simultaneousGesture(DragGesture(minimumDistance: 20).onEnded { value in
+            let t = value.translation
+            if let timer, t.height < -30, abs(t.height) > abs(t.width) * 1.2 { actions.addMinute(timer.id) }
+        })
+        .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+        .accessibilityLabel("\(pot.label), step \(pot.step + 1), \(ringing ? "time’s up" : paused ? "paused at \(DurationFinder.short(seconds))" : timer == nil ? "\(DurationFinder.short(seconds)), not started" : "\(DurationFinder.short(seconds)) left")")
+    }
+}
+
+/// A line that simmers: a slow ripple while a timer counts, quicker and taller in its
+/// last minute, as long as the share of time that is left. It is the one thing in Cook
+/// that moves by itself, because it stands for something that is cooking by itself.
+/// With Reduce Motion it is a straight line.
+private struct Simmer: View {
+    let remaining: Double
+    let urgent: Bool
+    let still: Bool
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: still)) { context in
+            Canvas { canvas, size in
+                let phase = still ? 0 : context.date.timeIntervalSinceReferenceDate * (urgent ? 7 : 2.4)
+                let height = still ? 0 : (urgent ? 3.2 : 1.6)
+                let width = size.width * min(1, max(0, remaining)), middle = size.height / 2
+                var path = Path()
+                path.move(to: CGPoint(x: 0, y: middle))
+                var x: CGFloat = 0
+                while x <= width {
+                    let y = middle + height * (sin(Double(x) / 9 + phase) * 0.7 + sin(Double(x) / 23 - phase * 0.6) * 0.3)
+                    path.addLine(to: CGPoint(x: x, y: y))
+                    x += 3
+                }
+                canvas.stroke(path, with: .color(Color.paper), style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+            }
+        }
+        .accessibilityHidden(true)
     }
 }
 

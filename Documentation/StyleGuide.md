@@ -129,6 +129,8 @@ one sentence, one hairline button.
 | `TimeLine` | CookView | A recipe as a line of time: a tick where each step begins, a hairline as long as a timed step's time; draws in once |
 | `Hob` | CookingLayouts | A fixed row of four rings for every timer still going: ink for this step's, muted for others', a second ring round the selected one, a solid disc when the time is up |
 | `TimerDial` | CookingLayouts | The wrist dial while the pinch is held: a ring of sixty ticks that turns one tick a step under a fixed mark, round the time being set |
+| `FocusPage`, `TimerPile` | CookingLayouts | Cook's focus look: one sentence set as large as it goes, over a pile of blocks for everything on the go, the soonest due at the bottom and the largest. An outline waits, solid ink counts |
+| `Simmer` | CookingLayouts | The one exception to "nothing moves by itself": a line along a counting timer's foot ripples while it counts, harder in its last minute. Reduce Motion makes it straight |
 | `GatherPage` | CookingLayouts | The ingredients before step one, large, with an ink mark at the leading edge on the line the band is on |
 | `AskCard` | CookingLayouts | A question and its answer in the step's place: what was heard, a hairline, the answer in large type |
 | `TimeUpBand` | CookingLayouts | Ink across the top while a timer's time is up; draws in from the leading edge and holds still |
