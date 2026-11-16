@@ -4,6 +4,8 @@ struct SettingsValues {
     var bandSetUp = true
     var battery: Int?
     var handSetting = HandSetting()
+    /// Whether the band is set to stay quiet on gestures. Nil until the band has said.
+    var bandQuietOnGestures: Bool?
     var band: UUID?
     var canChangeHand = false
     var macs: [MacLinks.Mac] = []
@@ -32,6 +34,16 @@ struct SettingsView<Advanced: View>: View {
     @AppStorage(Preferences.batteryAlerts) private var batteryAlerts = false
     @AppStorage(Preferences.bandAnswers) private var bandAnswers = true
     @State private var confirmForget = false
+
+    /// Who buzzes the band on a gesture right now: Runes, the band itself, or nobody.
+    private var bandBuzzNote: String {
+        switch (values.bandQuietOnGestures, bandAnswers) {
+        case (true?, true): "Now: Runes buzzes your band when it hears a gesture. The band's own buzz is off."
+        case (true?, false): "Now: no buzz. The band's own is off, and Runes is not sending one."
+        case (false?, _): "Now: the band buzzes by itself, so Runes sends nothing."
+        case (nil, _): "Runes buzzes your band when it hears a gesture, while the band is set to stay quiet by itself."
+        }
+    }
     @State private var scanningMac = false
     @State private var macToRemove: MacLinks.Mac?
     @State private var scanProblem: String?
@@ -87,7 +99,7 @@ struct SettingsView<Advanced: View>: View {
                         Toggle(isOn: $haptics) { label("Haptics on gesture", "A light tap when a gesture arrives while Runes is open.") }
                             .padding(.horizontal, Metric.inset).padding(.vertical, 10)
                         Rule()
-                        Toggle(isOn: $bandAnswers) { label("Band buzz on gesture", "Runes buzzes your band when it hears a gesture, while the band is set to stay quiet by itself.") }
+                        Toggle(isOn: $bandAnswers) { label("Band buzz on gesture", bandBuzzNote) }
                             .padding(.horizontal, Metric.inset).padding(.vertical, 10)
                         Rule()
                         Toggle(isOn: $batteryAlerts) { label("Band battery alerts", "A notification when the band drops to 20%.") }
@@ -170,6 +182,7 @@ struct SettingsScreen: View {
         SettingsView(values: SettingsValues(bandSetUp: controller.snapshot.selected != nil,
                                             battery: controller.snapshot.battery,
                                             handSetting: controller.snapshot.handSetting,
+                                            bandQuietOnGestures: controller.snapshot.bandQuietOnGestures,
                                             band: controller.snapshot.selected,
                                             canChangeHand: controller.snapshot.state == .streaming,
                                             macs: links.macs, macPairing: links.pairing),

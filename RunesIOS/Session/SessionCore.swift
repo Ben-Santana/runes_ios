@@ -89,8 +89,6 @@ final class SessionCore: @unchecked Sendable {
     private var patternInFlight: UInt64?
     /// Whether the pattern playing is one to show on the screen edge.
     private var buzzShown = true
-    /// Whether the band is set to stay quiet on gestures. Nil until the band has said.
-    private var bandQuietOnGestures: Bool?
     /// Where the read of the named settings has got to: how many there are, the place in the list, and the setting just described.
     private var settingRead: (count: UInt64, index: UInt64, setting: NamedSettings.Setting?)?
     /// The named setting being written, until its value has been read back.
@@ -473,15 +471,15 @@ final class SessionCore: @unchecked Sendable {
     /// Sent only while the band is known to stay quiet on gestures, so nothing is felt twice.
     func answer(_ gesture: BandGesture.Kind) {
         // An answer that cannot go out at once is dropped: a late one would feel wrong.
-        guard bandQuietOnGestures == true, proto?.canSendWristFeedback == true else { return }
+        guard snapshot.bandQuietOnGestures == true, proto?.canSendWristFeedback == true else { return }
         play(gesture.answer, name: nil)
     }
 
     /// Notes what the band's haptics setting is, as read on connecting or after it was written.
     private func heard(haptics value: UInt64) {
         let quiet = value == 2
-        guard quiet != bandQuietOnGestures else { return }
-        bandQuietOnGestures = quiet
+        guard quiet != snapshot.bandQuietOnGestures else { return }
+        snapshot.bandQuietOnGestures = quiet; publish()
         record("band_buzz", quiet ? "The band stays quiet on gestures; Runes answers them." : "Band haptics setting \(value); Runes does not answer gestures.")
     }
 
