@@ -161,25 +161,14 @@ struct CookingView: View {
                 if look == .focus, let first = rung.first {
                     let durations = session.recipe.durations(step: first.step)
                     let cue = durations.indices.contains(first.slot) ? StepDetails.cue(for: durations[first.slot], in: session.recipe.steps[first.step]) : nil
+                    // It rises from the pile of timers like a pan boiling over, and sinks back when stopped.
                     TimeUpPanel(timer: first, others: rung.count - 1, cue: cue, controls: controls, stop: actions.stopRinging)
-                        .transition(reduceMotion ? .opacity : .wipe)
+                        .transition(reduceMotion ? .opacity : .move(edge: .bottom))
                 }
                 if asking != .idle { AskCard(phase: asking, level: voice, dismiss: actions.dismissAnswer).transition(.opacity) }
-                if let dialing {
-                    if session.gathering {
-                        TimerDial(steps: dialing * 5, value: "\(dialing)", label: "Servings", hint: "Let go and the amounts follow").transition(.opacity)
-                    } else {
-                        let target = session.selectedTimer.flatMap { $0.isLive ? $0 : nil }
-                        let named = session.pickedTimer == nil && session.durations.indices.contains(session.slot) ? session.durations[session.slot].label : nil
-                        TimerDial(steps: TimerDial.steps(for: dialing), value: DurationFinder.clock(dialing),
-                                  label: target?.label ?? named ?? "Step \(session.step + 1)",
-                                  hint: dialing == 0 ? (target == nil ? "Turn your wrist to set a time" : "Let go to clear it") : target == nil ? "Let go to start" : "Let go to set")
-                            .transition(.opacity)
-                    }
-                }
             }
             .frame(maxHeight: .infinity)
-            .animation(.standard, value: dialing != nil)
+            .clipped()
             .animation(.standard, value: asking)
             .animation(reduceMotion ? nil : .entrance, value: session.gathering)
             .animation(reduceMotion ? nil : .entrance, value: session.step)
@@ -205,6 +194,8 @@ struct CookingView: View {
                 Button("Stop cooking", role: .destructive, action: actions.stop)
             } message: { Text("Timers that are running are cancelled.") }
         }
+        .overlay { dialFace }
+        .animation(reduceMotion ? nil : .entrance, value: dialing != nil)
         .overlay(alignment: .topTrailing) { BuzzMark(pulse: pulse).padding(.trailing, Metric.gutter).padding(.top, 26) }
         .animation(reduceMotion ? nil : .entrance, value: session.finished)
         .animation(.entrance, value: ringing)
@@ -248,6 +239,25 @@ struct CookingView: View {
                         else if sideways, dx > 60, session.step > 0 { actions.perform(.previous) }
                     }
                 })
+        }
+    }
+
+    /// The dial, which takes the whole screen while the pinch is held: there is one thing
+    /// being set, and it is given all the room.
+    @ViewBuilder private var dialFace: some View {
+        if let dialing {
+            if session.gathering {
+                TimerDial(steps: dialing * 5, value: "\(dialing)", label: "Servings", hint: "Let go and the amounts follow")
+                    // Let go, and the dial drops into the pile of timers below.
+                    .transition(.asymmetric(insertion: .opacity, removal: .scale(scale: 0.12, anchor: .bottom).combined(with: .opacity)))
+            } else {
+                let target = session.selectedTimer.flatMap { $0.isLive ? $0 : nil }
+                let named = session.pickedTimer == nil && session.durations.indices.contains(session.slot) ? session.durations[session.slot].label : nil
+                TimerDial(steps: TimerDial.steps(for: dialing), value: DurationFinder.clock(dialing),
+                          label: target?.label ?? named ?? "Step \(session.step + 1)",
+                          hint: dialing == 0 ? (target == nil ? "Turn your wrist to set a time" : "Let go to clear it") : target == nil ? "Let go to start" : "Let go to set")
+                    .transition(.asymmetric(insertion: .opacity, removal: .scale(scale: 0.12, anchor: .bottom).combined(with: .opacity)))
+            }
         }
     }
 

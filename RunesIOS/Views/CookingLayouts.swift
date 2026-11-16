@@ -206,6 +206,9 @@ struct StepRail: View {
 /// say how many sentences the step has and which this is.
 struct FocusPage: View {
     let session: CookSession
+    /// True for a moment after a new step arrives, while its number passes behind the words.
+    @State private var announcing = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let beats = session.beats, index = session.beatIndex
@@ -247,6 +250,22 @@ struct FocusPage: View {
         }
         .padding(.horizontal, Metric.gutter).padding(.top, 22)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        // A new step is a new chapter: its number crosses behind the words once, as large
+        // as the page, and is gone.
+        .background(alignment: .bottomTrailing) {
+            Text("\(session.step + 1)")
+                .font(.geist(320, .medium, relativeTo: .largeTitle)).tracking(-16).foregroundStyle(Color.rule)
+                .lineLimit(1).fixedSize()
+                .opacity(announcing ? 1 : 0)
+                .offset(x: reduceMotion ? 0 : announcing ? -10 : 90, y: 60)
+                .animation(.easeOut(duration: announcing ? 0.35 : 0.6), value: announcing)
+                .accessibilityHidden(true)
+        }
+        .task(id: session.step) {
+            announcing = true
+            try? await Task.sleep(for: .milliseconds(850))
+            announcing = false
+        }
         .animation(.entrance, value: index)
         .animation(.entrance, value: session.step)
         .accessibilityElement(children: .combine)
@@ -268,7 +287,7 @@ struct FocusPage: View {
 
 /// A sentence that sets itself: each line rises into place a moment after the one above,
 /// once, when the sentence arrives.
-private struct SetType: View {
+struct SetType: View {
     let text: AttributedString
     let size: CGFloat
     @State private var set = false
@@ -355,10 +374,15 @@ struct TimerPile: View {
                 }
             }
             Spacer(minLength: 8)
-            Text(DurationFinder.clock(seconds))
-                .font(.geist(digits, .medium, relativeTo: .largeTitle)).monospacedDigit().tracking(-digits * 0.04)
-                .lineLimit(1).minimumScaleFactor(0.5)
-                .contentTransition(.numericText(countsDown: true)).animation(.standard, value: seconds)
+            // The one that is due next turns its digits over like a departure board.
+            if rank == 0 {
+                FlapDigits(text: DurationFinder.clock(seconds), size: digits)
+            } else {
+                Text(DurationFinder.clock(seconds))
+                    .font(.geist(digits, .medium, relativeTo: .largeTitle)).monospacedDigit().tracking(-digits * 0.04)
+                    .lineLimit(1).minimumScaleFactor(0.5)
+                    .contentTransition(.numericText(countsDown: true)).animation(.standard, value: seconds)
+            }
         }
         .foregroundStyle(counting ? Color.paper : Color.ink)
         .padding(.leading, Metric.gutter + (selected ? 8 : 0)).padding(.trailing, Metric.gutter)
@@ -381,6 +405,15 @@ struct TimerPile: View {
         .animation(.entrance, value: counting)
         .animation(.entrance, value: rank)
         .animation(.standard, value: selected)
+        // A time that was just set or given a minute swells once, so the eye finds which.
+        .keyframeAnimator(initialValue: 1.0, trigger: timer?.total ?? 0) { content, scale in
+            content.scaleEffect(scale)
+        } keyframes: { _ in
+            KeyframeTrack {
+                CubicKeyframe(1.035, duration: 0.12)
+                CubicKeyframe(1.0, duration: 0.24)
+            }
+        }
         .contentShape(Rectangle())
         .onTapGesture { if let timer { actions.toggleTimer(timer.id) } else { actions.toggle(pot.slot) } }
         .onLongPressGesture(minimumDuration: 0.5) { if let timer { actions.cancelTimer(timer.id) } }
@@ -391,6 +424,64 @@ struct TimerPile: View {
         .accessibilityElement(children: .ignore)
         .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
         .accessibilityLabel("\(pot.label), step \(pot.step + 1), \(ringing ? "time’s up" : paused ? "paused at \(DurationFinder.short(seconds))" : timer == nil ? "\(DurationFinder.short(seconds)), not started" : "\(DurationFinder.short(seconds)) left")")
+    }
+}
+
+/// A time whose digits turn over, each on its own, when they change: the old one falls
+/// away forward and the new one drops into its place.
+private struct FlapDigits: View {
+    let text: String
+    let size: CGFloat
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        HStack(spacing: -size * 0.03) {
+            ForEach(Array(text.enumerated()), id: \.offset) { _, character in
+                ZStack {
+                    Text(String(character)).id(character).transition(reduceMotion ? .opacity : .flap)
+                }
+            }
+        }
+        .font(.geist(size, .medium, relativeTo: .largeTitle)).monospacedDigit()
+        .lineLimit(1).fixedSize()
+        .animation(.easeInOut(duration: 0.22), value: text)
+        .accessibilityHidden(true)
+    }
+}
+
+private struct Flap: ViewModifier {
+    let angle: Double
+    func body(content: Content) -> some View {
+        content
+            .rotation3DEffect(.degrees(angle), axis: (x: 1, y: 0, z: 0), anchor: .center, perspective: 0.5)
+            .opacity(abs(angle) > 75 ? 0 : 1)
+    }
+}
+
+extension AnyTransition {
+    /// Turns over about its middle, like a leaf of a split-flap board.
+    static var flap: AnyTransition {
+        .asymmetric(insertion: .modifier(active: Flap(angle: 90), identity: Flap(angle: 0)),
+                    removal: .modifier(active: Flap(angle: -90), identity: Flap(angle: 0)))
+    }
+}
+
+/// A wedge of a circle from the top, clockwise, for a share of a full turn.
+private struct Sector: Shape {
+    var turn: Double
+    var animatableData: Double {
+        get { turn }
+        set { turn = newValue }
+    }
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let centre = CGPoint(x: rect.midX, y: rect.midY)
+        path.move(to: centre)
+        path.addArc(center: centre, radius: min(rect.width, rect.height) / 2, startAngle: .degrees(-90),
+                    endAngle: .degrees(-90 + 360 * min(1, max(0, turn))), clockwise: false)
+        path.closeSubpath()
+        return path
     }
 }
 
@@ -707,35 +798,49 @@ struct TimerDial: View {
         seconds < 120 ? seconds / 10 : seconds < 900 ? 12 + (seconds - 120) / 30 : 38 + (seconds - 900) / 60
     }
 
+    @State private var open = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
-        VStack(spacing: 22) {
-            Text(label).font(.label)
-            ZStack {
-                Canvas { context, size in
-                    let centre = CGPoint(x: size.width / 2, y: size.height / 2), radius = min(size.width, size.height) / 2
-                    for tick in 0..<60 {
-                        let angle = Double(tick) * .pi / 30, long = tick % 5 == 0
-                        let inner = radius - (long ? 16 : 8)
-                        var path = Path()
-                        path.move(to: CGPoint(x: centre.x + sin(angle) * inner, y: centre.y - cos(angle) * inner))
-                        path.addLine(to: CGPoint(x: centre.x + sin(angle) * radius, y: centre.y - cos(angle) * radius))
-                        context.stroke(path, with: .color(long ? Color.ink : Color.faint), lineWidth: Metric.hairline)
+        GeometryReader { geo in
+            let side = max(120, min(geo.size.width - 24, geo.size.height - 92))
+            VStack(spacing: 14) {
+                Text(label).font(.heading)
+                ZStack {
+                    Circle().fill(Color.paper)
+                    // Sixty ticks round the edge, one for each step of the wrist.
+                    Canvas { context, size in
+                        let centre = CGPoint(x: size.width / 2, y: size.height / 2), radius = min(size.width, size.height) / 2
+                        for tick in 0..<60 {
+                            let angle = Double(tick) * .pi / 30, long = tick % 5 == 0
+                            let inner = radius - (long ? 12 : 6)
+                            var path = Path()
+                            path.move(to: CGPoint(x: centre.x + sin(angle) * inner, y: centre.y - cos(angle) * inner))
+                            path.addLine(to: CGPoint(x: centre.x + sin(angle) * radius, y: centre.y - cos(angle) * radius))
+                            context.stroke(path, with: .color(long ? Color.ink : Color.faint), lineWidth: Metric.hairline)
+                        }
                     }
+                    // The time as area: ink sweeps round from the top, a wedge for every step,
+                    // and once round the dial is full.
+                    Sector(turn: Double(min(steps, 60)) / 60).fill(Color.ink).padding(18)
+                        .animation(.easeOut(duration: 0.16), value: steps)
+                    // Past a full turn, a second line starts round the inside.
+                    Circle().trim(from: 0, to: Double(max(0, steps - 60)) / 60).stroke(Color.paper, style: StrokeStyle(lineWidth: 3, lineCap: .butt))
+                        .rotationEffect(.degrees(-90)).padding(34)
+                        .animation(.easeOut(duration: 0.16), value: steps)
+                    // The digits turn over as they change, and read against whatever is under
+                    // them: dark on paper, light where the ink has come round.
+                    FlapDigits(text: value, size: min(84, side * 0.26)).foregroundStyle(Color.white).blendMode(.difference)
                 }
-                .rotationEffect(.degrees(Double(steps) * 6))
-                .animation(.standard, value: steps)
-                Capsule().fill(Color.ink).frame(width: 2.5, height: 26).offset(y: -Self.size / 2 + 4)
-                Text(value)
-                    .font(.geist(64, .medium, relativeTo: .largeTitle)).monospacedDigit().tracking(-2)
-                    .lineLimit(1).minimumScaleFactor(0.5).frame(width: Self.size - 70)
-                    .contentTransition(.numericText(value: Double(steps)))
-                    .animation(.standard, value: steps)
+                .compositingGroup()
+                .frame(width: side, height: side)
+                .scaleEffect(open || reduceMotion ? 1 : 0.84).opacity(open ? 1 : 0)
+                Text(hint).font(.label).foregroundStyle(Color.muted)
             }
-            .frame(width: Self.size, height: Self.size)
-            Text(hint).font(.caption).foregroundStyle(Color.muted)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.paper)
+        .onAppear { withAnimation(.entrance) { open = true } }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Setting \(label) to \(value)")
     }
@@ -907,7 +1012,7 @@ struct TimeUpPanel: View {
                     Text("step \(timer.step + 1)" + (others > 0 ? " · and \(others) more" : "")).font(.caption).opacity(0.7)
                 }
                 Spacer(minLength: 12)
-                Text(timer.label).font(.geist(68, .medium, relativeTo: .largeTitle)).tracking(-2.5).lineLimit(2).minimumScaleFactor(0.5)
+                SetType(text: AttributedString(timer.label), size: 68)
                 if let cue {
                     Text("Check: \(cue)").font(.geist(24, relativeTo: .title2)).lineSpacing(2).padding(.top, 10)
                         .fixedSize(horizontal: false, vertical: true)
