@@ -334,6 +334,16 @@ struct CookSession: Codable, Equatable, Sendable {
         return live(at: now).first.flatMap { soonest in timers.firstIndex { $0.id == soonest.id } }
     }
 
+    /// When to start the selected time of this step so that it ends with the timer that
+    /// has longest to go: the wait until then, and which timer it lands with. Nil when the
+    /// time is already going, when nothing else is counting, or when it would be late anyway.
+    func landing(at now: Date) -> (wait: Int, with: CookTimer)? {
+        guard !finished, !gathering, pickedTimer == nil, durations.indices.contains(slot), timer(step: step, slot: slot)?.isLive != true,
+              let last = running(at: now).filter({ $0.step != step }).max(by: { $0.end < $1.end }) else { return nil }
+        let wait = last.remaining(at: now) - durations[slot].seconds
+        return wait > 0 ? (wait, last) : nil
+    }
+
     /// What the wrist dial starts from: the selected timer's time left, the time a step
     /// mentions that hasn't been started, or nothing on a step with no time.
     func dialSeconds(at now: Date) -> Int {

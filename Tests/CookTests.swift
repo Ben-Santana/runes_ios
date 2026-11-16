@@ -462,6 +462,21 @@ struct CookTests {
         precondition(RecipeBrief.reason(cooked, now: t0) == "Last cooked 3 days ago")
         precondition(RecipeBrief.wrist(.frontRight) == [.tap, .tap] && RecipeBrief.wrist(.oven) == [.long] && RecipeBrief.wrist(.counter).isEmpty)
 
+        // MARK: Landing together
+        // The sauce simmers for fifteen minutes; the spaghetti takes nine. Started six minutes in, both are done at once.
+        var together = CookSession(recipe: .starter, at: t0)
+        together.go(to: 2); together.start(step: 2, slot: 0, at: t0)
+        precondition(together.landing(at: t0) == nil, "This step's own time is already going")
+        together.go(to: 3)
+        guard let land = together.landing(at: t0.addingTimeInterval(60)) else { preconditionFailure("The spaghetti should wait") }
+        precondition(land.wait == 300 && land.with.label == "Simmer", "\(land.wait)")
+        precondition(together.landing(at: t0.addingTimeInterval(400)) == nil, "Past the moment, there is nothing to wait for")
+        together.apply(.timer, at: t0.addingTimeInterval(360))
+        precondition(together.landing(at: t0.addingTimeInterval(361)) == nil && together.running(at: t0.addingTimeInterval(361)).map(\.end) == [t0.addingTimeInterval(900), t0.addingTimeInterval(900)], "Started then, they end together")
+        var alone = CookSession(recipe: .starter, at: t0)
+        alone.go(to: 3)
+        precondition(alone.landing(at: t0) == nil, "Nothing else is counting")
+
         // MARK: The wrist dial
         // Still, the sensor's offset is learned; held, a steady turn about one axis comes out in degrees.
         var wrist = WristDial()
