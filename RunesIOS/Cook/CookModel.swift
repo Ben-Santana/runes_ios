@@ -409,6 +409,14 @@ struct CookSession: Codable, Equatable, Sendable {
         recipe = base.scaled(to: count)
     }
 
+    #if DEBUG
+    /// Ends a timer now, for the recorded walkthrough.
+    mutating func expire(_ id: String, at now: Date = Date()) {
+        guard let index = timers.firstIndex(where: { $0.id == id }) else { return }
+        timers[index].paused = nil; timers[index].end = now
+    }
+    #endif
+
     mutating func toggle(ingredient index: Int) {
         guard recipe.ingredients.indices.contains(index) else { return }
         if ready.contains(index) { ready.remove(index) } else { ready.insert(index) }

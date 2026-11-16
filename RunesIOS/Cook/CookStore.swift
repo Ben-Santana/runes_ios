@@ -12,8 +12,10 @@ enum CookListLook: String, Codable, CaseIterable, Sendable {
     var title: String { self == .contents ? "Contents" : "Ledger" }
 }
 enum CookingLook: String, Codable, CaseIterable, Sendable {
-    case hob, numbers
-    var title: String { self == .hob ? "Hob" : "Numbers" }
+    case hob, rail, poster, numbers
+    var title: String {
+        switch self { case .hob: "Hob"; case .rail: "Rail"; case .poster: "Poster"; case .numbers: "Numbers" }
+    }
 }
 
 /// What reaches the wrist while cooking.
@@ -363,6 +365,15 @@ final class CookStore: ObservableObject {
         session = current
         react(to: event, about: target)
     }
+
+    #if DEBUG
+    /// For the recorded walkthrough: holds and lets go of the dial, and ends a timer early.
+    func demoDial(_ held: Bool) { if held { beginDial() } else { endDial() } }
+    func demoExpire() {
+        guard var current = session, let first = current.live(at: Date()).first else { return }
+        current.expire(first.id); session = current
+    }
+    #endif
 
     /// The band's orientation, for air steps in cooking's combos.
     func orientation(_ q: [Double]) {

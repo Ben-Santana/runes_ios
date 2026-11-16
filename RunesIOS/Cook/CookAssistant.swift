@@ -47,6 +47,11 @@ final class CookAssistant: NSObject, ObservableObject, AVSpeechSynthesizerDelega
     }
     #endif
 
+    #if DEBUG
+    /// For the recorded walkthrough.
+    func show(_ phase: Phase, level: Float = 0) { self.phase = phase; self.level = level }
+    #endif
+
     var isListening: Bool { phase == .listening }
     var isBusy: Bool { phase != .idle }
 

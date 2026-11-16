@@ -16,7 +16,7 @@ struct Hob: View {
     private static let burners = 4
 
     /// Something on a burner: a timer, or one of this step's times waiting to be started.
-    private struct Pot: Identifiable {
+    struct Pot: Identifiable {
         var id: String
         var timer: CookTimer?
         var label: String
@@ -27,7 +27,7 @@ struct Hob: View {
 
     /// Timers in the order they were started, so one stays on its burner as pages turn,
     /// then the times this step has that aren't going.
-    private var pots: [Pot] {
+    var pots: [Pot] {
         var result = session.timers.filter(\.isLive).map {
             Pot(id: $0.id, timer: $0, label: $0.label, seconds: $0.total, step: $0.step, slot: $0.slot)
         }
@@ -47,7 +47,7 @@ struct Hob: View {
         return pots.filter { keep.contains($0.id) }
     }
 
-    private func selected(_ pot: Pot) -> Bool {
+    func selected(_ pot: Pot) -> Bool {
         if let timer = pot.timer { return session.selectedTimer?.id == timer.id }
         return session.pickedTimer == nil && pot.slot == session.slot
     }
@@ -81,6 +81,121 @@ struct Hob: View {
             .animation(.standard, value: pots.map(\.id))
             .transition(.opacity) }
         }
+    }
+}
+
+// MARK: Rail and Poster
+
+/// Every timer as a line that runs out: what it is for, its time, and a hairline of ink
+/// that shortens toward the leading edge as the time goes. The selected one is drawn
+/// heavier, one waiting to be started is faint, and one whose time is up turns to ink.
+/// Touch is the hob's: tap to start, pause or stop, hold to reset, swipe up for a minute.
+struct TimerBars: View {
+    let session: CookSession
+    let actions: CookActions
+
+    var body: some View {
+        let hob = Hob(session: session, actions: actions)
+        TimelineView(.periodic(from: .now, by: 0.5)) { context in
+            let pots = hob.pots
+            VStack(spacing: 0) {
+                ForEach(pots.prefix(4)) { pot in
+                    bar(pot, selected: pots.count > 1 && !session.finished && hob.selected(pot), now: context.date)
+                        .transition(.opacity)
+                }
+            }
+            .padding(.horizontal, Metric.gutter).padding(.top, pots.isEmpty ? 0 : 4)
+            .animation(.standard, value: pots.map(\.id))
+        }
+    }
+
+    private func bar(_ pot: Hob.Pot, selected: Bool, now: Date) -> some View {
+        let timer = pot.timer
+        let ringing = timer?.isRinging(at: now) ?? false, paused = timer?.isPaused ?? false
+        let left = ringing ? 0 : timer?.remaining(at: now) ?? pot.seconds
+        let remaining = timer.map { 1 - $0.progress(at: now) } ?? 1
+        let own = pot.step == session.step && !session.finished
+        return VStack(spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(pot.label).font(.label)
+                if !own { Text("step \(pot.step + 1)").font(.caption).opacity(0.7) }
+                if paused { LucideIcon(.pause, size: 12) }
+                Spacer(minLength: 8)
+                Text(ringing ? "Time’s up" : DurationFinder.clock(left))
+                    .font(.geist(22, .medium, relativeTo: .title3)).monospacedDigit()
+                    .contentTransition(.numericText(countsDown: true)).animation(.standard, value: left)
+            }
+            .foregroundStyle(ringing ? Color.paper : timer == nil || paused || !own ? Color.muted : Color.ink)
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Rectangle().fill(Color.rule).frame(height: Metric.hairline)
+                    Rectangle().fill(timer == nil ? Color.faint : Color.ink)
+                        .frame(width: max(0, geo.size.width * remaining), height: selected ? 3 : 1.5)
+                        .animation(.linear(duration: 0.5), value: remaining)
+                }
+                .frame(maxHeight: .infinity)
+            }
+            .frame(height: 3).opacity(ringing ? 0 : 1)
+        }
+        .padding(.vertical, 9).padding(.horizontal, ringing ? Metric.inset : 0)
+        .background { if ringing { RoundedRectangle(cornerRadius: Metric.panel).fill(Color.ink) } }
+        .animation(.standard, value: ringing)
+        .animation(.standard, value: selected)
+        .contentShape(Rectangle())
+        .onTapGesture { if let timer { actions.toggleTimer(timer.id) } else { actions.toggle(pot.slot) } }
+        .onLongPressGesture(minimumDuration: 0.5) { if let timer { actions.cancelTimer(timer.id) } }
+        .simultaneousGesture(DragGesture(minimumDistance: 20).onEnded { value in
+            let t = value.translation
+            if let timer, t.height < -30, abs(t.height) > abs(t.width) * 1.2 { actions.addMinute(timer.id) }
+        })
+        .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+        .accessibilityLabel("\(pot.label), step \(pot.step + 1), \(ringing ? "time’s up" : paused ? "paused at \(DurationFinder.short(left))" : timer == nil ? "\(DurationFinder.short(left)), not started" : "\(DurationFinder.short(left)) left")")
+    }
+}
+
+/// The recipe down the leading edge: a line with a point for each step. The step showing
+/// is a filled circle with its number, the ones done are ink, the ones ahead faint, and a
+/// step with a timer still going wears a ring. The ink runs down the line as far as the
+/// cook has got. A tap on a point goes to that step.
+struct StepRail: View {
+    let session: CookSession
+    let go: (Int) -> Void
+    private static let node: CGFloat = 26
+
+    var body: some View {
+        GeometryReader { geo in
+            let count = session.count
+            let gap = min(54, (geo.size.height - 48) / CGFloat(max(1, count - 1)))
+            let here = session.gathering ? -1 : session.step
+            ZStack(alignment: .top) {
+                Rectangle().fill(Color.rule).frame(width: Metric.hairline, height: gap * CGFloat(max(0, count - 1))).offset(y: 24)
+                Rectangle().fill(Color.ink).frame(width: 1.5, height: gap * CGFloat(max(0, here))).offset(y: 24)
+                ForEach(0..<count, id: \.self) { index in
+                    Button { go(index) } label: { point(index, here: here) }
+                        .buttonStyle(PressRow())
+                        .offset(y: 24 + gap * CGFloat(index) - Self.node / 2)
+                        .accessibilityLabel("Step \(index + 1)")
+                }
+            }
+            .frame(width: geo.size.width)
+            .animation(.standard, value: here)
+        }
+    }
+
+    private func point(_ index: Int, here: Int) -> some View {
+        let timed = session.timers.contains { $0.isLive && $0.step == index }
+        return ZStack {
+            if index == here {
+                Circle().fill(Color.ink)
+                Text("\(index + 1)").font(.geist(12, .medium, relativeTo: .caption)).monospacedDigit().foregroundStyle(Color.paper)
+            } else {
+                if timed { Circle().strokeBorder(Color.ink, lineWidth: 1.5).frame(width: 16, height: 16) }
+                Circle().fill(index < here ? Color.ink : Color.paper).frame(width: 7, height: 7)
+                Circle().strokeBorder(index < here ? Color.ink : Color.faint, lineWidth: Metric.hairline).frame(width: 7, height: 7)
+            }
+        }
+        .frame(width: Self.node, height: Self.node).contentShape(Rectangle())
     }
 }
 
