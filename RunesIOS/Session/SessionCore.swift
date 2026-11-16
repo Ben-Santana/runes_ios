@@ -36,6 +36,8 @@ final class SessionCore: @unchecked Sendable {
     var onSettings: ((String) -> Void)?
     /// The band's answer to one of its own patterns, with the reply's shape.
     var onPattern: ((UInt64, WristFeedbackResult, String) -> Void)?
+    /// Each line of the band's named settings as it is read, then nil when the read ends.
+    var onNamedSetting: ((String?) -> Void)?
     /// Orientation and gyroscope samples, whether they were started for the Mac or for this phone.
     var onMotion: ((RelayWire.Event.Kind, [Double]) -> Void)?
     var onGesture: ((GestureEvent) -> Void)?
@@ -77,6 +79,8 @@ final class SessionCore: @unchecked Sendable {
     private var buzzGeneration = 0
     private var pulseSentAt: TimeInterval?
     private var patternInFlight: UInt64?
+    /// Where the read of the named settings has got to: the group, its size, the place in it, and the setting just described.
+    private var settingRead: (group: UInt64, count: UInt64, index: UInt64, id: UInt64, name: String)?
     private var lastSettings: String?
     private var pendingHandTarget: (band: UUID, attempt: Date)?
     private static let notNearbyAfter: TimeInterval = 30
@@ -449,6 +453,61 @@ final class SessionCore: @unchecked Sendable {
         sendNextPulse()
     }
 
+    /// Reads every setting the band can name, one request at a time. Reading only.
+    func readNamedSettings() {
+        guard snapshot.state == .streaming, settingRead == nil else { return }
+        record("band_settings", "Named settings: reading.")
+        askCount(group: NamedSettings.groups.lowerBound)
+    }
+
+    private func askCount(group: UInt64) {
+        guard NamedSettings.groups.contains(group) else { return endSettingRead("Named settings: done.") }
+        settingRead = (group, 0, 0, 0, "")
+        askSetting("named_count", NamedSettings.count(group: group))
+    }
+
+    private func askNext() {
+        guard var read = settingRead else { return }
+        guard read.index < read.count else { return askCount(group: read.group + 1) }
+        read.index += 1; settingRead = read
+        askSetting("named_describe", NamedSettings.describe(group: read.group, index: read.index))
+    }
+
+    private func askSetting(_ operation: String, _ payload: Data) {
+        do { try rpc(operation, NamedSettings.channel, NamedSettings.field, payload) }
+        catch { endSettingRead("Named settings: could not ask.") }
+    }
+
+    private func endSettingRead(_ line: String) {
+        settingRead = nil
+        record("band_settings", line); onNamedSetting?(line); onNamedSetting?(nil)
+    }
+
+    private func namedSetting(_ operation: String, _ payload: Data) {
+        guard var read = settingRead else { return }
+        func line(_ text: String) { record("band_settings", text); onNamedSetting?(text) }
+        switch operation {
+        case "named_count":
+            guard let count = NamedSettings.count(from: payload) else {
+                line("Group \(read.group): no list (\(WristFeedbackResult.shape(payload))).")
+                return askCount(group: read.group + 1)
+            }
+            read.count = count; settingRead = read
+            line("Group \(read.group): \(count) settings.")
+            askNext()
+        case "named_describe":
+            guard let setting = NamedSettings.name(from: payload) else {
+                line("\(read.group).\(read.index): not described.")
+                return askNext()
+            }
+            read.id = setting.id; read.name = setting.name; settingRead = read
+            askSetting("named_read", NamedSettings.read(id: setting.id))
+        default:
+            line("\(read.group).\(read.index) #\(read.id) \(read.name) = \(NamedSettings.value(from: payload) ?? "not read")")
+            askNext()
+        }
+    }
+
     /// Plays one of the band's own patterns, 1 or 2, in place of anything still playing.
     /// The reference implementation calls these its gesture feedback patterns.
     func perform(pattern: UInt64) {
@@ -532,6 +591,7 @@ final class SessionCore: @unchecked Sendable {
                     try reconcileStreams()
                 }
             case "stop_streams": finishDisconnect()
+            case "named_count", "named_describe", "named_read": namedSetting(operation, payload)
             case "set_hand":
                 if snapshot.handSetting.wrote() { try rpc("read_hand", 6, 5) }
             case "read_hand":

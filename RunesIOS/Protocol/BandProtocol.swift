@@ -18,6 +18,8 @@ final class BandProtocol {
         let operation: String; let id: UInt64; let deadline: TimeInterval; let flags: Data?
         var isHandRequest: Bool { operation == "read_hand" || operation == "set_hand" }
         var isWristFeedback: Bool { operation == "wrist_feedback" || operation == "band_pattern" }
+        /// A read of the band's named settings: optional, so no answer or a refusal is reported and never fatal.
+        var isSettingRead: Bool { operation.hasPrefix("named_") }
     }
     private var identity: BandIdentity?
     private let ceremony: OwnershipCeremony?
@@ -56,6 +58,9 @@ final class BandProtocol {
         for (channel, request) in pending where now >= request.deadline {
             if request.isWristFeedback {
                 pending[channel] = nil; feedbackNote = "no reply in time"; signals.append(.wristFeedback(.unconfirmed)); continue
+            }
+            if request.isSettingRead {
+                pending[channel] = nil; signals.append(.reply(operation: request.operation, payload: Data())); continue
             }
             guard request.isHandRequest else { throw BandError.timeout(stage: request.operation) }
             pending[channel] = nil
@@ -181,7 +186,7 @@ final class BandProtocol {
             guard let p = pending[packet.channel], p.id == id else { return (Data(), []) }
             pending[packet.channel] = nil
             // EMG is optional: a refused configuration read is reported, never fatal.
-            if p.operation == "emg_configuration" { return (Data(), [.reply(operation: p.operation, payload: packet.payload)]) }
+            if p.operation == "emg_configuration" || p.isSettingRead { return (Data(), [.reply(operation: p.operation, payload: packet.payload)]) }
             if p.isWristFeedback {
                 feedbackNote = WristFeedbackResult.shape(packet.payload)
                 return (Data(), [.wristFeedback(p.operation == "band_pattern" ? .pattern(packet.payload) : WristFeedbackResult(packet.payload))])
@@ -244,6 +249,10 @@ final class BandProtocol {
         if let p = pending[channel], p.operation == "emg_configuration" {
             pending[channel] = nil
             return (Data(), [.emgUnavailable("Band closed the EMG configuration service (\(String(kind, radix: 16))).")])
+        }
+        if let p = pending[channel], p.isSettingRead {
+            pending[channel] = nil; opened.remove(channel)
+            return (Data(), [.reply(operation: p.operation, payload: Data())])
         }
         if let p = pending[channel], p.isHandRequest {
             pending[channel] = nil; opened.remove(channel)
