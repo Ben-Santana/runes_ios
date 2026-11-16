@@ -116,6 +116,8 @@ struct SnapshotGallery: View {
             NavigationStack { CookScreen(store: name == "cook-idle" ? PreviewFixtures.cookShelf() : PreviewFixtures.cook(listLook: name == "cook" ? .contents : .ledger), path: .constant([])) }
         } else if name == "recipe" || name == "recipe-salmon" {
             NavigationStack { RecipeScreen(store: PreviewFixtures.cookShelf(), recipeID: name == "recipe" ? Recipe.starter.id : Recipe.salmonPasta.id, path: .constant([])) }
+        } else if name.hasPrefix("concept-") {
+            CookConcept(index: Int(name.dropFirst(8)) ?? 1)
         } else if name.hasPrefix("demo") {
             let store = PreviewFixtures.cookSalmon(name)
             NavigationStack { CookingScreen(store: store) }.task { await PreviewFixtures.walkthrough(store) }
