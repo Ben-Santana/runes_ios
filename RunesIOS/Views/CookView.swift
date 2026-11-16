@@ -361,6 +361,8 @@ struct RecipeScreen: View {
     @State private var noting = false
     /// The model's one line about what goes wrong with this recipe.
     @State private var tip: String?
+    /// A past receipt being read.
+    @State private var reading: CookRecord?
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -458,6 +460,25 @@ struct RecipeScreen: View {
                     }
                 } header: { Heading("Steps", count: shown.steps.count).padding(.bottom, 4) }
                 NotesBlock(notes: recipe.notes ?? []) { noting = true }
+                // Every time it was cooked, kept as the receipt it ended with.
+                let receipts = store.records(for: recipe.id)
+                if !receipts.isEmpty {
+                    Block {
+                        ForEach(Array(receipts.enumerated()), id: \.element.id) { index, record in
+                            if index > 0 { Hairline(delay: 0.03 * Double(index)) }
+                            Button { reading = record } label: {
+                                HStack(spacing: 12) {
+                                    Text(record.ended.formatted(date: .abbreviated, time: .shortened)).font(.bodyText)
+                                    Spacer(minLength: 8)
+                                    Text("\(record.minutes) min").font(.bodyText).monospacedDigit().foregroundStyle(Color.muted)
+                                    Chevron()
+                                }
+                                .padding(.vertical, 12).contentShape(Rectangle())
+                            }
+                            .buttonStyle(PressRow())
+                        }
+                    } header: { Heading("Receipts", count: receipts.count) }
+                }
             }
             .padding(.horizontal, Metric.gutter).padding(.top, 12).padding(.bottom, 24)
             .animation(.standard, value: count)
@@ -472,6 +493,7 @@ struct RecipeScreen: View {
             }
         }
         .sheet(isPresented: $noting) { NoteSheet { store.addNote($0, to: recipe.id) } }
+        .sheet(item: $reading) { record in ReceiptSheet(record: record) { store.forget(record.id) } }
         .safeAreaInset(edge: .bottom) {
             VStack(spacing: 0) {
                 Rule(inset: 0)
@@ -594,6 +616,26 @@ struct NotesBlock: View {
                 AddRow(title: "Add a note", action: add)
             }
         } header: { Heading("Notes", count: notes.isEmpty ? nil : notes.count) }
+    }
+}
+
+/// A receipt from a cook that is over, to read again or throw away.
+private struct ReceiptSheet: View {
+    let record: CookRecord
+    let forget: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView { CookReceipt(session: record.session, ended: record.ended, addNote: nil) }
+                .page()
+                .navigationTitle("Receipt").navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("Delete", role: .destructive) { forget(); dismiss() }.font(.label) }
+                    ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() }.font(.label) }
+                }
+        }
+        .tint(Color.ink)
     }
 }
 

@@ -949,7 +949,10 @@ extension PreviewFixtures {
         var salmon = Recipe.salmonPasta, starter = Recipe.starter
         salmon.cooked = 3; salmon.lastCooked = Date().addingTimeInterval(-86_400)
         starter.cooked = 1
-        return CookStore(preview: [salmon, starter] + cook().recipes.dropFirst(), session: nil)
+        var past = CookSession(recipe: salmon, at: Date().addingTimeInterval(-88_000))
+        past.go(to: past.count - 1); past.apply(.next)
+        let records = [CookRecord(session: past, ended: Date().addingTimeInterval(-86_400)), CookRecord(session: past, ended: Date().addingTimeInterval(-86_400 * 9 + 600))]
+        return CookStore(preview: [salmon, starter] + cook().recipes.dropFirst(), session: nil, records: records)
     }
 
     @MainActor static func cook(step: Int = 2, ringing: Bool = false, finished: Bool = false,

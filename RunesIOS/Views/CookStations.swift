@@ -267,11 +267,14 @@ private struct Ticket: View {
 /// and the notes to keep. It is what the finished screen shows in this look.
 struct CookReceipt: View {
     let session: CookSession
-    let addNote: () -> Void
+    /// When the cook ended; now, while it is on the finished screen.
+    var ended = Date()
+    /// Nil for a receipt from the past, which is only read.
+    let addNote: (() -> Void)?
 
     var body: some View {
         let plan = StationPlan(steps: session.recipe.steps)
-        let minutes = max(1, Int(Date().timeIntervalSince(session.started) / 60))
+        let minutes = max(1, Int(ended.timeIntervalSince(session.started) / 60))
         VStack(alignment: .leading, spacing: 0) {
             Text(session.recipe.title.uppercased()).font(ticketFont(22, .bold)).fixedSize(horizontal: false, vertical: true)
             HStack {
@@ -302,8 +305,10 @@ struct CookReceipt: View {
                 ForEach(notes, id: \.self) { Text("* " + $0.uppercased()).font(ticketFont(13)).padding(.vertical, 2).fixedSize(horizontal: false, vertical: true) }
             }
             Perforation().padding(.vertical, 12)
-            Button(action: addNote) { Text("+ ADD A NOTE FOR NEXT TIME").font(ticketFont(13, .semibold)).frame(minHeight: Metric.tap) }
-                .buttonStyle(PressRow())
+            if let addNote {
+                Button(action: addNote) { Text("+ ADD A NOTE FOR NEXT TIME").font(ticketFont(13, .semibold)).frame(minHeight: Metric.tap) }
+                    .buttonStyle(PressRow())
+            }
             // A bar code, because a receipt has one: the same recipe always prints the same.
             Canvas { context, size in
                 var seed = UInt64(truncatingIfNeeded: session.recipe.title.hashValue) | 1, x: CGFloat = 0
