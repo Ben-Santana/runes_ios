@@ -480,8 +480,8 @@ final class SessionCore: @unchecked Sendable {
     /// without waiting for a reply, so an answer is never skipped.
     private func answer(_ event: GestureEvent) {
         guard snapshot.state == .streaming, snapshot.bandQuietOnGestures == true, let proto,
-              event.sequence != lastAnswered, let gesture = GestureInterpreter.immediate(event),
-              UserDefaults.standard.object(forKey: Preferences.bandAnswers) as? Bool ?? true else { return }
+              event.sequence != lastAnswered, UserDefaults.standard.object(forKey: Preferences.bandAnswers) as? Bool ?? true,
+              let gesture = GestureInterpreter.immediate(event, onTouch: UserDefaults.standard.bool(forKey: Preferences.bandAnswersOnTouch)) else { return }
         lastAnswered = event.sequence
         if proto.canSendWristFeedback {
             answerHeardAt = event.received.wallTime.timeIntervalSince1970

@@ -45,6 +45,7 @@ struct BandTestsScreen: View {
     @ObservedObject private var controller = SessionController.shared
     @State private var copied = false
     @State private var acknowledging = false
+    @AppStorage(Preferences.bandAnswersOnTouch) private var answersOnTouch = false
 
     private var ready: Bool { controller.snapshot.state == .streaming }
     private var haptics: NamedSettings.Setting? { tests.named["haptics"] }
@@ -83,6 +84,10 @@ struct BandTestsScreen: View {
                 }
                 .disabled(!ready)
                 ownBuzz
+                PanelGroup("When Runes buzzes for a tap", caption: "Off: when the band reports the tap, as your finger lifts. On: as your finger touches down, about a tenth of a second sooner, before the band knows whether it is a tap or a hold, so a hold starts with the same tick. Swipes are the same either way.") {
+                    Toggle(isOn: $answersOnTouch) { Text("Buzz on touch").font(.bodyText) }
+                        .padding(.horizontal, Metric.inset).padding(.vertical, 10)
+                }
                 PanelGroup("The band's own patterns", caption: tests.patternAnswer ?? "The band keeps these itself. Play each and compare it with the buzz you feel when it hears a gesture.") {
                     ActionRow("Play pattern 1") { controller.performBandPattern(1) }
                     Rule()

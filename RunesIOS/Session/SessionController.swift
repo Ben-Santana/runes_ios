@@ -440,6 +440,8 @@ enum Preferences {
     static let haptics = "hapticsOnGesture"
     static let batteryAlerts = "bandBatteryAlerts"
     static let bandAnswers = "bandAnswersGestures"
+    /// Whether the band's buzz for a tap starts as the finger touches down. A test for now.
+    static let bandAnswersOnTouch = "bandAnswersOnTouch"
 }
 
 /// A local notification when the band runs low. It is checked whenever the band reports
