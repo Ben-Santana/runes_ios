@@ -182,6 +182,16 @@ struct ConnectionDiagnosticsTests {
         precondition(NamedSettings.count(from: Data()) == nil)
         let described = NamedSettings.setting(from: named(2, PB.field(3, Data("haptics".utf8)) + PB.field(4, 22) + PB.field(7, PB.field(1, 3) + PB.field(3, 3))))
         precondition(described == NamedSettings.Setting(id: 22, name: "haptics", range: 0...3))
+        // A description also carries a title, a purpose, the names of choices and what an action takes.
+        let chosen = PB.field(15, PB.field(1, PB.field(1, Data("off".utf8)) + PB.field(2, 1)) + PB.field(1, PB.field(1, Data("on".utf8)) + PB.field(2, 2)))
+        let rich = NamedSettings.setting(from: named(2, PB.field(1, Data("Haptics".utf8)) + PB.field(2, Data("Motor level".utf8)) + PB.field(3, Data("haptics".utf8)) + PB.field(4, 22) + chosen))
+        precondition(rich?.detail == "Haptics; Motor level; choices: 1 off, 2 on")
+        let action = NamedSettings.setting(from: named(2, PB.field(3, Data("trigger-haptics".utf8)) + PB.field(4, 23) + PB.field(13, PB.field(1, Data("duration".utf8)) + PB.field(2, Data()))))
+        precondition(action?.detail == "takes: duration (whole number)")
+        // What the band says about its software leaves out its serial number (field 6).
+        let about = PB.field(4, PB.field(2, Data("1.2.3".utf8)) + PB.field(6, Data("SERIAL".utf8)) + PB.field(15, 2) + PB.field(19, PB.field(1, PB.field(1, 1) + PB.field(3, 100))))
+        precondition(BandInfo.describe(about) == "firmware 1.2.3; protocol 2; handwriting {1=1 3=100}")
+        precondition(BandInfo.describe(PB.field(4, PB.field(2, Data("1.2.3".utf8)))) == "firmware 1.2.3; handwriting not listed")
         precondition(described?.writable == false)
         precondition(NamedSettings.setting(from: named(2, PB.field(4, 22))) == nil)
         // A whole number comes in field 4, and zero is an empty one. A yes or no comes in field 8.

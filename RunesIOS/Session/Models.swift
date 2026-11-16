@@ -379,6 +379,16 @@ enum BandSettings {
         return describe(config, depth: 0)
     }
 
+    /// A text field cut to 80 plain characters, or nil when it is absent or empty.
+    static func text(_ fields: Fields, _ number: Int) -> String? {
+        guard let raw = try? fields.bytes(number) else { return nil }
+        let text = plain(raw)
+        return text.isEmpty ? nil : text
+    }
+    static func plain(_ raw: Data) -> String {
+        String(decoding: raw.prefix(80), as: UTF8.self).filter { $0.isLetter || $0.isNumber || "-_.,:/()% ".contains($0) }
+    }
+
     static func describe(_ fields: Fields, depth: Int) -> String {
         fields.values.keys.sorted().flatMap { number in
             (fields.values[number] ?? []).map { value in
@@ -391,6 +401,33 @@ enum BandSettings {
                 }
             }
         }.joined(separator: " ")
+    }
+}
+
+/// What the band says about itself when it connects, kept to what describes its software:
+/// revisions, release branch, protocol, models and whether it offers handwriting. Its serial
+/// number and anything else that names one band are left out.
+enum BandInfo {
+    static func describe(_ reply: Data) -> String? {
+        guard let info = try? Fields(Fields(reply).bytes(4)) else { return nil }
+        var parts: [String] = []
+        for (number, label) in [(2, "firmware"), (3, "software"), (4, "hardware"), (13, "branch"), (9, "model")] {
+            if let text = BandSettings.text(info, number) { parts.append("\(label) \(text)") }
+        }
+        if let version = try? info.integer(15) { parts.append("protocol \(version)") }
+        if (try? info.integer(11)) == 1 { parts.append("restart wanted: \(BandSettings.text(info, 12) ?? "no reason given")") }
+        for (number, label) in [(10, "models"), (18, "trial models")] {
+            let names = (info.values[number] ?? []).compactMap { value -> String? in
+                if case .bytes(2, let data) = value { return BandSettings.plain(data) } else { return nil }
+            }
+            if !names.isEmpty { parts.append("\(label) \(names.joined(separator: ", "))") }
+        }
+        if let writing = try? Fields(Fields(info.bytes(19)).bytes(1)) {
+            parts.append("handwriting {\(BandSettings.describe(writing, depth: 0))}")
+        } else {
+            parts.append("handwriting not listed")
+        }
+        return parts.joined(separator: "; ")
     }
 }
 
@@ -410,6 +447,9 @@ enum NamedSettings {
         /// The field of the answer its value came in, which tells its kind: 4 a whole number, 8 a yes or no.
         var kind: Int?
         var value: UInt64?
+        /// What else the band says about it: its title, what it is for, the names of its
+        /// choices and of anything it takes when it is an action.
+        var detail = ""
         /// Whether a new value can be written: only whole numbers, and only once one has been read.
         var writable: Bool { kind == 4 && value != nil }
     }
@@ -435,7 +475,24 @@ enum NamedSettings {
             let low = (try? bounds.integer(2)) ?? 0
             if let high = try? bounds.integer(3), high >= low { range = low...high }
         }
-        return Setting(id: id, name: name, range: range)
+        var detail: [String] = []
+        if let title = BandSettings.text(info, 1), title != name { detail.append(title) }
+        if let purpose = BandSettings.text(info, 2) { detail.append(purpose) }
+        if let choices = try? Fields(info.bytes(15)) {
+            let names = (choices.values[1] ?? []).compactMap { value -> String? in
+                guard case .bytes(2, let data) = value, let choice = try? Fields(data) else { return nil }
+                return "\((try? choice.integer(2, default: 0)) ?? 0) \(BandSettings.text(choice, 1) ?? "unnamed")"
+            }
+            detail.append("choices: " + names.joined(separator: ", "))
+        }
+        let takes = (info.values[13] ?? []).compactMap { value -> String? in
+            guard case .bytes(2, let data) = value, let argument = try? Fields(data) else { return nil }
+            let kind = [2: "whole number", 3: "decimal", 4: "yes or no", 5: "large number"].first { argument.values[$0.key] != nil }?.value ?? "unknown kind"
+            return "\(BandSettings.text(argument, 1) ?? "unnamed") (\(kind))"
+        }
+        if !takes.isEmpty { detail.append("takes: " + takes.joined(separator: ", ")) }
+        if info.values[17] != nil { detail.append("takes nothing") }
+        return Setting(id: id, name: name, range: range, detail: detail.joined(separator: "; "))
     }
     /// A setting's value, from the answer to `read` or to a `write`: its kind and number when it is a
     /// single value, and all of it written as numbers (`BandSettings`). Nil when the band refused.
@@ -475,6 +532,8 @@ enum BandTrial {
     }
     /// Stops whatever the band's motor is playing. Sent as a haptics request.
     static let stop = PB.field(3, Data())
+    /// Asks which firmware is running and whether an update is waiting. Sent as an update request; it changes nothing.
+    static let firmwareStatus = PB.field(1, Data())
 }
 
 enum WristFeedbackResult: String, Sendable {

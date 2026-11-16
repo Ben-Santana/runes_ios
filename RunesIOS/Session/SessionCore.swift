@@ -36,6 +36,8 @@ final class SessionCore: @unchecked Sendable {
     var onSettings: ((String) -> Void)?
     /// The band's answer to one of its own patterns, with the reply's shape.
     var onPattern: ((UInt64, WristFeedbackResult, String) -> Void)?
+    /// What the band said about its software when it connected (`BandInfo`).
+    var onInfo: ((String) -> Void)?
     /// What a band test heard back, as a line for the tests page.
     var onTrial: ((String) -> Void)?
     /// Whether each gesture is acknowledged to the band, as the Meta app does. Off unless a test turns it on.
@@ -524,7 +526,8 @@ final class SessionCore: @unchecked Sendable {
             let answer = NamedSettings.value(of: setting.id, from: payload)
             setting.kind = answer?.kind; setting.value = answer?.value
             let range = setting.range.map { " [\($0.lowerBound) to \($0.upperBound)]" } ?? ""
-            line(setting, "#\(setting.id) \(setting.name)\(range) = \(answer?.text ?? "not readable")")
+            let detail = setting.detail.isEmpty ? "" : " (\(setting.detail))"
+            line(setting, "#\(setting.id) \(setting.name)\(range) = \(answer?.text ?? "not readable")\(detail)")
             askNext()
         case "named_write":
             guard let setting = settingWrite else { return }
@@ -643,6 +646,12 @@ final class SessionCore: @unchecked Sendable {
                 // One line for the first answer; a line per gesture would bury the journal.
                 if !acknowledgementNoted { acknowledgementNoted = true; trial("acknowledge: \(answer(payload))") }
             case "try_pattern", "try_stop": trial("\(operation.dropFirst(4)): \(answer(payload))")
+            case "try_firmware":
+                // The whole answer as numbers: update state, device state, and each item's kind and version.
+                let numbers = (try? Fields(payload)).map { BandSettings.describe($0, depth: 0) } ?? "unreadable"
+                trial("firmware: \(payload.isEmpty ? "no answer" : numbers)")
+            case "device_info":
+                if let info = BandInfo.describe(payload) { record("band_info", info); onInfo?(info) }
             case "set_hand":
                 if snapshot.handSetting.wrote() { try rpc("read_hand", 6, 5) }
             case "read_hand":

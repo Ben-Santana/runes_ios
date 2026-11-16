@@ -204,7 +204,7 @@ final class BandProtocol {
             guard try f.integer(2) == 1 else { throw BandError.wire("Band rejected \(p.operation).") }
             if p.operation == "device_info" {
                 _ = try Fields(f.bytes(4)); stage = "ready"; deadline = .infinity
-                return (Data(), [.ready])
+                return (Data(), [.reply(operation: p.operation, payload: packet.payload), .ready])
             }
             if let flags = p.flags {
                 let wanted = try Fields(flags), accepted = try Fields(f.bytes(5))
