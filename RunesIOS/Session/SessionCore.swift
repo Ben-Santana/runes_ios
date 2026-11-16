@@ -32,6 +32,10 @@ final class SessionCore: @unchecked Sendable {
     var onPulse: ((WristFeedbackResult, TimeInterval) -> Void)?
     /// Every vibration request that went out to the band, as it is sent.
     var onPulseSent: ((BandPulse) -> Void)?
+    /// The band's settings as it last reported them (`BandSettings`).
+    var onSettings: ((String) -> Void)?
+    /// The band's answer to one of its own patterns, with the reply's shape.
+    var onPattern: ((UInt64, WristFeedbackResult, String) -> Void)?
     /// Orientation and gyroscope samples, whether they were started for the Mac or for this phone.
     var onMotion: ((RelayWire.Event.Kind, [Double]) -> Void)?
     var onGesture: ((GestureEvent) -> Void)?
@@ -73,6 +77,8 @@ final class SessionCore: @unchecked Sendable {
     private var buzzResting = false
     private var buzzGeneration = 0
     private var pulseSentAt: TimeInterval?
+    private var patternInFlight: UInt64?
+    private var lastSettings: String?
     private var pendingHandTarget: (band: UUID, attempt: Date)?
     private static let notNearbyAfter: TimeInterval = 30
 
@@ -444,6 +450,17 @@ final class SessionCore: @unchecked Sendable {
         sendNextPulse()
     }
 
+    /// Plays one of the band's own patterns, 1 or 2, in place of anything still playing.
+    /// The reference implementation calls these its gesture feedback patterns.
+    func perform(pattern: UInt64) {
+        guard snapshot.state == .streaming, let proto, proto.canSendWristFeedback, pattern == 1 || pattern == 2 else { return }
+        buzzGeneration += 1
+        buzzQueue = []; buzzResting = false
+        record("band_buzz", "pattern \(pattern) requested.")
+        do { try rpc("band_pattern", 6, 17, PB.field(2, PB.field(1, pattern))); patternInFlight = pattern }
+        catch { record("band_buzz", "Send unconfirmed.") }
+    }
+
     /// Sends the next pulse once the band has answered the last one and its gap has passed.
     private func sendNextPulse() {
         guard !buzzQueue.isEmpty, !buzzResting else { return }
@@ -519,6 +536,10 @@ final class SessionCore: @unchecked Sendable {
             case "set_hand":
                 if snapshot.handSetting.wrote() { try rpc("read_hand", 6, 5) }
             case "read_hand":
+                if let settings = BandSettings.describe(payload), settings != lastSettings {
+                    lastSettings = settings
+                    record("band_settings", settings); onSettings?(settings)
+                }
                 let hand = Handedness.read(payload)
                 if snapshot.handSetting.received(hand), let hand {
                     UserDefaults.standard.set(hand.rawValue, forKey: "bandHand")
@@ -542,11 +563,15 @@ final class SessionCore: @unchecked Sendable {
         case .wristFeedback(let result):
             if let feedback = feedbackInFlight {
                 record("wrist_feedback", "\(feedback.rawValue) \(result.rawValue)\(result == .accepted ? "" : ": " + (proto?.feedbackNote ?? "")).")
+            } else if let pattern = patternInFlight {
+                let note = proto?.feedbackNote ?? ""
+                record("band_buzz", "Pattern \(pattern) \(result.rawValue): \(note).")
+                onPattern?(pattern, result, note)
             } else {
                 if result != .accepted { record("band_buzz", "Pulse \(result.rawValue): \(proto?.feedbackNote ?? "").") }
                 if let sent = pulseSentAt { onPulse?(result, receipt.uptime - sent) }
             }
-            pulseSentAt = nil
+            pulseSentAt = nil; patternInFlight = nil
             feedbackInFlight = nil
             sendPendingHand(); sendNextPulse(); publish()
         case .emg(let values, let sequence, let timestamp):
