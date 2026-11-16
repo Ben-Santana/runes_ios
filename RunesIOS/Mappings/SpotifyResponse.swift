@@ -70,6 +70,24 @@ struct SpotifyHTTPFailure: Error, LocalizedError {
 }
 
 /// Deliberately contains no tokens, headers, account/device IDs, query values or content.
+/// The Spotify devices playback can move between.
+enum SpotifyDevices {
+    /// The device to move to: the one after the active device, going round, or the first when
+    /// none is active. Nil when there is nowhere else to go. The devices are put in the same
+    /// order every time, by name, so that one gesture steps through them all. A restricted
+    /// device is left out, since Spotify does not let an app control it.
+    static func next(in devices: [[String: Any]]) -> (id: String, name: String)? {
+        let usable = devices.compactMap { device -> (id: String, name: String, active: Bool)? in
+            guard let id = device["id"] as? String, !id.isEmpty, device["is_restricted"] as? Bool != true else { return nil }
+            return (id, device["name"] as? String ?? "", device["is_active"] as? Bool ?? false)
+        }.sorted { ($0.name.lowercased(), $0.id) < ($1.name.lowercased(), $1.id) }
+        guard let active = usable.firstIndex(where: \.active) else { return usable.first.map { ($0.id, $0.name) } }
+        guard usable.count > 1 else { return nil }
+        let next = usable[(active + 1) % usable.count]
+        return (next.id, next.name)
+    }
+}
+
 struct SpotifyDiagnosticRecord: Codable {
     let date: Date
     let method: String

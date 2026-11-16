@@ -9,6 +9,26 @@ struct SpotifyResponseTests {
     }
 
     static func main() throws {
+        // Switching device: the one after the active device in name order, going round.
+        let phone: [String: Any] = ["id": "p", "name": "iPhone", "is_active": true]
+        let speaker: [String: Any] = ["id": "s", "name": "Kitchen", "is_active": false]
+        let laptop: [String: Any] = ["id": "m", "name": "MacBook", "is_active": false]
+        precondition(SpotifyDevices.next(in: [speaker, laptop, phone])?.id == "s")
+        precondition(SpotifyDevices.next(in: [laptop, phone, speaker])?.name == "Kitchen")
+        var playing = speaker; playing["is_active"] = true
+        var idle = phone; idle["is_active"] = false
+        precondition(SpotifyDevices.next(in: [idle, playing, laptop])?.id == "m")
+        var last = laptop; last["is_active"] = true
+        precondition(SpotifyDevices.next(in: [idle, speaker, last])?.id == "p")
+        // With nothing active the first is taken; with only the active device there is nowhere to go.
+        precondition(SpotifyDevices.next(in: [speaker, idle])?.id == "p")
+        precondition(SpotifyDevices.next(in: [phone]) == nil)
+        precondition(SpotifyDevices.next(in: []) == nil)
+        // A restricted device and one with no id are left out.
+        let locked: [String: Any] = ["id": "c", "name": "Car", "is_active": false, "is_restricted": true]
+        precondition(SpotifyDevices.next(in: [phone, locked, ["name": "Ghost"]]) == nil)
+        precondition(SpotifyDevices.next(in: [phone, locked, speaker])?.id == "s")
+
         precondition(SpotifyHTTPFailure(data: Data(), status: 204, endpoint: "/v1/me/player/pause") == nil)
 
         // A development-mode rejection may be plain text, which the original parser discarded.
