@@ -215,10 +215,8 @@ struct FocusPage: View {
         let sentence = beats[index]
         let uses = Ingredients.uses(in: sentence, of: session.recipe.ingredients).map(\.text)
         VStack(alignment: .leading, spacing: 0) {
+            // Where in the recipe is the line of time above; here, only where in the step.
             HStack(spacing: 10) {
-                Text("Step \(session.step + 1)").font(.label)
-                Text("of \(session.count)").font(.caption).foregroundStyle(Color.muted)
-                Spacer()
                 if beats.count > 1 {
                     HStack(spacing: 4) {
                         ForEach(beats.indices, id: \.self) { beat in
@@ -229,17 +227,19 @@ struct FocusPage: View {
                     .animation(.standard, value: index)
                     .accessibilityHidden(true)
                 }
+                Spacer()
             }
-            .padding(.bottom, 22)
+            .frame(height: 3).padding(.bottom, 20)
             VStack(alignment: .leading, spacing: 22) {
                 SetType(text: words(sentence), size: size(sentence))
                 if !uses.isEmpty {
                     // The number first and in ink: it is what the eye comes back for.
                     VStack(alignment: .leading, spacing: 4) {
-                        ForEach(uses, id: \.self) { use in
+                        ForEach(uses.prefix(3), id: \.self) { use in
                             let line = Ingredients.split(use)
                             (Text(line.amount.map { $0 + " " } ?? "").foregroundStyle(Color.ink).fontWeight(.medium) + Text(line.name).foregroundStyle(Color.muted))
                         }
+                        if uses.count > 3 { Text("and \(uses.count - 3) more").foregroundStyle(Color.muted) }
                     }
                     .font(.geist(22, relativeTo: .title3)).monospacedDigit()
                 }
@@ -248,7 +248,7 @@ struct FocusPage: View {
             .transition(.opacity)
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, Metric.gutter).padding(.top, 22)
+        .padding(.horizontal, Metric.gutter).padding(.top, 14)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         // A new step is a new chapter: its number crosses behind the words once, as large
         // as the page, and is gone.
@@ -330,6 +330,7 @@ private struct LineRise: TextRenderer, Animatable {
 /// harder in its last minute, and shortens as the time goes. Touch is the hob's.
 struct TimerPile: View {
     let session: CookSession
+    var controls: CookControls? = nil
     let actions: CookActions
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -340,7 +341,8 @@ struct TimerPile: View {
             let pots = hob.pots
             // Waiting ones on top, then the counting ones, the most time left first.
             let order = pots.filter { $0.timer == nil } + pots.filter { $0.timer != nil }.sorted { left($0, now) > left($1, now) }
-            let shown = Array(order.suffix(4))
+            // Three at most: the one due next in full, two more as lines above it.
+            let shown = Array(order.suffix(3))
             VStack(spacing: 3) {
                 ForEach(Array(shown.enumerated()), id: \.element.id) { index, pot in
                     block(pot, rank: shown.count - 1 - index, selected: pots.count > 1 && !session.finished && hob.selected(pot), now: now)
@@ -363,14 +365,19 @@ struct TimerPile: View {
         let seconds = left(pot, now)
         let remaining = timer.map { 1 - $0.progress(at: now) } ?? 1
         let own = pot.step == session.step && !session.finished
-        let height: CGFloat = rank == 0 ? 108 : rank == 1 ? 62 : 46
-        let digits: CGFloat = rank == 0 ? 62 : rank == 1 ? 32 : 22
+        let height: CGFloat = rank == 0 ? 100 : 40
+        let digits: CGFloat = rank == 0 ? 60 : 20
         return HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(pot.label).font(rank == 0 ? .heading : .label).lineLimit(1)
-                if rank < 2 {
-                    Text(ringing ? "Time’s up" : paused ? "Paused" : timer == nil ? "Ready" : own ? "Counting" : "Step \(pot.step + 1)")
-                        .font(.caption).opacity(0.7)
+                if rank == 0 {
+                    // The one gesture that matters here is shown where it acts.
+                    HStack(spacing: 6) {
+                        if timer == nil || paused, let start = controls?.trigger(for: .timer) { TriggerGlyphs(steps: start.steps, size: 13) }
+                        Text(ringing ? "Time’s up" : paused ? "Paused" : timer == nil ? "Ready" : own ? "Counting" : "Step \(pot.step + 1)")
+                            .font(.caption)
+                    }
+                    .opacity(0.7)
                 }
             }
             Spacer(minLength: 8)
@@ -397,9 +404,10 @@ struct TimerPile: View {
             Rectangle().fill(counting ? Color.paper : Color.ink).frame(width: 5).padding(.vertical, 10).padding(.leading, 9).opacity(selected ? 1 : 0)
         }
         .overlay(alignment: .bottom) {
-            if counting, !ringing {
+            // Only the one due next simmers: one thing moving is alive, three are noise.
+            if counting, !ringing, rank == 0 {
                 Simmer(remaining: remaining, urgent: seconds <= 60, still: reduceMotion)
-                    .frame(height: 10).padding(.horizontal, Metric.gutter).padding(.bottom, rank == 0 ? 10 : 3)
+                    .frame(height: 10).padding(.horizontal, Metric.gutter).padding(.bottom, 10)
             }
         }
         .animation(.entrance, value: counting)
@@ -794,9 +802,7 @@ struct TimerDial: View {
     private static let size: CGFloat = 264
 
     /// Steps of the dial from nothing to a time, one tick each.
-    static func steps(for seconds: Int) -> Int {
-        seconds < 120 ? seconds / 10 : seconds < 900 ? 12 + (seconds - 120) / 30 : 38 + (seconds - 900) / 60
-    }
+    static func steps(for seconds: Int) -> Int { DialTime.steps(for: seconds) }
 
     @State private var open = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion

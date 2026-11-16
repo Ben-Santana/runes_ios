@@ -42,6 +42,7 @@ struct CookingScreen: View {
     @ObservedObject var store: CookStore
     @ObservedObject private var assistant: CookAssistant
     @State private var showIngredients = false
+    @State private var confirmStop = false
     @State private var appeared = false
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
@@ -77,13 +78,21 @@ struct CookingScreen: View {
                         .accessibilityLabel(assistant.isListening ? "Done asking" : "Ask a question")
                 }
             }
-            if let session = store.session, !session.recipe.ingredients.isEmpty {
+            if let session = store.session {
                 ToolbarItem(placement: .primaryAction) {
-                    Button { showIngredients = true } label: { LucideIcon(.listChecks, size: 20).frame(width: 36, height: 36) }
-                        .accessibilityLabel("Ingredients")
+                    Menu {
+                        if !session.recipe.ingredients.isEmpty { menuItem("Ingredients", .listChecks) { showIngredients = true } }
+                        if !session.finished { menuItem("Stop cooking", .x, role: .destructive) { confirmStop = true } }
+                    } label: {
+                        LucideIcon(.ellipsis, size: 20).frame(width: 36, height: 36).contentShape(Rectangle())
+                    }
+                    .accessibilityLabel("More")
                 }
             }
         }
+        .confirmationDialog("Stop cooking?", isPresented: $confirmStop, titleVisibility: .visible) {
+            Button("Stop cooking", role: .destructive) { store.end(); dismiss() }
+        } message: { Text("Timers that are running are cancelled.") }
         .sheet(isPresented: $showIngredients) {
             if let session = store.session {
                 IngredientsSheet(session: session, toggle: store.toggle).presentationDetents([.medium, .large])
@@ -173,14 +182,17 @@ struct CookingView: View {
             .animation(reduceMotion ? nil : .entrance, value: session.gathering)
             .animation(reduceMotion ? nil : .entrance, value: session.step)
             }
-            if !session.finished { NextPeek(session: session) }
+            // The focus look says one thing at a time; what comes next is a swipe away.
+            let quiet = look == .focus && !session.gathering && !session.finished
+            if !session.finished, !quiet { NextPeek(session: session) }
             switch look {
             case .hob: Hob(session: session, actions: actions)
             case .numbers: TimerShelf(session: session, actions: actions)
             case .rail, .poster: TimerBars(session: session, actions: actions)
-            case .focus: TimerPile(session: session, actions: actions)
+            case .focus: TimerPile(session: session, controls: controls, actions: actions).padding(.bottom, quiet ? 6 : 0)
             }
-            legend(ringing: ringing, now: now).padding(.top, 16).padding(.bottom, 10).padding(.horizontal, 12)
+            // Its gestures are taught on the get-ready page and then left out of the way.
+            if !quiet { legend(ringing: ringing, now: now).padding(.top, 16).padding(.bottom, 10).padding(.horizontal, 12) }
             if session.finished {
                 Button(action: actions.done) { Text("Done") }.buttonStyle(CapsuleAction(filled: true))
                     .padding(.horizontal, Metric.gutter).padding(.top, 6)
@@ -189,12 +201,15 @@ struct CookingView: View {
                 if session.finished { actions.go(0, nil) } else { confirmStop = true }
             }
             .buttonStyle(.quiet).padding(.bottom, 4)
+            .frame(height: quiet ? 0 : nil).opacity(quiet ? 0 : 1).disabled(quiet)
             // On the button, so the question appears where it was asked.
             .confirmationDialog("Stop cooking?", isPresented: $confirmStop, titleVisibility: .visible) {
                 Button("Stop cooking", role: .destructive, action: actions.stop)
             } message: { Text("Timers that are running are cancelled.") }
         }
         .overlay { dialFace }
+        .sensoryFeedback(.selection, trigger: dialing)
+        .sensoryFeedback(.impact(flexibility: .soft), trigger: asking == .idle)
         .animation(reduceMotion ? nil : .entrance, value: dialing != nil)
         .overlay(alignment: .topTrailing) { BuzzMark(pulse: pulse).padding(.trailing, Metric.gutter).padding(.top, 26) }
         .animation(reduceMotion ? nil : .entrance, value: session.finished)
