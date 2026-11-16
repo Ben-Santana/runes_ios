@@ -36,13 +36,14 @@ enum BeadDraw {
         Path(ellipseIn: CGRect(x: centre.x - r, y: centre.y - r, width: 2 * r, height: 2 * r))
     }
 
-    /// `level` is how full of ink it is, 0...1. `dot` is the ring's charge mark, 0...1.
+    /// `level` is how full of ink it is, 0...1, and `tilt` how far its surface is tipped, in
+    /// radians. `dot` is the ring's charge mark, 0...1.
     static func body(_ context: inout GraphicsContext, at centre: CGPoint, radius r: Double, stroke: Color,
-                     level: Double = 0, dot: Double = 0, alpha: Double = 1) {
+                     level: Double = 0, tilt: Double = 0, dot: Double = 0, alpha: Double = 1) {
         guard r > 0.5, alpha > 0.005 else { return }
         let body = circle(centre, r)
         context.fill(body, with: .color(Color.paper.opacity(alpha)))
-        if level > 0.01 { ink(&context, at: centre, radius: r, level: level, alpha: alpha) }
+        if level > 0.01 { ink(&context, at: centre, radius: r, level: level, tilt: tilt, alpha: alpha) }
         context.stroke(body, with: .color(stroke.opacity(alpha)), lineWidth: hair)
         if dot > 0.01 {
             let d = r * 0.32
@@ -50,14 +51,17 @@ enum BeadDraw {
         }
     }
 
-    private static func ink(_ context: inout GraphicsContext, at centre: CGPoint, radius r: Double, level: Double, alpha: Double) {
+    private static func ink(_ context: inout GraphicsContext, at centre: CGPoint, radius r: Double, level: Double, tilt: Double, alpha: Double) {
         var inside = context
         inside.clip(to: circle(centre, r - 0.3))
+        if tilt != 0, level < 0.995 {
+            inside.translateBy(x: centre.x, y: centre.y); inside.rotate(by: .radians(tilt)); inside.translateBy(x: -centre.x, y: -centre.y)
+        }
         let shade = GraphicsContext.Shading.color(Color.ink.opacity(alpha))
         guard level < 0.995 else { inside.fill(circle(centre, r), with: shade); return }
         let top = centre.y + r - 2 * r * level
         let half = max(0, r * r - (top - centre.y) * (top - centre.y)).squareRoot()
-        inside.fill(Path(CGRect(x: centre.x - r, y: top, width: 2 * r, height: centre.y + r - top)), with: shade)
+        inside.fill(Path(CGRect(x: centre.x - 2 * r, y: top, width: 4 * r, height: centre.y + 2 * r - top)), with: shade)
         // The surface, an ellipse as the ring's shadows are, with its near edge picked out.
         let deep = half * 0.26
         inside.fill(Path(ellipseIn: CGRect(x: centre.x - half, y: top - deep, width: 2 * half, height: 2 * deep)), with: shade)
@@ -81,9 +85,11 @@ enum BeadDraw {
     }
 
     /// The mark a bead leaves on the ground under it, as the ring draws it.
-    static func shadow(_ context: inout GraphicsContext, at foot: CGPoint, radius r: Double, lift: Double, stroke: Color, alpha: Double = 1) {
+    /// `flat` is how much the ground is foreshortened from where it is seen.
+    static func shadow(_ context: inout GraphicsContext, at foot: CGPoint, radius r: Double, lift: Double, stroke: Color,
+                       flat: Double = sin(RingGeometry.elevation), alpha: Double = 1) {
         let wide = r * max(0.45, 0.8 - max(0, lift) / 60)
-        let path = Path(ellipseIn: CGRect(x: foot.x - wide, y: foot.y - wide * sin(RingGeometry.elevation), width: 2 * wide, height: 2 * wide * sin(RingGeometry.elevation)))
+        let path = Path(ellipseIn: CGRect(x: foot.x - wide, y: foot.y - wide * flat, width: 2 * wide, height: 2 * wide * flat))
         context.stroke(path, with: .color(stroke.opacity(0.35 * alpha * max(0.25, 1 - max(0, lift) / 20))), lineWidth: 0.9)
     }
 }
@@ -115,6 +121,63 @@ enum BeadSphere {
         return centred
     }
 
+    private static var glyphs: [Character: (path: Path, advance: CGFloat)] = [:]
+
+    /// A word or a time as one shape in the app's face, a hundred units high in the em,
+    /// centred on nothing: its box is returned with it. Set tight, as large figures are.
+    static func outline(_ text: String) -> (path: Path, box: CGRect) {
+        let font = CTFontCreateWithName((UIFont(name: "Geist-Medium", size: 100)?.fontName ?? UIFont.systemFont(ofSize: 100, weight: .medium).fontName) as CFString, 100, nil)
+        var path = Path(), x: CGFloat = 0
+        for character in text {
+            if glyphs[character] == nil {
+                var units = Array(String(character).utf16), glyph = CGGlyph()
+                var shape = Path(), advance = CGSize(width: 50, height: 0)
+                if CTFontGetGlyphsForCharacters(font, &units, &glyph, 1) {
+                    var flip = CGAffineTransform(scaleX: 1, y: -1)
+                    if let outline = CTFontCreatePathForGlyph(font, glyph, &flip) { shape = Path(outline) }
+                    CTFontGetAdvancesForGlyphs(font, .horizontal, &glyph, &advance, 1)
+                }
+                glyphs[character] = (shape, advance.width)
+            }
+            guard let known = glyphs[character] else { continue }
+            path.addPath(known.path.applying(CGAffineTransform(translationX: x, y: 0)))
+            x += known.advance - 4
+        }
+        return (path, path.boundingRect)
+    }
+
+    /// A shape with every point of it moved by `place`, curves and long lines taken in
+    /// short pieces so they bend with whatever they are laid on.
+    static func laid(_ shape: Path, _ place: (CGPoint) -> CGPoint) -> Path {
+        func mix(_ a: CGPoint, _ b: CGPoint, _ t: Double) -> CGPoint { CGPoint(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t) }
+        var result = Path(), last = CGPoint.zero, start = CGPoint.zero
+        shape.forEach { element in
+            switch element {
+            case .move(let to):
+                result.move(to: place(to)); last = to; start = to
+            case .line(let to):
+                for step in 1...4 { result.addLine(to: place(mix(last, to, Double(step) / 4))) }
+                last = to
+            case .quadCurve(let to, let control):
+                for step in 1...8 {
+                    let t = Double(step) / 8
+                    result.addLine(to: place(mix(mix(last, control, t), mix(control, to, t), t)))
+                }
+                last = to
+            case .curve(let to, let control1, let control2):
+                for step in 1...8 {
+                    let t = Double(step) / 8
+                    let a = mix(last, control1, t), b = mix(control1, control2, t), c = mix(control2, to, t)
+                    result.addLine(to: place(mix(mix(a, b, t), mix(b, c, t), t)))
+                }
+                last = to
+            case .closeSubpath:
+                result.closeSubpath(); last = start
+            }
+        }
+        return result
+    }
+
     /// A shape in its 24-unit box laid on a ball seen square on, around the unit vector
     /// `facing` (x right, y up, z toward the eye): distances from the middle become arcs,
     /// so it curves with the bead and slides toward the edge as the bead turns.
@@ -129,33 +192,7 @@ enum BeadSphere {
             let on = arc < 1e-6 ? n : n * cos(arc) + (right * u + up * v) * (sin(arc) / arc)
             return CGPoint(x: centre.x + radius * on.x, y: centre.y - radius * on.y)
         }
-        func mix(_ a: CGPoint, _ b: CGPoint, _ t: Double) -> CGPoint { CGPoint(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t) }
-        var wrapped = Path(), last = CGPoint.zero, start = CGPoint.zero
-        shape.forEach { element in
-            switch element {
-            case .move(let to):
-                wrapped.move(to: place(to)); last = to; start = to
-            case .line(let to):
-                for step in 1...4 { wrapped.addLine(to: place(mix(last, to, Double(step) / 4))) }
-                last = to
-            case .quadCurve(let to, let control):
-                for step in 1...8 {
-                    let t = Double(step) / 8
-                    wrapped.addLine(to: place(mix(mix(last, control, t), mix(control, to, t), t)))
-                }
-                last = to
-            case .curve(let to, let control1, let control2):
-                for step in 1...8 {
-                    let t = Double(step) / 8
-                    let a = mix(last, control1, t), b = mix(control1, control2, t), c = mix(control2, to, t)
-                    wrapped.addLine(to: place(mix(mix(a, b, t), mix(b, c, t), t)))
-                }
-                last = to
-            case .closeSubpath:
-                wrapped.closeSubpath(); last = start
-            }
-        }
-        return wrapped
+        return laid(shape, place)
     }
 }
 
@@ -293,13 +330,14 @@ struct BeadCookPage: View {
                 VStack(spacing: 0) {
                     if look == .abacus { AbacusFace(session: session, plan: plan, now: now, actions: actions).padding(.top, 14) }
                     else { LoopFace(session: session, plan: plan, now: now, actions: actions) }
-                    reading(plan, now).padding(.top, 14)
+                    // The loop's own figure counts the wait to a start, so its ticket need not.
+                    reading(plan, now, landing: look != .loop).padding(.top, 14)
                 }
             }
         }
     }
 
-    private func reading(_ plan: StationPlan, _ now: Date) -> some View {
+    private func reading(_ plan: StationPlan, _ now: Date, landing: Bool = true) -> some View {
         let rung = session.ringing(at: now)
         return VStack(spacing: 0) {
             ZStack {
@@ -309,7 +347,7 @@ struct BeadCookPage: View {
                     TimeUp(timer: first, place: plan.spot(step: first.step).vessel, others: rung.count - 1, cue: cue, controls: controls, stop: actions.stopRinging)
                         .transition(.opacity)
                 } else {
-                    Ticket(session: session, plan: plan, now: now, beads: true)
+                    Ticket(session: session, plan: plan, now: now, beads: true, landing: landing)
                 }
             }
             .clipped()
