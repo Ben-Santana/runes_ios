@@ -623,6 +623,8 @@ final class SessionCore: @unchecked Sendable {
                 }
                 if snapshot.state == .streaming || pendingStreams == nil { try reconcileStreams() }
             case "start_streams":
+                // The band's answer as numbers only, to see what a firmware reports about its streams.
+                record("band_streams", (try? Fields(payload)).map { BandSettings.describe($0, depth: 0) } ?? "unreadable")
                 activeStreams = pendingStreams
                 pendingStreams = nil
                 let emgOn = pendingEMG ?? false
