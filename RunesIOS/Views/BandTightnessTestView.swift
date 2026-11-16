@@ -20,40 +20,26 @@ final class BandTightnessTest: ObservableObject {
     }
 }
 
-/// Asks the band for its own tightness check once, and shows everything the band sends back
-/// in the next half minute. It writes no setting the band keeps.
+/// Tries each way of getting the band's tightness in turn on one tap, and shows everything the
+/// band sends back. It writes no setting the band keeps.
 struct BandTightnessPanel: View {
     let ready: Bool
     @ObservedObject private var test = BandTightnessTest.shared
     @ObservedObject private var tests = BandTests.shared
-    @State private var action: UInt64?
-    @State private var value: Int64?
 
     var body: some View {
         if let trigger = test.trigger {
-            let actions = BandTightness.actions(trigger.capability), values = BandTightness.values(trigger.capability)
-            let sendable = !actions.isEmpty && values?.isEmpty != true
-            PanelGroup("Band tightness", caption: sendable
-                       ? "Wear the band as usual and keep your arm still. This asks the band for its own tightness check once and listens for \(Int(BandTightness.listen)) seconds. No setting is written."
-                       : "The band describes this check in a way this test cannot send. Copy the results so it can be worked out.") {
+            let runs = BandTightness.plan(trigger.capability) != nil
+            PanelGroup("Band tightness", caption: runs
+                       ? "Wear the band as usual and keep your arm still. One tap tries each way of getting the band's tightness in turn, for up to a minute, and stops at the first that returns a number. The streams are put back after. No setting is written."
+                       : "The band does not list running this check. Copy the results so it can be worked out.") {
                 lines("#\(trigger.setting.id) \(trigger.setting.name): \(trigger.capability.summary)")
-                if actions.count > 1 {
-                    Rule()
-                    ChipRow(selection: Binding(get: { action ?? actions[0] }, set: { action = $0 }), options: actions) { "Action \($0)" }
-                        .padding(.vertical, 12)
-                }
-                if let values, !values.isEmpty {
-                    Rule()
-                    ChipRow(selection: Binding(get: { chosen(from: values, trigger.capability) }, set: { value = $0 }), options: values) { "Value \($0)" }
-                        .padding(.vertical, 12)
-                }
                 Rule()
                 ActionRow(test.listening ? "Listening to the band…" : "Run the tightness check") {
                     test.start()
-                    SessionController.shared.checkBandTightness(trigger.setting, action: action.flatMap { actions.contains($0) ? $0 : nil } ?? actions[0],
-                                                                value: values.map { chosen(from: $0, trigger.capability) })
+                    SessionController.shared.checkBandTightness(trigger.setting, worn: tests.named[BandTightness.worn]?.id)
                 }
-                .disabled(!ready || !sendable || test.listening || tests.busy)
+                .disabled(!ready || !runs || test.listening || tests.busy)
                 if !test.lines.isEmpty {
                     Rule()
                     lines(test.lines.joined(separator: "\n"))
@@ -66,13 +52,6 @@ struct BandTightnessPanel: View {
         }
     }
 
-    /// The value picked, or the one in the band's description, or the first.
-    private func chosen(from values: [Int64], _ capability: BandCapability) -> Int64 {
-        if let value, values.contains(value) { return value }
-        if let current = capability.current, values.contains(current) { return current }
-        return values[0]
-    }
-
     private func lines(_ text: String) -> some View {
         Text(text).font(.code).foregroundStyle(Color.muted).textSelection(.enabled)
             .padding(.horizontal, Metric.inset).padding(.vertical, 12).frame(maxWidth: .infinity, alignment: .leading)
@@ -81,17 +60,30 @@ struct BandTightnessPanel: View {
 
 #if DEBUG
 extension BandTightnessTest {
-    /// Stands in for a band that has described the check and answers it over a few seconds.
+    /// Stands in for a band that has described the check and returns a number once updates are started.
     func preview() async {
         let described = PB.field(2, 1) + PB.field(NamedSettings.field, PB.field(2, PB.field(3, Data(BandTightness.trigger.utf8)) + PB.field(4, 3)
-            + PB.field(6, Data([1])) + PB.field(17, Data()) + PB.field(18, 1)))
+            + PB.field(6, Data([2, 3, 4])) + PB.field(7, PB.field(3, 100)) + PB.field(18, 1)))
         guard let setting = NamedSettings.setting(from: described), let capability = BandCapability(describing: described) else { return }
         self.described(setting, capability)
+        func answer(_ action: UInt64) -> String {
+            BandTightness.reply(PB.field(2, 1) + PB.field(NamedSettings.field, PB.field(3, PB.field(1, 3) + PB.field(2, action))))
+        }
+        let update = PB.field(15, PB.field(1, PB.field(1, 3) + PB.field(2, 2) + PB.field(4, PB.field(1, 37))))
         let steps: [(Double, String)] = [
-            (3, "Asked: setting 3 action 1. Listening for 30 seconds."),
-            (0.4, "+0.1s " + BandTightness.reply(PB.field(2, 1) + PB.field(NamedSettings.field, PB.field(3, PB.field(1, 3) + PB.field(2, 1))))),
-            (2.3, "+2.4s " + BandTightness.describe(kind: BandTightness.update, channel: 5, payload: PB.field(21, PB.field(2, 1) + PB.field(3, 2)))),
-            (3, "+30.0s Stopped listening. 1 other messages.")
+            (3, "Started: setting 3, actions 2 3 4."),
+            (0.3, "+0.1s On wrist: yes."),
+            (0.3, "+0.1s Asked action 2: run alone."),
+            (0.3, "+0.2s " + answer(2)),
+            (2, "+5.2s Asked action 3."),
+            (0.3, "+5.3s " + answer(3)),
+            (1.5, "+8.3s Asked action 2: after action 3."),
+            (0.3, "+8.4s " + answer(2)),
+            (1.5, "+9.9s " + BandTightness.describe(kind: BandTightness.update, channel: 1, payload: update)),
+            (0.1, "+9.9s Number: 37."),
+            (0.3, "+9.9s Asked action 4."),
+            (0.3, "+10.0s " + answer(4)),
+            (0.1, "+10.0s Done: tightness 37 arrived, after action 3. 1 other messages.")
         ]
         for (index, step) in steps.enumerated() {
             try? await Task.sleep(for: .seconds(step.0))
