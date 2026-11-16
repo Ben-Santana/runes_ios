@@ -76,12 +76,12 @@ struct StationsPage: View {
         let scene = scene(place, plan, now)
         let ringing = scene.timer?.isRinging(at: now) ?? false, paused = scene.timer?.isPaused ?? false
         let left = scene.timer.map { ringing ? 0 : $0.remaining(at: now) }
-        let kind: Vessel.Kind = place == .oven ? .oven : place == .counter ? .counter : scene.vessel == "Pot" ? .pot : .skillet
+        let kind: Vessel.Kind = place == .oven ? .oven : place == .counter ? (scene.vessel == "Board" ? .board : .bowl) : scene.vessel == "Pot" ? .pot : .skillet
         return VStack(spacing: 4) {
             Vessel(kind: kind, on: scene.timer != nil, here: scene.here, lively: scene.timer != nil && !paused && !ringing, rattling: ringing,
                    text: left.map(DurationFinder.clock) ?? scene.waiting.map(DurationFinder.clock) ?? (scene.here ? "now" : ""),
                    quiet: left == nil || paused)
-                .frame(height: 124)
+                .frame(height: 128)
             Text(scene.vessel ?? "").font(.label).foregroundStyle(scene.here || scene.timer != nil ? Color.ink : Color.muted)
         }
         .contentShape(Rectangle())
@@ -93,13 +93,15 @@ struct StationsPage: View {
     }
 }
 
-/// A pan seen from above, drawn in ink: a skillet with its handle, a pot with its ears, an
-/// oven with its knobs, a board. Idle it is an outline; with a timer going it is solid,
-/// with the time in it, and it shows it is cooking: steam off a pot, fat spitting round
-/// a skillet, heat shimmering over an oven. When its time is up it rattles until it is
-/// stopped. With Reduce Motion it holds still.
+/// A utensil drawn in line, the way a good cookbook draws them. A skillet from above with
+/// its rim, a riveted handle and the hole it hangs by; a pot with two loop handles and a
+/// lid with its knob; an oven from the front with a door, a window and knobs; a bowl with
+/// a spoon in it; a board with a knife on it. Idle it is a quiet outline. With a timer
+/// going, what is in it is ink, with the time in it, and it shows that it is cooking:
+/// steam off a pot, fat spitting from a skillet, heat over an oven. When its time is up
+/// it rattles until it is stopped. With Reduce Motion it holds still.
 private struct Vessel: View {
-    enum Kind { case skillet, pot, oven, counter }
+    enum Kind { case skillet, pot, oven, bowl, board }
     let kind: Kind
     let on: Bool
     let here: Bool
@@ -108,47 +110,97 @@ private struct Vessel: View {
     let text: String
     let quiet: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    private static let round: CGFloat = 84
-
-    private func piece<S: InsettableShape>(_ shape: S) -> some View {
-        shape.fill(on ? Color.ink : Color.paper)
-            .overlay(shape.strokeBorder(on || here ? Color.ink : Color.faint, lineWidth: here ? 3 : 1.5))
-    }
+    private static let radius: CGFloat = 44
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion || !(lively || rattling))) { context in
             let t = context.date.timeIntervalSinceReferenceDate
-            VStack(spacing: 2) {
+            VStack(spacing: 0) {
                 Canvas { canvas, size in if lively, !reduceMotion { life(&canvas, size, t) } }
-                    .frame(height: 30)
+                    .frame(height: 28)
                 ZStack {
-                    switch kind {
-                    case .skillet:
-                        piece(Capsule()).frame(width: 40, height: 11).offset(x: Self.round / 2 + 14)
-                        piece(Circle()).frame(width: Self.round, height: Self.round)
-                    case .pot:
-                        piece(Capsule()).frame(width: 12, height: 24).offset(x: -Self.round / 2 - 3)
-                        piece(Capsule()).frame(width: 12, height: 24).offset(x: Self.round / 2 + 3)
-                        piece(Circle()).frame(width: Self.round, height: Self.round)
-                    case .oven:
-                        piece(RoundedRectangle(cornerRadius: 14)).frame(width: 112, height: 80)
-                        HStack(spacing: 5) { ForEach(0..<3, id: \.self) { _ in Circle().fill(on ? Color.paper : Color.faint).frame(width: 5, height: 5) } }
-                            .offset(x: -36, y: -28)
-                    case .counter:
-                        piece(RoundedRectangle(cornerRadius: 9)).frame(width: 112, height: 72)
-                        Circle().strokeBorder(on ? Color.paper : Color.faint, lineWidth: 1.5).frame(width: 9, height: 9).offset(x: 42, y: -24)
-                    }
+                    Canvas { canvas, size in draw(&canvas, size) }
                     Text(text)
-                        .font(.geist(text.count > 4 ? 20 : 24, .medium, relativeTo: .title2)).monospacedDigit().tracking(-0.8)
+                        .font(.geist(text.count > 4 ? 19 : 23, .medium, relativeTo: .title2)).monospacedDigit().tracking(-0.8)
                         .foregroundStyle(on ? Color.paper : quiet ? Color.muted : Color.ink).opacity(on && quiet ? 0.6 : 1)
                         .contentTransition(.numericText(countsDown: true))
+                        .offset(y: kind == .oven ? 8 : 0)
                 }
-                .frame(height: Self.round + 4)
+                .frame(height: 100)
                 // A lid that rattles: a few degrees either way, fast.
                 .rotationEffect(.degrees(rattling && !reduceMotion ? sin(t * 38) * 3.5 : 0))
             }
             .frame(maxWidth: .infinity)
             .animation(.entrance, value: on)
+        }
+    }
+
+    private func draw(_ canvas: inout GraphicsContext, _ size: CGSize) {
+        let centre = CGPoint(x: size.width / 2, y: size.height / 2), r = Self.radius
+        let line = on || here ? Color.ink : Color.muted
+        let weight: CGFloat = here ? 2.5 : 1.5
+        let style = StrokeStyle(lineWidth: weight, lineCap: .round, lineJoin: .round)
+        let thin = StrokeStyle(lineWidth: 1, lineCap: .round, lineJoin: .round)
+        // Shapes are laid out round the origin, then turned and moved to the middle.
+        func placed(_ path: Path, turned degrees: Double = 0) -> Path {
+            path.applying(CGAffineTransform(translationX: centre.x, y: centre.y).rotated(by: degrees * .pi / 180))
+        }
+        func circle(_ radius: CGFloat, x: CGFloat = 0, y: CGFloat = 0) -> Path {
+            Path(ellipseIn: CGRect(x: x - radius, y: y - radius, width: radius * 2, height: radius * 2))
+        }
+        func outlined(_ path: Path, _ stroke: StrokeStyle) {
+            canvas.fill(path, with: .color(Color.paper))
+            canvas.stroke(path, with: .color(line), style: stroke)
+        }
+        switch kind {
+        case .skillet:
+            // The handle first, so the pan sits on top of where it joins.
+            outlined(placed(Path(roundedRect: CGRect(x: r - 6, y: -6.5, width: 58, height: 13), cornerRadius: 6.5), turned: 24), style)
+            canvas.stroke(placed(circle(2.4, x: r + 44), turned: 24), with: .color(line), style: thin)
+            outlined(placed(circle(r)), style)
+            canvas.fill(placed(circle(1.6, x: r + 4, y: -2.5), turned: 24), with: .color(line))
+            canvas.fill(placed(circle(1.6, x: r + 4, y: 2.5), turned: 24), with: .color(line))
+            // The cooking surface inside the rim: ink when something is in it.
+            if on { canvas.fill(placed(circle(r - 7)), with: .color(Color.ink)) }
+            else { canvas.stroke(placed(circle(r - 7)), with: .color(line), style: thin) }
+        case .pot:
+            for side in [-1.0, 1.0] {
+                outlined(placed(Path(roundedRect: CGRect(x: side * (r + 4) - 9, y: -13, width: 18, height: 26), cornerRadius: 8)), style)
+            }
+            outlined(placed(circle(r)), style)
+            if on {
+                canvas.fill(placed(circle(r - 7)), with: .color(Color.ink))
+            } else {
+                // The lid on, with its knob, unless a time is waiting to be read there.
+                canvas.stroke(placed(circle(r - 7)), with: .color(line), style: thin)
+                if text.isEmpty { outlined(placed(circle(8)), style); canvas.fill(placed(circle(2)), with: .color(line)) }
+            }
+        case .oven:
+            let body = CGRect(x: -56, y: -44, width: 112, height: 88)
+            outlined(placed(Path(roundedRect: body, cornerRadius: 12)), style)
+            canvas.stroke(placed(Path { $0.move(to: CGPoint(x: -56, y: -24)); $0.addLine(to: CGPoint(x: 56, y: -24)) }), with: .color(line), style: thin)
+            for knob in 0..<3 { canvas.stroke(placed(circle(3.5, x: -42 + CGFloat(knob) * 13, y: -34)), with: .color(line), style: thin) }
+            canvas.stroke(placed(Path { $0.move(to: CGPoint(x: 24, y: -34)); $0.addLine(to: CGPoint(x: 44, y: -34)) }), with: .color(line), style: style)
+            // The door's window: ink while something is in there.
+            let window = placed(Path(roundedRect: CGRect(x: -44, y: -14, width: 88, height: 48), cornerRadius: 8))
+            if on { canvas.fill(window, with: .color(Color.ink)) } else { canvas.stroke(window, with: .color(line), style: thin) }
+        case .bowl:
+            outlined(placed(circle(r - 2)), style)
+            if on { canvas.fill(placed(circle(r - 10)), with: .color(Color.ink)) }
+            else { canvas.stroke(placed(circle(r - 10)), with: .color(line), style: thin) }
+            // A spoon left in it, its handle over the rim.
+            outlined(placed(Path(roundedRect: CGRect(x: 14, y: -3.5, width: 46, height: 7), cornerRadius: 3.5), turned: -38), style)
+            outlined(placed(Path(ellipseIn: CGRect(x: 2, y: -8, width: 20, height: 16)), turned: -38), style)
+        case .board:
+            outlined(placed(Path(roundedRect: CGRect(x: -54, y: -36, width: 108, height: 72), cornerRadius: 10)), style)
+            canvas.stroke(placed(circle(4.5, x: 42, y: -24)), with: .color(line), style: thin)
+            // A knife across it: the blade in outline, the handle solid.
+            let blade = Path { path in
+                path.move(to: CGPoint(x: -40, y: 4)); path.addQuadCurve(to: CGPoint(x: 8, y: -6), control: CGPoint(x: -18, y: -8))
+                path.addLine(to: CGPoint(x: 8, y: 5)); path.closeSubpath()
+            }
+            outlined(placed(blade, turned: -14), StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+            canvas.fill(placed(Path(roundedRect: CGRect(x: 8, y: -6, width: 30, height: 11), cornerRadius: 4), turned: -14), with: .color(line))
         }
     }
 
@@ -191,7 +243,7 @@ private struct Vessel: View {
                 }
                 canvas.stroke(path, with: .color(Color.ink.opacity(0.9 - Double(line) * 0.3)), style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
             }
-        case .counter:
+        case .bowl, .board:
             break
         }
     }
@@ -271,11 +323,16 @@ struct CookReceipt: View {
     var ended = Date()
     /// Nil for a receipt from the past, which is only read.
     let addNote: (() -> Void)?
+    @State private var bow: BandGesture?
 
     var body: some View {
         let plan = StationPlan(steps: session.recipe.steps)
         let minutes = max(1, Int(ended.timeIntervalSince(session.started) / 60))
         VStack(alignment: .leading, spacing: 0) {
+            // The ring of beads signs the receipt, and takes a bow when it is printed.
+            HairlineRing(phase: .connected, gesture: bow).frame(height: 150).frame(maxWidth: .infinity)
+                .padding(.bottom, 6).accessibilityHidden(true)
+                .onAppear { bow = BandGesture(id: 1, kind: .doubleTap, finger: 2, at: Date()) }
             Text(session.recipe.title.uppercased()).font(ticketFont(22, .bold)).fixedSize(horizontal: false, vertical: true)
             HStack {
                 Text(session.started.formatted(date: .abbreviated, time: .shortened).uppercased())
