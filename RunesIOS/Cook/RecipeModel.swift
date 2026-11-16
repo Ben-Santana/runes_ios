@@ -46,6 +46,19 @@ enum RecipeModel {
     done. Leave out stories, adverts, comments and anything that is not part of the recipe.
     """
 
+    /// One thing worth knowing before cooking a recipe that the rules can't see: the step
+    /// people get wrong. Nil when the model isn't there or has nothing to add.
+    static func tip(for recipe: Recipe) async -> String? {
+        guard availability == .ready else { return nil }
+        let session = LanguageModelSession(instructions: """
+        You read a recipe and say the one thing most likely to go wrong for a home cook, and how to avoid it, \
+        in one short plain sentence. Use only what the recipe says and sound general cooking knowledge. No lists.
+        """)
+        let answer = try? await session.respond(to: recipe.text, options: GenerationOptions(temperature: 0)).content
+        let tip = (answer ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return tip.isEmpty || tip.count > 220 ? nil : tip
+    }
+
     private static func recipe(_ title: String?, _ yield: String?, _ ingredients: [String]?, _ steps: [String]?, _ notes: [String]?, _ nutrition: String?) -> Recipe {
         func tidy(_ lines: [String]?) -> [String] {
             (lines ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }

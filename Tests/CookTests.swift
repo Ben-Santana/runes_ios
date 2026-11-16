@@ -451,6 +451,17 @@ struct CookTests {
         precondition(starterPlan.vessel(at: .frontLeft) == "Pot" && starterPlan.vessel(at: .backLeft) == nil && starterPlan.spot(step: 99).place == .counter)
         precondition(StationPlan(steps: ["Wait.", "Wait more."]).spots.map(\.vessel) == ["Counter", "Counter"], "No place named: the counter")
 
+        // Before you start, by rules.
+        precondition(RecipeBrief.lines(.starter) == ["Uses 2 burners.", "Longest wait: 15 min at step 3, simmer.", "Don’t miss at step 4: keep a cup of the cooking water."], "\(RecipeBrief.lines(.starter))")
+        let brief = RecipeBrief.lines(.salmonPasta)
+        precondition(brief.first == "Uses 2 burners and the air fryer." && brief.contains { $0.hasPrefix("Don’t miss at step 2: keeping at least 1 cup") }, "\(brief)")
+        precondition(RecipeBrief.lines(Recipe(title: "Toast", ingredients: [], steps: ["Chop.", "Preheat the oven to 200°C."])).first == "Start first: preheat the oven to 200°C.")
+        var cooked = Recipe.starter
+        precondition(RecipeBrief.reason(cooked, now: t0) == "You haven’t cooked this yet")
+        cooked.lastCooked = t0.addingTimeInterval(-3 * 86_400 - 60)
+        precondition(RecipeBrief.reason(cooked, now: t0) == "Last cooked 3 days ago")
+        precondition(RecipeBrief.wrist(.frontRight) == [.tap, .tap] && RecipeBrief.wrist(.oven) == [.long] && RecipeBrief.wrist(.counter).isEmpty)
+
         // MARK: The wrist dial
         // Still, the sensor's offset is learned; held, a steady turn about one axis comes out in degrees.
         var wrist = WristDial()

@@ -68,3 +68,55 @@ struct StationPlan: Equatable, Sendable {
     /// What sits at a place over the whole recipe, if anything does.
     func vessel(at place: Place) -> String? { spots.first { $0.place == place }?.vessel }
 }
+
+/// What is worth knowing before a recipe is started, found by rules: what to start first,
+/// what it takes up, where the long wait is, and the thing a later step expects to have
+/// been kept. These are the places cooks say a recipe catches them out.
+enum RecipeBrief {
+    private static let kept = try! NSRegularExpression(pattern: #"\b(?:keep|keeping|reserve|reserving|save|set aside)\b[^.;]*"#, options: [.caseInsensitive])
+
+    static func lines(_ recipe: Recipe) -> [String] {
+        var lines: [String] = []
+        if let first = StepDetails.headStarts(in: recipe.steps).first {
+            lines.append("Start first: \(first.prefix(1).lowercased() + first.dropFirst()).")
+        }
+        let plan = StationPlan(steps: recipe.steps)
+        let burners = Set(plan.spots.map(\.place)).subtracting([.oven, .counter]).count
+        var kit: [String] = []
+        if burners > 0 { kit.append(burners == 1 ? "one burner" : "\(burners) burners") }
+        if let oven = plan.spots.first(where: { $0.place == .oven })?.vessel { kit.append("the \(oven.lowercased())") }
+        if !kit.isEmpty { lines.append("Uses \(kit.joined(separator: " and ")).") }
+        let waits = recipe.steps.enumerated().flatMap { index, step in DurationFinder.find(in: step).map { (step: index, time: $0) } }
+        if let longest = waits.max(by: { $0.time.seconds < $1.time.seconds }), longest.time.seconds >= 300 {
+            lines.append("Longest wait: \(longest.time.short) at step \(longest.step + 1)" + (longest.time.label.map { ", \($0.lowercased())" } ?? "") + ".")
+        }
+        for (index, step) in recipe.steps.enumerated() {
+            let ns = step as NSString
+            guard let match = kept.firstMatch(in: step, range: NSRange(location: 0, length: ns.length)) else { continue }
+            let phrase = ns.substring(with: match.range).trimmingCharacters(in: CharacterSet(charactersIn: " ,"))
+            lines.append("Don’t miss at step \(index + 1): \(phrase.prefix(1).lowercased() + phrase.dropFirst()).")
+            break
+        }
+        return lines
+    }
+
+    /// Why a recipe is suggested: it hasn't been cooked, or not for a while.
+    static func reason(_ recipe: Recipe, now: Date = Date()) -> String {
+        guard let last = recipe.lastCooked else { return recipe.cooked > 0 ? "Not cooked for a while" : "You haven’t cooked this yet" }
+        let days = max(0, Int(now.timeIntervalSince(last) / 86_400))
+        return days == 0 ? "Cooked today" : days == 1 ? "Last cooked yesterday" : "Last cooked \(days) days ago"
+    }
+
+    /// A place as taps on the wrist after an alarm, so which pan it is can be felt: one to
+    /// four for the burners, counted from the front left, and a long one for the oven.
+    static func wrist(_ place: StationPlan.Place) -> [BandBuzz] {
+        switch place {
+        case .frontLeft: [.tap]
+        case .frontRight: [.tap, .tap]
+        case .backLeft: [.tap, .tap, .tap]
+        case .backRight: [.tap, .tap, .tap, .tap]
+        case .oven: [.long]
+        case .counter: []
+        }
+    }
+}
