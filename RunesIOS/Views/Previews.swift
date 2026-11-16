@@ -90,6 +90,8 @@ struct SnapshotGallery: View {
             WristPreview(name: name)
         } else if name == "band-guide" {
             BandGuideSheet()
+        } else if name.hasPrefix("handwriting") {
+            NavigationStack { HandwritingLabScreen(snapshot: name) }
         } else if name == "vibration-lab" || name == "vibration-lab-buzz" {
             NavigationStack { VibrationLabScreen() }
                 .background { EdgeEffectHost() }

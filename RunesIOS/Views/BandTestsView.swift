@@ -101,6 +101,9 @@ struct BandTestsScreen: View {
                         copied = true
                     }
                 }
+                PanelGroup(nil, caption: "Looks for a handwriting screen, written on the glass or from a sample. Nothing is sent to the band.") {
+                    LinkRow("Handwriting") { HandwritingLabScreen() }
+                }
             }
             .padding(.horizontal, Metric.gutter).padding(.vertical, 20)
         }
