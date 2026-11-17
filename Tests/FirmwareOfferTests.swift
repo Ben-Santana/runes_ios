@@ -29,14 +29,19 @@ struct FirmwareOfferTests {
         }
 
         // Answers. The offer is found wherever it sits, with numbers as text or as numbers.
-        let older = #"{"data":{"xar_fetch_constellation_system_updates":{"fetch_update_info_list":[{"fetch_update_response":{"file_uri":"https://example.invalid/ota.zip?sig=abc","target_version":"1054928927","base_version":"0","build_number_display_name":"70","file_size":"4928512","file_checksum":"ab12","kek_id":20,"release_notes_cms":"<p>Notes</p>"}}]}}}"#
+        let older = #"{"data":{"xar_fetch_constellation_system_updates":{"fetch_update_info_list":[{"fetch_update_response":{"file_uri":"https://example.invalid/ota.zip?sig=abc","target_version":"1054928927","base_version":"0","build_number_display_name":"70","file_size":"4928512","file_checksum":"BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD","kek_id":20,"release_notes_cms":"<p>Notes</p>"}}]}}}"#
         guard case .offer(let first) = FirmwareOffer.read(Data(older.utf8)) else { preconditionFailure("The older answer holds an offer") }
-        precondition(first.target == "1054928927" && first.build == "70" && first.size == 4928512 && first.key == 20 && first.checksum == "ab12")
+        precondition(first.target == "1054928927" && first.build == "70" && first.size == 4928512 && first.key == 20 && first.checksum == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+        // A checksum that is not a whole SHA-256 is left out, and a package without one is never fetched.
+        for odd in ["ab12", String(repeating: "g", count: 64), String(repeating: "a", count: 65)] {
+            guard case .offer(let cut) = FirmwareOffer.read(Data(older.replacingOccurrences(of: "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD", with: odd).utf8)) else { preconditionFailure() }
+            precondition(cut.checksum == nil && cut.summary.hasSuffix("a checksum of \(odd.count) characters, not a SHA-256"))
+        }
         precondition(first.link?.host == "example.invalid")
         precondition(first.summary == "build 70 (1054928927), 4813 KB, needs key 20" && !first.summary.contains("example"))
         let newer = #"for (;;);{"data":{"xar_constellation_updates":{"constellation_updates_response_info":[{"device_serial":"SERIAL1","firmware_update_info":{"file_uri":"https://example.invalid/u","target_version":1003366292,"base_version":770435744}}]}}}"#
         guard case .offer(let second) = FirmwareOffer.read(Data(newer.utf8)) else { preconditionFailure("The newer answer holds an offer") }
-        precondition(second.target == "1003366292" && second.summary == "version 1003366292, over 770435744" && !second.summary.contains("SERIAL1"))
+        precondition(second.target == "1003366292" && second.summary == "version 1003366292, over 770435744, no checksum" && !second.summary.contains("SERIAL1"))
         // A link that is not https is not kept.
         guard case .offer(let plain) = FirmwareOffer.read(Data(#"{"a":{"file_uri":"http://example.invalid/u","target_version":"9"}}"#.utf8)) else { preconditionFailure() }
         precondition(plain.link == nil && plain.target == "9")

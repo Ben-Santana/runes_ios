@@ -14,6 +14,8 @@ struct FirmwareOffer: Equatable {
     /// Where the package is and its SHA-256. Kept in memory, never written to the journal.
     let link: URL?
     let checksum: String?
+    /// How long the checksum in the answer was, for the journal when it could not be used.
+    let checksumLength: Int
 
     /// Versions and sizes only, for the page and the journal.
     var summary: String {
@@ -21,6 +23,7 @@ struct FirmwareOffer: Equatable {
         if let base, !base.isEmpty, base != "0" { parts.append("over \(base)") }
         if let size { parts.append("\(size / 1024) KB") }
         if let key { parts.append("needs key \(key)") }
+        if checksum == nil { parts.append(checksumLength == 0 ? "no checksum" : "a checksum of \(checksumLength) characters, not a SHA-256") }
         return parts.joined(separator: ", ")
     }
 
@@ -97,12 +100,18 @@ struct FirmwareOffer: Equatable {
             if let link = object["file_uri"] as? String, let target = plain(object["target_version"]) {
                 return FirmwareOffer(target: target, base: plain(object["base_version"]), build: plain(object["build_number_display_name"]),
                                      size: plain(object["file_size"]).flatMap(Int.init), key: plain(object["kek_id"]).flatMap(Int.init),
-                                     link: URL(string: link).flatMap { $0.scheme == "https" ? $0 : nil }, checksum: plain(object["file_checksum"]))
+                                     link: URL(string: link).flatMap { $0.scheme == "https" ? $0 : nil }, checksum: digest(object["file_checksum"]), checksumLength: (object["file_checksum"] as? String)?.count ?? 0)
             }
             for key in object.keys.sorted() { if let found = offer(in: object[key] as Any, depth: depth + 1) { return found } }
         }
         if let list = json as? [Any] { for item in list { if let found = offer(in: item, depth: depth + 1) { return found } } }
         return nil
+    }
+
+    /// A SHA-256 written as 64 hex digits, in lower case. Anything else is left out.
+    private static func digest(_ value: Any?) -> String? {
+        guard let text = value as? String, text.count == 64, text.allSatisfy(\.isHexDigit) else { return nil }
+        return text.lowercased()
     }
 
     /// A short number or word from an answer. Anything else is left out.
