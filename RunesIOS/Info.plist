@@ -41,6 +41,10 @@
 	<string>Runes records a voice note while you hold a finger on your band or the record button.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Runes writes your voice notes down on this iPhone. Nothing is sent anywhere.</string>
+	<key>NSHealthUpdateUsageDescription</key>
+	<string>Runes adds each workout you finish to Health, with its time and sets. It never adds calories or heart rate.</string>
+	<key>NSHealthShareUsageDescription</key>
+	<string>Runes does not read your Health data. It only adds the workouts you finish.</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Runes connects to your Meta Neural Band to receive gestures, including during an active background session.</string>
 	<key>UIBackgroundModes</key>
