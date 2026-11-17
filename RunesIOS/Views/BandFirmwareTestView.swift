@@ -21,6 +21,9 @@ final class BandFirmwareTest: ObservableObject {
     /// The key Meta wrapped for this band. It stays in memory.
     @Published private(set) var hasKey = false
     private var wrappedKey: Data? { didSet { hasKey = wrappedKey != nil } }
+    /// Packages already on this phone, each with the checksum Meta gave when it was fetched.
+    struct Kept: Equatable { let target: String; let build: String?; let checksum: String }
+    @Published private(set) var kept: [Kept] = []
     /// Nothing is sent to a band whose battery is below this.
     static let batteryFloor = 50
     private var band: (serial: String, software: String)?
@@ -101,17 +104,64 @@ final class BandFirmwareTest: ObservableObject {
 
     private func reason(_ error: Error) -> String { (error as? BandError)?.localizedDescription ?? "Meta could not be reached" }
 
+    private func folder() throws -> URL {
+        let folder = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+            .appendingPathComponent("Firmware", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
+    }
+
+    /// Finds the packages kept on this phone, so a trial after a restart needs no sign-in.
+    func findKept() {
+        guard let folder = try? folder(), let files = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) else { return }
+        kept = files.filter { $0.pathExtension == "json" }.compactMap { file -> Kept? in
+            let target = file.deletingPathExtension().lastPathComponent
+            guard target.allSatisfy(\.isNumber), let note = (try? JSONSerialization.jsonObject(with: Data(contentsOf: file))) as? [String: String],
+                  let checksum = note["checksum"], FileManager.default.fileExists(atPath: folder.appendingPathComponent("\(target).zip").path) else { return nil }
+            return Kept(target: target, build: note["build"], checksum: checksum)
+        }.sorted { (UInt64($0.target) ?? 0) < (UInt64($1.target) ?? 0) }
+    }
+
+    /// Loads a package kept on this phone and checks it again. Nothing is asked of Meta, so
+    /// the band's key is not in memory afterwards, and a band that lacks it is told nothing.
+    func use(_ kept: Kept) {
+        guard !checking, !fetching, !running else { return }
+        fetching = true
+        task = Task { [weak self] in
+            guard let self else { return }
+            defer { self.fetching = false; self.task = nil }
+            do {
+                let file = try self.folder().appendingPathComponent("\(kept.target).zip")
+                let package = try await Task.detached { () throws -> FirmwarePackage in
+                    let zip = try Data(contentsOf: file)
+                    guard FirmwarePackage.sha256(zip) == kept.checksum else { throw BandError.storage("The kept package no longer matches its checksum") }
+                    return try FirmwarePackage.read(zip)
+                }.value
+                guard String(package.version) == kept.target else { throw BandError.storage("The kept package holds another version") }
+                self.package = package; self.wrappedKey = nil
+                self.say("Package checked from this phone: \(package.summary).")
+                self.say("The band's key is not in memory. A trial works if the band already has key \(package.keyNumber).")
+            } catch { self.say("Could not use the kept package: \(self.reason(error)).") }
+        }
+    }
+
     /// The package's bytes: the copy kept on this phone if its checksum still matches, or a download.
     private func bytes(of offer: FirmwareOffer, _ service: FirmwareService) async throws -> Data {
         guard let checksum = offer.checksum?.lowercased(), checksum.count == 64, offer.target.allSatisfy(\.isNumber) else {
             throw BandError.storage("Meta gave no checksum for this package")
         }
-        let folder = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-            .appendingPathComponent("Firmware", isDirectory: true)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let folder = try folder()
         let kept = folder.appendingPathComponent("\(offer.target).zip")
+        // The checksum is kept beside the package, so it can be checked again without asking Meta.
+        func note() {
+            var fields = ["checksum": checksum]
+            if let build = offer.build { fields["build"] = build }
+            try? JSONSerialization.data(withJSONObject: fields).write(to: folder.appendingPathComponent("\(offer.target).json"), options: .atomic)
+            findKept()
+        }
         if let data = try? Data(contentsOf: kept), FirmwarePackage.sha256(data) == checksum {
             say("Package \(offer.target): already on this phone, and its checksum matches Meta's.")
+            note()
             return data
         }
         guard let link = offer.link else { throw BandError.storage("Meta gave no link for this package") }
@@ -120,6 +170,7 @@ final class BandFirmwareTest: ObservableObject {
         guard fetched.status == 200 else { throw BandError.transport("The download did not arrive (HTTP \(fetched.status))") }
         guard FirmwarePackage.sha256(fetched.data) == checksum else { throw BandError.storage("The download's checksum does not match Meta's (\(fetched.data.count) bytes)") }
         try fetched.data.write(to: kept, options: .atomic)
+        note()
         say("Package \(offer.target): downloaded, \(fetched.data.count) bytes, and its checksum matches Meta's.")
         return fetched.data
     }
@@ -217,6 +268,12 @@ struct BandFirmwarePanel: View {
                 ActionRow(test.fetching ? "Getting the package…" : "Get \(offer.build.map { "build \($0)" } ?? "version \(offer.target)")") { test.fetch(offer) }
                     .disabled(busy)
             }
+            // A kept package that Meta also offers just now is fetched from its own row, which gets the key too.
+            ForEach(test.kept.filter { kept in !test.offers.contains { $0.target == kept.target } && test.package.map { String($0.version) != kept.target } ?? true }, id: \.target) { kept in
+                Rule()
+                ActionRow("Use \(kept.build.map { "build \($0)" } ?? "version \(kept.target)") kept on this phone") { test.use(kept) }
+                    .disabled(busy)
+            }
             if let package = test.package {
                 Rule()
                 ActionRow("Install key \(package.keyNumber) on the band") { asking = .key }
@@ -245,6 +302,7 @@ struct BandFirmwarePanel: View {
                 lines(test.lines.joined(separator: "\n"))
             }
         }
+        .onAppear(perform: test.findKept)
         .sheet(item: $test.login, onDismiss: test.cancelSignIn) { request in
             NavigationStack {
                 MetaLoginView(request: request, completed: test.signedIn, failed: test.signInFailed, trace: { SessionController.shared.noteFirmware($0) })
