@@ -201,6 +201,8 @@ struct WorkoutRecord: Codable, Hashable, Identifiable, Sendable {
     var sets: [SetLog]
     /// Where the session stands with Apple Health; nil when it was never sent.
     var health: HealthMark? = nil
+    /// Heart rate from a linked wearable, when one shared it during the workout.
+    var heart: HeartSummary? = nil
 
     var totalReps: Int { sets.filter { $0.exercise.measure == .reps }.reduce(0) { $0 + $1.reps } }
     /// Weight × reps over every weighted set.

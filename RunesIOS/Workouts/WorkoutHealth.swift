@@ -3,7 +3,7 @@ import Foundation
 // What Workouts sends to Apple Health: one workout for each finished session, as plain values
 // so the mapping is checked without HealthKit. HealthLink.swift turns them into Health's types.
 // Only what Runes measured is carried: the times, the exercises, and each set's reps, hold and
-// weight. Energy and heart rate are never estimated.
+// weight, and heart rate when a linked wearable shared it. Nothing is ever estimated.
 
 /// The Health workout types Runes uses.
 enum HealthActivity: String, Sendable, CaseIterable {
@@ -52,15 +52,21 @@ struct HealthWorkout: Hashable, Sendable {
     var end: Date
     var unit: WeightUnit
     var sets: [HealthSet]
+    /// Readings from a linked wearable, taken during the workout. Empty without one.
+    var heart: [HeartSample] = []
+    /// What the wearable calls itself, for Health to show where the readings came from.
+    var heartSource: String?
 
     var totalReps: Int { sets.reduce(0) { $0 + ($1.reps ?? 0) } }
     /// Weight times reps over every weighted set, in the workout's unit.
     var volume: Double { sets.reduce(0) { $0 + ($1.weight ?? 0) * Double($1.reps ?? 0) } }
 
     /// nil for a session with no logged set, or one too short to be a workout.
-    init?(_ record: WorkoutRecord, unit: WeightUnit) {
+    init?(_ record: WorkoutRecord, unit: WeightUnit, heart: [HeartSample] = [], heartSource: String? = nil) {
         guard let last = record.sets.map(\.at).max(), last.timeIntervalSince(record.started) >= Self.minimumDuration else { return nil }
         id = record.id; name = record.name; start = record.started; end = last; self.unit = unit
+        self.heart = heart.filter { $0.at >= record.started && $0.at <= last }
+        self.heartSource = self.heart.isEmpty ? nil : heartSource
         activity = HealthActivity(sets: record.sets)
         sets = record.sets.map { log in
             let timed = log.exercise.measure == .seconds

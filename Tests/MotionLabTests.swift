@@ -3,7 +3,7 @@
 //     swiftc -module-cache-path /private/tmp/runes-swift-module-cache RunesIOS/Session/Models.swift RunesIOS/Protocol/Wire.swift \
 //       RunesIOS/Persistence/IdentityStore.swift RunesIOS/Mappings/MappingModel.swift RunesIOS/Mappings/AirGesture.swift RunesIOS/Mappings/MappingEngine.swift \
 //       RunesIOS/Mappings/TriggerRules.swift RunesIOS/Mappings/CommandTrigger.swift Shared/ProfileIcon.swift Shared/LucideData.swift Shared/SVGPath.swift Shared/MuscleFigure.swift \
-//       RunesIOS/Workouts/ExerciseCatalog.swift RunesIOS/Workouts/WorkoutModel.swift RunesIOS/Workouts/WorkoutHealth.swift RunesIOS/Protocol/EMG.swift \
+//       RunesIOS/Workouts/ExerciseCatalog.swift RunesIOS/Workouts/WorkoutModel.swift RunesIOS/Workouts/WorkoutHealth.swift RunesIOS/Workouts/WorkoutWearable.swift RunesIOS/Protocol/EMG.swift \
 //       RunesIOS/Workouts/MotionRecorder.swift Tests/MotionLabTests.swift -o /private/tmp/runes-motionlab-tests && /private/tmp/runes-motionlab-tests
 import Foundation
 

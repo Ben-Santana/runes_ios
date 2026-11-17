@@ -4,7 +4,7 @@
 //       RunesIOS/Persistence/IdentityStore.swift RunesIOS/Mappings/MappingModel.swift RunesIOS/Mappings/AirGesture.swift RunesIOS/Mappings/MappingEngine.swift \
 //       RunesIOS/Mappings/TriggerRules.swift RunesIOS/Mappings/CommandTrigger.swift Shared/ProfileIcon.swift Shared/SVGPath.swift Shared/LucideData.swift Shared/MuscleFigure.swift \
 //       RunesIOS/Workouts/ExerciseCatalog.swift RunesIOS/Workouts/WorkoutModel.swift RunesIOS/Sounds/SoundLibrary.swift RunesIOS/Workouts/WorkoutSounds.swift \
-//       RunesIOS/Workouts/WorkoutHealth.swift Tests/WorkoutTests.swift -o /private/tmp/runes-workout-tests && /private/tmp/runes-workout-tests
+//       RunesIOS/Workouts/WorkoutHealth.swift RunesIOS/Workouts/WorkoutWearable.swift Tests/WorkoutTests.swift -o /private/tmp/runes-workout-tests && /private/tmp/runes-workout-tests
 import Foundation
 
 @main
@@ -217,7 +217,8 @@ struct WorkoutTests {
         precondition(try! JSONDecoder().decode(WorkoutSounds.self, from: Data("{}".utf8)) == WorkoutSounds())
 
         health()
-        print("Workout checks passed: set flow, repeat and skip, control gestures, swing and burst rep counting, sound cues, Apple Health.")
+        wearable()
+        print("Workout checks passed: set flow, repeat and skip, control gestures, swing and burst rep counting, sound cues, Apple Health, wearable heart rate.")
     }
 
     /// What a finished session sends to Apple Health.
@@ -293,5 +294,48 @@ struct WorkoutTests {
         precondition(HealthStatus(last: nil, settings: settings, unit: .kg) == .none)
         let again = try! JSONDecoder().decode(WorkoutRecord.self, from: JSONEncoder().encode(record))
         precondition(again == record && again.health == .saved("0A1B"), "The mark survives a round trip")
+    }
+
+    /// A linked wearable: reading its heart rate packets, and what a workout keeps of them.
+    static func wearable() {
+        // Heart Rate Measurement packets: flags, then the rate as one byte or two.
+        precondition(HeartRateReading.beats(Data([0x00, 72])) == 72, "One byte")
+        precondition(HeartRateReading.beats(Data([0x01, 0x2c, 0x00])) == 44, "Two bytes, low first")
+        precondition(HeartRateReading.beats(Data([0x16, 131, 0x10, 0x03])) == 131, "Contact made, with intervals after the rate")
+        precondition(HeartRateReading.beats(Data([0x04, 80])) == nil, "No skin contact is not a reading")
+        precondition(HeartRateReading.beats(Data([0x00, 0])) == nil && HeartRateReading.beats(Data([0x01, 0xff, 0xff])) == nil, "Not a pulse")
+        precondition(HeartRateReading.beats(Data()) == nil && HeartRateReading.beats(Data([0x01, 90])) == nil, "Short packets")
+
+        // One reading every five seconds is kept.
+        let start = Date(timeIntervalSince1970: 50_000)
+        var log = HeartLog()
+        for second in 0..<60 { log.add(100 + second, at: start.addingTimeInterval(Double(second))) }
+        precondition(log.samples.count == 12 && log.samples[1] == HeartSample(at: start.addingTimeInterval(5), beats: 105))
+        precondition(log.within(start.addingTimeInterval(10), start.addingTimeInterval(20)).map(\.beats) == [110, 115, 120])
+        let summary = HeartSummary(log.samples)!
+        precondition(summary.peak == 155 && summary.average == 128 && summary.text == "avg 128 bpm", "Average \(summary.average)")
+        precondition(HeartSummary([]) == nil, "No readings, no summary")
+
+        // Only readings from the workout's own span go to Health with it.
+        var run = WorkoutRun(plan: WorkoutPlan(name: "Arms", items: [WorkoutItem(exercise: .bicepCurl, sets: 2, reps: 10)]), at: start)
+        run.apply(.start, at: start.addingTimeInterval(10)); run.apply(.stop, at: start.addingTimeInterval(40))
+        run.apply(.start, at: start.addingTimeInterval(70)); run.apply(.stop, at: start.addingTimeInterval(100))
+        var record = WorkoutRecord(name: run.name, planID: run.planID, started: run.started, ended: start.addingTimeInterval(500), sets: run.logs)
+        let readings = [-5.0, 0, 50, 100, 105].map { HeartSample(at: start.addingTimeInterval($0), beats: 120) }
+        let workout = HealthWorkout(record, unit: .kg, heart: readings, heartSource: "Fitbit Air")!
+        precondition(workout.heart.count == 3 && workout.heartSource == "Fitbit Air", "Before the start and after the last set are left out")
+        let plain = HealthWorkout(record, unit: .kg, heartSource: "Fitbit Air")!
+        precondition(plain.heart.isEmpty && plain.heartSource == nil, "No readings, no source")
+
+        // The link and the journal's summary are saved; older saves load without them.
+        let linked = Wearable(id: "A1", name: "Fitbit Air", wrist: .left)
+        precondition(try! JSONDecoder().decode(Wearable.self, from: JSONEncoder().encode(linked)) == linked)
+        precondition(linked.placement(band: .right) == "Band on your right wrist, Fitbit Air on your left wrist.")
+        precondition(linked.placement(band: nil) == "Fitbit Air on your left wrist.")
+        precondition(Wearable(id: "B2", name: "Polar H10", wrist: nil).placement(band: .left) == "Band on your left wrist, Polar H10, not on a wrist.")
+        record.heart = summary
+        precondition(try! JSONDecoder().decode(WorkoutRecord.self, from: JSONEncoder().encode(record)).heart == summary)
+        let old = try! JSONDecoder().decode(WorkoutRecord.self, from: Data(#"{"id":"r","name":"Arms","started":0,"ended":90,"sets":[]}"#.utf8))
+        precondition(old.heart == nil && old.health == nil, "Older journals still load")
     }
 }
