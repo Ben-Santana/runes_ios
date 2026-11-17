@@ -51,11 +51,20 @@ struct FirmwareOffer: Equatable {
 
         /// The fields of the request, in the order they are sent.
         func form(serial: String, version: String, session: String) -> [(String, String)] {
-            let variables = (try? JSONSerialization.data(withJSONObject: variables(serial: serial, version: version, session: session), options: [.sortedKeys]))
-                .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
-            return [("method", "post"), ("pretty", "false"), ("format", "json"), ("server_timestamps", "true"), ("locale", "en_US"),
-                    ("purpose", "fetch"), ("fb_api_req_friendly_name", name), ("client_doc_id", document), ("variables", variables)]
+            FirmwareOffer.form(name: name, document: document, variables: variables(serial: serial, version: version, session: session))
         }
+    }
+
+    /// The question that asks for the key a package needs, wrapped for one band.
+    static let keyName = "FetchEncryptedKEKInfoByKEKId"
+    static func keyForm(serial: String, key: Int) -> [(String, String)] {
+        form(name: keyName, document: "313699925716490204858433749875", variables: ["request": ["device_serial_number": serial, "kek_id": key]])
+    }
+
+    private static func form(name: String, document: String, variables: [String: Any]) -> [(String, String)] {
+        let variables = (try? JSONSerialization.data(withJSONObject: variables, options: [.sortedKeys])).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+        return [("method", "post"), ("pretty", "false"), ("format", "json"), ("server_timestamps", "true"), ("locale", "en_US"),
+                ("purpose", "fetch"), ("fb_api_req_friendly_name", name), ("client_doc_id", document), ("variables", variables)]
     }
 
     enum Reply: Equatable {
@@ -99,7 +108,8 @@ struct FirmwareOffer: Equatable {
     /// A short number or word from an answer. Anything else is left out.
     private static func plain(_ value: Any?) -> String? {
         if let text = value as? String, !text.isEmpty, text.count <= 40, text.allSatisfy({ $0.isLetter || $0.isNumber || "._-".contains($0) }) { return text }
-        if let number = value as? NSNumber, !(value is Bool) { return number.stringValue }
+        // A JSON true or false is a number too, and is told apart by its type.
+        if let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() { return number.stringValue }
         return nil
     }
 }
