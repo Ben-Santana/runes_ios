@@ -1,10 +1,10 @@
-// Isolated checks for workouts: the run's set flow, control gestures and rep counting.
+// Isolated checks for workouts: the run's set flow, control gestures, rep counting and what goes to Apple Health.
 //
 //     swiftc -module-cache-path /private/tmp/runes-swift-module-cache RunesIOS/Session/Models.swift RunesIOS/Protocol/Wire.swift \
 //       RunesIOS/Persistence/IdentityStore.swift RunesIOS/Mappings/MappingModel.swift RunesIOS/Mappings/AirGesture.swift RunesIOS/Mappings/MappingEngine.swift \
 //       RunesIOS/Mappings/TriggerRules.swift RunesIOS/Mappings/CommandTrigger.swift Shared/ProfileIcon.swift Shared/SVGPath.swift Shared/LucideData.swift Shared/MuscleFigure.swift \
 //       RunesIOS/Workouts/ExerciseCatalog.swift RunesIOS/Workouts/WorkoutModel.swift RunesIOS/Sounds/SoundLibrary.swift RunesIOS/Workouts/WorkoutSounds.swift \
-//       Tests/WorkoutTests.swift -o /private/tmp/runes-workout-tests && /private/tmp/runes-workout-tests
+//       RunesIOS/Workouts/WorkoutHealth.swift Tests/WorkoutTests.swift -o /private/tmp/runes-workout-tests && /private/tmp/runes-workout-tests
 import Foundation
 
 @main
@@ -216,6 +216,78 @@ struct WorkoutTests {
         precondition(try! JSONDecoder().decode(WorkoutSounds.self, from: JSONEncoder().encode(sounds)) == sounds)
         precondition(try! JSONDecoder().decode(WorkoutSounds.self, from: Data("{}".utf8)) == WorkoutSounds())
 
-        print("Workout checks passed: set flow, repeat and skip, control gestures, swing and burst rep counting, sound cues.")
+        health()
+        print("Workout checks passed: set flow, repeat and skip, control gestures, swing and burst rep counting, sound cues, Apple Health.")
+    }
+
+    /// What a finished session sends to Apple Health.
+    static func health() {
+        let start = Date(timeIntervalSince1970: 10_000)
+        let press = Exercise.byID["overheadPress"]!
+        var run = WorkoutRun(plan: WorkoutPlan(name: "Push", items: [WorkoutItem(exercise: .bicepCurl, sets: 2, reps: 10, weight: 12.5),
+                                                                     WorkoutItem(exercise: press, sets: 1, reps: 8, weight: 40),
+                                                                     WorkoutItem(exercise: .plank, sets: 1, reps: 45)]), at: start)
+        func set(_ from: TimeInterval, _ to: TimeInterval, reps: Int) {
+            run.apply(.start, at: start.addingTimeInterval(from)); for _ in 0..<reps { run.rep() }
+            run.apply(.stop, at: start.addingTimeInterval(to))
+        }
+        set(20, 60, reps: 9); set(150, 185, reps: 10); set(300, 340, reps: 3); set(420, 472, reps: 0)
+        precondition(run.phase == .finished && run.logs[0].started == start.addingTimeInterval(20), "A set keeps when it began")
+        // The record's own end is when Done was tapped, long after the last set.
+        var record = WorkoutRecord(name: run.name, planID: run.planID, started: run.started, ended: start.addingTimeInterval(9_000), sets: run.logs)
+
+        let workout = HealthWorkout(record, unit: .kg)!
+        precondition(workout.id == record.id && workout.name == "Push" && workout.start == start)
+        precondition(workout.end == start.addingTimeInterval(472), "The workout ends at its last logged set")
+        precondition(workout.activity == .traditionalStrength && workout.sets.count == 4)
+        let curl = workout.sets[0], pressed = workout.sets[2], held = workout.sets[3]
+        precondition(curl.exercise == "Bicep curl" && curl.set == 1 && curl.reps == 9 && curl.seconds == nil && curl.weight == 12.5 && curl.counted)
+        precondition(curl.start == start.addingTimeInterval(20) && curl.end == start.addingTimeInterval(60), "A set spans its start and stop")
+        precondition(pressed.reps == 8 && !pressed.counted, "A set the band can't count says so")
+        precondition(held.reps == nil && held.seconds == 52 && held.weight == nil && held.counted, "A hold carries its seconds")
+        precondition(workout.totalReps == 27 && workout.volume == 12.5 * 19 + 40 * 8, "Totals come from the logged sets only")
+
+        // Nothing logged, or over in under a minute: not a workout.
+        var none = record; none.sets = []
+        precondition(HealthWorkout(none, unit: .kg) == nil, "No sets, no workout")
+        var brief = record; brief.sets = [run.logs[0]]; brief.sets[0].at = start.addingTimeInterval(59)
+        precondition(HealthWorkout(brief, unit: .kg) == nil, "Under a minute is not saved")
+        brief.sets[0].at = start.addingTimeInterval(60)
+        precondition(HealthWorkout(brief, unit: .kg) != nil, "A minute is")
+
+        // Sets saved before their start was kept: a hold began its length ago, reps mark a moment.
+        var old = record; old.sets = old.sets.map { var log = $0; log.started = nil; return log }
+        let aged = HealthWorkout(old, unit: .lb)!
+        precondition(aged.unit == .lb && aged.sets[0].start == aged.sets[0].end && aged.sets[3].start == start.addingTimeInterval(420))
+        let saved = try! JSONDecoder().decode(SetLog.self, from: Data(#"{"id":"a","slot":{"exercise":"plank","set":1,"of":1,"target":30,"isRepeat":false},"reps":31,"at":0}"#.utf8))
+        precondition(saved.started == nil && saved.reps == 31, "Older journals still load")
+
+        // The workout type follows most of the sets; a tie goes to strength.
+        func logs(_ ids: [String]) -> [SetLog] {
+            ids.map { SetLog(slot: WorkoutSlot(exercise: Exercise.byID[$0]!, set: 1, of: 1, target: 10), reps: 10, at: start) }
+        }
+        precondition(HealthActivity(sets: logs(["benchPress", "plank", "pushUp"])) == .traditionalStrength, "Barbell wins a three-way tie")
+        precondition(HealthActivity(sets: logs(["pushUp", "pullUp", "benchPress"])) == .functionalStrength, "Mostly bodyweight")
+        precondition(HealthActivity(sets: logs(["plank", "crunch", "sitUp", "pushUp"])) == .core, "Mostly core")
+        precondition(HealthActivity(sets: logs(["burpee", "jumpRope", "plank"])) == .mixedCardio, "Mostly cardio")
+        precondition(HealthActivity(sets: logs(["pushUp", "plank"])) == .functionalStrength, "A tie goes to the earlier type")
+
+        // Which sessions still need sending, and the line Workouts shows about the last one.
+        var settings = HealthSettings()
+        precondition(!record.needsHealth(settings, unit: .kg) && HealthStatus(last: record, settings: settings, unit: .kg) == .none, "Off sends nothing")
+        settings = HealthSettings(on: true, since: start.addingTimeInterval(10_000))
+        precondition(!record.needsHealth(settings, unit: .kg) && HealthStatus(last: record, settings: settings, unit: .kg) == .none,
+                     "Workouts from before it was switched on stay in Runes")
+        settings.since = start
+        precondition(record.needsHealth(settings, unit: .kg) && HealthStatus(last: record, settings: settings, unit: .kg) == .saving)
+        precondition(!brief.needsHealth(settings, unit: .kg) || HealthWorkout(brief, unit: .kg) != nil)
+        precondition(!none.needsHealth(settings, unit: .kg) && HealthStatus(last: none, settings: settings, unit: .kg) == .tooShort)
+        record.health = .failed
+        precondition(record.needsHealth(settings, unit: .kg) && HealthStatus(last: record, settings: settings, unit: .kg) == .failed, "A failed save is tried again")
+        record.health = .saved("0A1B")
+        precondition(!record.needsHealth(settings, unit: .kg) && HealthStatus(last: record, settings: settings, unit: .kg) == .saved, "Saved once, never twice")
+        precondition(HealthStatus(last: nil, settings: settings, unit: .kg) == .none)
+        let again = try! JSONDecoder().decode(WorkoutRecord.self, from: JSONEncoder().encode(record))
+        precondition(again == record && again.health == .saved("0A1B"), "The mark survives a round trip")
     }
 }

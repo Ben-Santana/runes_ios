@@ -183,6 +183,8 @@ struct SetLog: Codable, Hashable, Identifiable, Sendable {
     /// Reps, or seconds for a timed exercise.
     var reps: Int
     var at: Date
+    /// When the set began; nil for sets saved before this was kept.
+    var started: Date? = nil
 
     var exercise: Exercise { slot.exercise }
     var weight: Double? { slot.weight }
@@ -197,6 +199,8 @@ struct WorkoutRecord: Codable, Hashable, Identifiable, Sendable {
     var started: Date
     var ended: Date
     var sets: [SetLog]
+    /// Where the session stands with Apple Health; nil when it was never sent.
+    var health: HealthMark? = nil
 
     var totalReps: Int { sets.filter { $0.exercise.measure == .reps }.reduce(0) { $0 + $1.reps } }
     /// Weight × reps over every weighted set.
@@ -246,7 +250,7 @@ struct WorkoutRun: Codable, Hashable, Sendable {
             if slot.exercise.measure == .seconds { value = max(1, Int(now.timeIntervalSince(setStarted ?? now).rounded())) }
             else if slot.assumed { value = slot.target }
             else { value = reps }
-            let log = SetLog(slot: slot, reps: value, at: now)
+            let log = SetLog(slot: slot, reps: value, at: now, started: setStarted)
             logs.append(log)
             advance()
             return log
