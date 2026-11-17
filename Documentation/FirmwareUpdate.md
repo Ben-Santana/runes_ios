@@ -1,8 +1,10 @@
 # Band firmware update
 
-Status on 2026-11-16: stage 1 of 5. The app now speaks the link of newer firmware as well as
-the firmware the band runs today, proven offline. Nothing in the app sends update data to a
-band yet, and nothing here has been checked on a real band.
+Status on 2026-11-17: stage 3 of 5 is built and not yet run. The app speaks the link of newer
+firmware as well as the firmware the band runs today, and the changed app connects to the band
+as it is. The band's update status and Meta's offers have been read on the phone. The band
+tests page can now install the package's key and run a trial transfer, each behind a
+confirmation. Neither has been run on a band. Nothing in the app can install firmware.
 
 An update is one way. The band refuses older firmware, and nobody has found a way back.
 
@@ -26,6 +28,25 @@ Read on 2026-11-16: firmware `79a235830f7f`, software `770435744`, models dated 
 no protocol version reported. Meta's version numbers seen elsewhere are `1003366292` (shown as
 build 64) and `1054928927` (build 70, October 2026). The band is older than both. Its link
 offers scheme 3, the only one this app spoke until now.
+
+Read on 2026-11-17 with the changed app: `link: offered 3, using 3, band named 3`, and the
+stream answer `1=4 2=1 5={2=0 3=1 6=0 8=0}`. The update status, asked on channel 1, came back
+as `8={2={2=1 4=1 5=bytes(6) 5=bytes(8) 5=bytes(2) 6=1}}`: update protocol 1, idle, stable
+firmware, three items, key version 1. The band left out its result and its device state, so it
+drops fields that are zero. Whether it also drops an accepted result from a key or start answer
+is not known, and the app does not take a missing result as a yes for a start.
+
+Meta's answers for this band on the same day, both hosts agreeing: `FetchSystemUpdates` offers
+build 64 (`1003366292`, about 10 MB) whether asked as the band's own version or as version 1,
+and `FetchConstellationUpdates` offers build 72 (`1075365371`, about 12 MB). Both need key 20.
+Build 72 is newer than anything a public source has connected to, so build 64 is the one to
+try first.
+
+Meta's sign-in: the page this app has always used (`auth.meta.com` with a native token) now
+stops on its `native_sso/confirm` step for this account with "This content is no longer
+available". The route the public visor project uses works: `accounts.meta.com/oidc`, a code
+at the redirect, then a token exchange. The firmware check uses that one. Setting a band up
+again still uses the older page and would meet the same stop.
 
 ## The update, request by request
 
@@ -107,9 +128,31 @@ and the fields `fb_api_req_friendly_name`, `client_doc_id` and `variables`.
   number and key number, answers with the key wrapped for that one band.
 
 The app has the sign-in (`MetaService`) and its token is the kind these calls take, but it is
-kept only while a band is being set up, so a check needs a fresh sign-in. The band's serial
-number arrives with its device information on every connection and is kept out of the journal.
-The app has no GraphQL call, no zip reader, no place to keep a package and no update engine yet.
+kept only while the app runs, so a check needs a fresh sign-in. The band's serial number
+arrives with its device information on every connection and is kept out of the journal.
+
+On the phone: `FirmwareService` asks the questions and downloads the package,
+`FirmwarePackage` unpacks it in memory and checks every item's size and SHA-256 against the
+package's own list, and the package is kept in the app's Application Support under `Firmware`
+once its checksum matches the one Meta gave. The wrapped key is asked for after that and stays
+in memory. The link, the key and the sign-in are never written to the journal.
+
+## The update engine
+
+`FirmwareUpdate` writes the requests and reads the answers, and `SessionCore` carries them on
+channel 1, the channel the status request was answered on. It has three runs: the key alone,
+a trial, and a discard. There is no request for a commit anywhere in it.
+
+- While it runs, vibration, the wrist setting, named settings, the other band tests, EMG, gyro
+  and orientation are held back, and gestures keep arriving.
+- Its timeouts count only time the app was running, so a pause in the background is not taken
+  for a silent band.
+- A dropped link forgets what was in flight. When the band streams again the update asks its
+  status and picks up where the band says, or starts the item again if the band dropped it.
+  After five drops it gives up.
+- Any failure after an item was started ends with the band told to discard what it holds.
+- The page refuses to start below 50% battery or with the level unknown, keeps the screen on,
+  and asks first. The key's confirmation says it cannot be undone.
 
 ## What newer firmware changed in the link
 
@@ -154,6 +197,19 @@ each stream request as numbers.
 - Twelve gestures recorded from a band on late firmware by band-core's authors, read back.
 - The ownership steps on both generations, with the 1888 byte identity reply seen on a band.
 - Refusals: unknown schemes, a renamed scheme, wrong keys, a refused owner key, a forged proof.
+- A whole trial transfer carried over the encrypted link on both generations: the update's
+  requests numbered after the app's own, eight in flight, the answers on a marked channel.
+
+`Tests/FirmwareUpdateTests.swift` runs the engine against a pretend band: the first requests
+byte for byte, the status this band gave, the key alone, a whole trial, an earlier update
+discarded first, lost chunks sent again, a chunk never answered, refusals of the key, a start,
+a chunk and a verify, a band that goes silent, a link dropped mid item with the band keeping or
+dropping what it had, a link dropped while verifying, stopping, and a discard on request. The
+pretend band fails the check if it is ever asked to install.
+
+`Tests/FirmwarePackageTests.swift` reads packages built in the check, stored and deflated, and
+refuses a changed byte, a wrong size, odd paths, a missing firmware, zips that are encrypted,
+cut short or packed another way, and key answers that are not a wrapped key.
 
 Breaking any one rule on purpose (channel bits, padding, the check's prefix, the salt order)
 fails the check. Every other check in `Tests/` passes unchanged, and the app builds.
@@ -201,16 +257,15 @@ this phone does not depend on that.
 ## Stages
 
 1. Done: this document and the link work.
-2. Read only, run from the band tests page: the update status, and "Check with Meta", which
-   signs in on Meta's page, asks as the band's own version and as version 1, and lists the
-   versions offered. Built, with an offline check (`Tests/FirmwareOfferTests.swift`), not yet
-   run on a phone. The sign-in and the serial number are held in memory only.
-3. A trial: key, transfer, verify, abort. Needs an update engine with several chunks in flight
-   on one channel, resuming after a dropped link, and the screen kept on.
+2. Done on 2026-11-17: the update status and "Check with Meta" from the band tests page.
+3. Built, not run on a band: get a package, install its key, and a trial of key, transfer,
+   verify and discard.
 4. The real update behind a confirmation, on the charger, then a checklist that journals each
    result.
 5. Settings and onboarding.
 
-First on the band, all read only: connect with this build, tap "Read update status" and then
-"Check with Meta" on the band tests page, and export the journal. The lines to look for are
-`protocol` (ending `link: offered ...`), `band_streams`, `band_test` and `band_update`.
+Next on the band, one step at a time with the journal read after each: "Check with Meta",
+"Get build 64", then "Install key 20", which is the first thing this app writes for an update
+and which the band keeps. The journal's `band_update` lines show the band's answer to the key
+as numbers. Only after that, "Trial transfer". Before stage 4, setting a band up again needs
+the sign-in that works, since a band that had to be reset after an update would need it.

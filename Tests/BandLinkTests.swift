@@ -1,6 +1,6 @@
 // Offline checks that the app speaks the band's link on both firmware generations: public test
 // vectors, the frame reader, and whole sessions against a pretend band. No Bluetooth, Keychain or network.
-// swiftc -module-cache-path /private/tmp/runes-swift-module-cache RunesIOS/Session/Models.swift RunesIOS/Session/BandStatus.swift RunesIOS/Protocol/Wire.swift RunesIOS/Protocol/BandCrypto.swift RunesIOS/Protocol/BandLink.swift RunesIOS/Protocol/BandStreams.swift RunesIOS/Protocol/BandProtocol.swift RunesIOS/Protocol/EMG.swift RunesIOS/Authentication/OwnershipCeremony.swift RunesIOS/Persistence/IdentityStore.swift RunesIOS/Relay/RelayWire.swift Tests/BandLinkTests.swift -o /private/tmp/runes-band-link-tests && /private/tmp/runes-band-link-tests
+// swiftc -module-cache-path /private/tmp/runes-swift-module-cache RunesIOS/Session/Models.swift RunesIOS/Session/BandStatus.swift RunesIOS/Protocol/Wire.swift RunesIOS/Protocol/BandCrypto.swift RunesIOS/Protocol/BandLink.swift RunesIOS/Protocol/BandStreams.swift RunesIOS/Protocol/BandProtocol.swift RunesIOS/Protocol/EMG.swift RunesIOS/Authentication/OwnershipCeremony.swift RunesIOS/Persistence/IdentityStore.swift RunesIOS/Relay/RelayWire.swift RunesIOS/Firmware/FirmwareUpdate.swift Tests/BandLinkTests.swift -o /private/tmp/runes-band-link-tests && /private/tmp/runes-band-link-tests
 // The vectors, the padding cases and the recorded gestures come from the public band-core project. See THIRD_PARTY_NOTICES.md.
 import Foundation
 import CryptoKit
@@ -284,6 +284,8 @@ struct BandLinkTests {
         try expect(try session(late: false, bytewise: true) == early)
         print("Sessions passed: trust, device information, streams, gestures, motion, EMG, wrist setting, vibration, named settings and update status on early and late firmware, whole, bytewise and with frames cut across records.")
 
+        try update(late: false); try update(late: true); try update(late: true, pieces: 3)
+        print("Update passed: a trial transfer over the link on early and late firmware, eight chunks in flight, numbered after the app's own requests.")
         try recording()
         try streams()
         try enrollment()
@@ -479,6 +481,79 @@ struct BandLinkTests {
         try pair.ask("stop_streams", 5, 4, BandProtocol.stopFlags, answer: PB.field(2, 1) + PB.field(5, late ? Data() : BandProtocol.stopFlags))
         precondition(pair.host.stage == "ready")
         return pair.log
+    }
+
+    /// A whole trial transfer carried over the encrypted link. The update numbers its requests
+    /// after the app's own and has several in flight, and the band's answers come back as
+    /// frames no request of the app was waiting for.
+    static func update(late: Bool, pieces: Int = 1) throws {
+        let pair = try Pair(late: late)
+        pair.pieces = pieces
+        try pair.authenticate(after: pair.handshake())
+        try pair.ask("request_active", 6, 5, PB.field(6, 2), answer: PB.field(2, 1))
+        pair.host.watchesOther = true
+        let firmware = Data((0..<30_000).map { UInt8(truncatingIfNeeded: $0 &* 13 &+ $0 >> 7) })
+        let item = FirmwareUpdate.Item(kind: 0, name: "firmware", data: firmware, md5: Data(Insecure.MD5.hash(data: firmware)))
+        let job = FirmwareUpdate(FirmwareUpdate.Plan(version: 1003366292, items: [item], keyNumber: 20, wrappedKey: nil, mode: .trial))
+        var held = Data(), received = Data(), state: UInt64 = 1, opened = false, most = 0, numbers: [UInt64] = []
+        func general(_ code: UInt64) -> Data { PB.field(1, PB.field(1, PB.field(1, code))) }
+        var queue = job.begin(ids: &pair.host.requestNumber, now: pair.now)
+        while !job.done {
+            precondition(!queue.isEmpty, "the update stalled")
+            most = max(most, queue.count)
+            // Everything waiting goes out in one write, as it does when chunks fill the band's room.
+            var wire = Data()
+            for body in queue { wire.append(try pair.host.post(channel: BandTrial.channel, body: body)) }
+            queue = []
+            var answers: [Frame] = []
+            for frame in try pair.band.read(wire) {
+                precondition(frame.channel == BandTrial.channel | 0x8000 && frame.words == (opened ? [] : [0x8100ce56, 0x02000314]))
+                opened = true
+                let fields = try Fields(frame.payload), number = try fields.integer(1)
+                numbers.append(number)
+                var answer = Data()
+                if let raw = try? fields.bytes(7) {
+                    let request = try Fields(raw)
+                    if request.values[1] != nil {
+                        let info = PB.field(2, 1) + PB.field(4, state) + PB.field(5, PB.field(2, 770435744)) + PB.field(5, PB.field(1, 1) + PB.field(2, 770435744)) + PB.field(5, PB.field(1, 2)) + PB.field(6, 20)
+                        answer = PB.field(8, PB.field(2, info))
+                    } else if request.values[2] != nil { state = 2; held = Data(); answer = PB.field(8, general(0)) }
+                    else if request.values[3] != nil {
+                        let good = Data(Insecure.MD5.hash(data: held)) == item.md5
+                        if good { state = 3; received = held }
+                        answer = PB.field(8, PB.field(3, PB.field(1, PB.field(1, good ? 0 : 300))))
+                    } else if request.values[5] != nil { state = 1; held = Data(); answer = PB.field(8, general(0)) }
+                    else { preconditionFailure("a request the trial must never send") }
+                } else {
+                    let request = try Fields(fields.bytes(9))
+                    if let raw = try? request.bytes(1) {
+                        try expect(try Fields(raw).bytes(1) == item.md5)
+                        answer = PB.field(10, PB.field(1, PB.field(1, 1) + PB.field(2, 16_000) + PB.field(3, UInt64(held.count)) + PB.field(5, 1)))
+                    } else {
+                        let chunk = try Fields(request.bytes(2)), offset = try chunk.integer(2, default: 0)
+                        precondition(offset == UInt64(held.count), "chunks arrive in order")
+                        held.append(try chunk.bytes(3))
+                        answer = PB.field(10, PB.field(2, PB.field(1, 1) + PB.field(2, offset)))
+                    }
+                }
+                answers.append(Frame(channel: BandTrial.channel | pair.band.tag, words: [0x02000315], payload: PB.field(1, number) + PB.field(2, 1) + answer))
+            }
+            let (output, signals) = try pair.feed(pair.band.send(answers, pieces: pieces))
+            precondition(output.isEmpty && signals.count == answers.count)
+            for signal in signals {
+                guard case .other(let kind, let channel, let payload) = signal else { preconditionFailure("an update answer was taken for something else") }
+                precondition(kind == 0x02000315 && BandLink.route(channel) == BandTrial.channel)
+                queue += job.receive(payload, ids: &pair.host.requestNumber, now: pair.now)
+            }
+        }
+        precondition(job.succeeded && received == firmware && state == 1 && most == FirmwareUpdate.windowLimit)
+        // Device information was request 1 and the active state request 2, so the update starts at 3 and never repeats a number.
+        precondition(numbers.first == 3 && numbers == Array(3..<(3 + UInt64(numbers.count))))
+        // The app's own requests carry on after the update's numbers, and its answers are its own again.
+        pair.host.watchesOther = false
+        let next = try pair.ask("named_count", NamedSettings.channel, NamedSettings.field, NamedSettings.count(), answer: PB.field(2, 1) + PB.field(14, PB.field(1, PB.field(1, 27))))
+        let after = try Fields(next.payload).integer(1)
+        precondition(after == 3 + UInt64(numbers.count) && next.words.isEmpty)
     }
 
     private static func now(_ pair: Pair, _ work: (Pair) throws -> [Frame]) {

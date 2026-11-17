@@ -42,6 +42,13 @@ final class SessionCore: @unchecked Sendable {
     var onDeviceReply: ((Data) -> Void)?
     /// What a band test heard back, as a line for the tests page.
     var onTrial: ((String) -> Void)?
+    /// What a firmware update wrote, how far its current item is, and once it has ended, how it went.
+    var onUpdate: (([String], FirmwareUpdate.Progress?, Bool?) -> Void)?
+    private var update: FirmwareUpdate?
+    private var updateShown: FirmwareUpdate.Progress?
+    /// A clock for the update's timeouts that stands still while the app is suspended, so a
+    /// pause in the background is not taken for a silent band.
+    private var updateClock: TimeInterval = 0, updateSeen: TimeInterval = 0
     /// Whether each gesture is acknowledged to the band, as the Meta app does. Off unless a test turns it on.
     var acknowledgesGestures = false { didSet { acknowledgementNoted = false } }
     private var acknowledgementNoted = false
@@ -411,7 +418,9 @@ final class SessionCore: @unchecked Sendable {
     private func reconcileStreams() throws {
         // The band tightness test asks for streams itself while it runs, and this is called again when it ends.
         guard pendingStreams == nil, !emgReading, tightnessSince == nil || snapshot.state != .streaming else { return }
-        let wantEMG = localEMG && emgBlocked == nil && !emgHardBlocked
+        // A firmware update runs with gestures alone. The extra traffic made a band lose its place.
+        let quiet = update != nil
+        let wantEMG = localEMG && emgBlocked == nil && !emgHardBlocked && !quiet
         if wantEMG && !emgReady {
             // Never enable EMG before its layout has been read and validated.
             emgReading = true
@@ -421,8 +430,8 @@ final class SessionCore: @unchecked Sendable {
         }
         // The relay only forwards the streams the Mac asked for (see onRelayReady), so streams
         // started for this phone's combos never reach the Mac.
-        let requested = RelayWire.Demand(active: true, gyro: (relayDemand.active && relayDemand.gyro) || localMotion,
-                                         orientation: (relayDemand.active && relayDemand.orientation) || localMotion)
+        let requested = RelayWire.Demand(active: true, gyro: !quiet && ((relayDemand.active && relayDemand.gyro) || localMotion),
+                                         orientation: !quiet && ((relayDemand.active && relayDemand.orientation) || localMotion))
         if activeStreams == requested, activeEMG == wantEMG {
             onRelayReady?(relayDemand)
             return
@@ -450,7 +459,7 @@ final class SessionCore: @unchecked Sendable {
     }
 
     func setHand(_ hand: Handedness, for band: UUID) {
-        guard snapshot.selected == band, appState == "foreground", snapshot.state == .streaming,
+        guard snapshot.selected == band, appState == "foreground", snapshot.state == .streaming, update == nil,
               let attempt = snapshot.connectionAttempt.startedAt,
               snapshot.handSetting.change(to: hand) else { return }
         pendingHandTarget = (band, attempt)
@@ -477,7 +486,7 @@ final class SessionCore: @unchecked Sendable {
         let now = ProcessInfo.processInfo.systemUptime
         guard appState == "foreground", snapshot.state == .streaming, snapshot.selected == band,
               snapshot.connectionAttempt.startedAt == attempt, snapshot.handSetting.confirmedChangeID == change,
-              snapshot.hand == hand, let proto, proto.canSendWristFeedback,
+              snapshot.hand == hand, let proto, proto.canSendWristFeedback, update == nil,
               wristFeedbackGate.take(phase, change: change, now: now) else { return }
         feedbackInFlight = phase
         record("wrist_feedback", "\(phase.rawValue) requested.")
@@ -495,7 +504,7 @@ final class SessionCore: @unchecked Sendable {
     /// A pattern with no name is an answer to a gesture: there is one for every gesture, so it
     /// is left out of the journal and off the screen edge, where the gesture already shows.
     func play(_ pulses: [BandPulse], name: String?) {
-        guard snapshot.state == .streaming, proto != nil else { return }
+        guard snapshot.state == .streaming, proto != nil, update == nil else { return }
         buzzGeneration += 1
         buzzQueue = pulses; buzzResting = false; buzzShown = name != nil
         guard !pulses.isEmpty else { return }
@@ -546,7 +555,7 @@ final class SessionCore: @unchecked Sendable {
     /// Reads every setting the band can name, one request at a time.
     func readNamedSettings() {
         guard tightnessSince == nil else { onNamedSetting?(nil, "Wait for the band tightness test to end."); onNamedSetting?(nil, ""); return }
-        guard snapshot.state == .streaming, settingRead == nil, settingWrite == nil else { return }
+        guard snapshot.state == .streaming, settingRead == nil, settingWrite == nil, update == nil else { return }
         record("band_settings", "Named settings: reading.")
         settingRead = (0, 0, nil)
         askSetting("named_count", NamedSettings.count())
@@ -554,7 +563,7 @@ final class SessionCore: @unchecked Sendable {
 
     /// Writes a whole number to one named setting, then reads it back. The band keeps it.
     func writeNamedSetting(_ setting: NamedSettings.Setting, value: UInt64) {
-        guard snapshot.state == .streaming, settingRead == nil, settingWrite == nil, setting.writable else { return }
+        guard snapshot.state == .streaming, settingRead == nil, settingWrite == nil, update == nil, setting.writable else { return }
         record("band_settings", "Writing \(setting.name) = \(value) (was \(setting.value.map(String.init) ?? "unknown")).")
         settingWrite = setting
         askSetting("named_write", NamedSettings.write(id: setting.id, value: value))
@@ -631,7 +640,7 @@ final class SessionCore: @unchecked Sendable {
 
     /// Sends one band test request. A request still waiting on the same channel means this one is skipped.
     func tryOnBand(_ operation: String, field: Int, _ payload: Data) {
-        guard snapshot.state == .streaming else { return }
+        guard snapshot.state == .streaming, update == nil else { return }
         do { try rpc("try_" + operation, BandTrial.channel, field, payload) }
         catch { if operation != "acknowledge" { trial("\(operation): the band is busy; try again.") } }
     }
@@ -645,7 +654,7 @@ final class SessionCore: @unchecked Sendable {
     /// only requests about the check, stream requests and one read. It writes no setting the band keeps.
     func checkTightness(_ setting: NamedSettings.Setting, worn: UInt64?) {
         guard tightnessSince == nil else { return }
-        guard snapshot.state == .streaming, settingRead == nil, settingWrite == nil, pendingStreams == nil, !emgReading, let proto,
+        guard snapshot.state == .streaming, settingRead == nil, settingWrite == nil, pendingStreams == nil, !emgReading, update == nil, let proto,
               setting.name == BandTightness.trigger, let capability = capabilities[setting.id], let steps = BandTightness.plan(capability) else {
             tightness("Not started: the band is busy, not connected, or does not list running the check.")
             onTightness?(""); return
@@ -759,7 +768,7 @@ final class SessionCore: @unchecked Sendable {
         tightness("Done: \(tightnessFound ?? "no tightness arrived"). \(tightnessHeard) other messages.")
         tightnessSince = nil; tightnessTarget = nil; tightnessSteps = []; tightnessAsked = nil; tightnessWait += 1
         tightnessFlags = []; tightnessStreams = false; tightnessWatching = false; tightnessClosing = false
-        proto?.watchesOther = false
+        proto?.watchesOther = update != nil
         onTightness?("")
         guard snapshot.state == .streaming else { return }
         do { try reconcileStreams() } catch { fail(error) }
@@ -768,7 +777,7 @@ final class SessionCore: @unchecked Sendable {
     /// Plays one of the band's own patterns, 1 or 2, in place of anything still playing.
     /// The reference implementation calls these its gesture feedback patterns.
     func perform(pattern: UInt64) {
-        guard snapshot.state == .streaming, let proto, proto.canSendWristFeedback, pattern == 1 || pattern == 2 else { return }
+        guard snapshot.state == .streaming, let proto, proto.canSendWristFeedback, update == nil, pattern == 1 || pattern == 2 else { return }
         buzzGeneration += 1
         buzzQueue = []; buzzResting = false
         record("band_buzz", "pattern \(pattern) requested.")
@@ -852,6 +861,7 @@ final class SessionCore: @unchecked Sendable {
                         settingRead = nil; settingWrite = nil; lastAnswered = nil
                         endTightness()
                         requestHand()
+                        resumeUpdate()
                     }
                     try reconcileStreams()
                 }
@@ -864,7 +874,8 @@ final class SessionCore: @unchecked Sendable {
             case "try_firmware":
                 // The whole answer as numbers: update state, device state, and each item's kind and version.
                 let numbers = (try? Fields(payload)).map { BandSettings.describe($0, depth: 0) } ?? "unreadable"
-                trial("firmware: \(payload.isEmpty ? "no answer" : numbers)")
+                let summary = (try? Fields(Fields(payload).bytes(8))).flatMap { BandUpdateStatus($0) }.map { "; \($0.summary)" } ?? ""
+                trial("firmware: \(payload.isEmpty ? "no answer" : numbers + summary)")
             case "device_info":
                 if let info = BandInfo.describe(payload) { record("band_info", info); onInfo?(info) }
                 onDeviceReply?(payload)
@@ -914,6 +925,10 @@ final class SessionCore: @unchecked Sendable {
             feedbackInFlight = nil
             sendPendingHand(); sendNextPulse(); publish()
         case .other(let kind, let channel, let payload):
+            if let update, let proto, kind == 0x02000315, BandLink.route(channel) == BandTrial.channel {
+                sendUpdate(update.receive(payload, ids: &proto.requestNumber, now: updateTime()))
+                return
+            }
             // The journal is bounded, so a band that floods is cut off at 60 lines.
             guard tightnessSince != nil, tightnessHeard < 60 else { return }
             tightnessHeard += 1
@@ -988,6 +1003,7 @@ final class SessionCore: @unchecked Sendable {
     }
     func disconnect(_ completion: ((Bool) -> Void)? = nil) {
         if let completion { releaseCompletion = completion }
+        if let update { update.abandon(); reportUpdate() }
         snapshot.connectionAttempt.stop()
         setIntent(false); reconnectAt = nil; scanUntil = nil; transport.stopScan(); enrollmentAttempt = nil; meta = nil
         if snapshot.issue != .stillReleasing { snapshot.issue = nil }
@@ -1045,6 +1061,7 @@ final class SessionCore: @unchecked Sendable {
     /// pending connect in place (or iOS is reconnecting by itself), so nothing here
     /// depends on a timer that a suspended app could not run.
     private func linkLost(_ systemReconnecting: Bool) {
+        update?.linkLost(); reportUpdate()
         proto = nil; sequences.reset(); interpreter.reset(); sessionID = UUID(); handRequested = false
         pendingStreams = nil; activeStreams = nil; resetEMG(); snapshot.startedAt = nil
         if stoppingUntil != nil || snapshot.state == .disconnecting { finishDisconnect(); return }
@@ -1065,6 +1082,7 @@ final class SessionCore: @unchecked Sendable {
         let detail = "\(error.localizedDescription) Protocol: \(proto?.stage ?? "closed"); enrollment: \(enrollment?.record.stage ?? "none")."
         logger.error("\(detail, privacy: .public)")
         record("error", detail); proto = nil; snapshot.startedAt = nil
+        update?.linkLost(); reportUpdate()
         if emgReading || pendingEMG == true {
             // Don't let EMG turn into a reconnect loop: one unexpected failure disables it for this run.
             emgHardBlocked = true; emgStatus("EMG disabled after a connection error while enabling it.")
@@ -1108,6 +1126,70 @@ final class SessionCore: @unchecked Sendable {
         do { for signal in try proto?.tick(now: now) ?? [] { try handle(signal, receipt: context()) } }
         catch { fail(error) }
         sendNextPulse()
+        if let update, let proto, snapshot.state == .streaming { sendUpdate(update.tick(ids: &proto.requestNumber, now: updateTime())) }
+    }
+
+    /// Starts a key install, a trial transfer or a discard on the band. Vibration, motion
+    /// streams and the other band tests stay off until it ends.
+    func startUpdate(_ plan: FirmwareUpdate.Plan) {
+        guard update == nil else { return }
+        guard snapshot.state == .streaming, let proto, tightnessSince == nil, settingRead == nil, settingWrite == nil, pendingStreams == nil, !emgReading else {
+            let line = "Not started: the band is busy or not connected."
+            record("band_update", line); onUpdate?([line], nil, false); return
+        }
+        let job = FirmwareUpdate(plan)
+        update = job; updateShown = nil; updateSeen = ProcessInfo.processInfo.systemUptime
+        buzzQueue = []; proto.watchesOther = true
+        do { try reconcileStreams() } catch { fail(error); return }
+        sendUpdate(job.begin(ids: &proto.requestNumber, now: updateTime()))
+    }
+
+    /// Stops the update and has the band discard what it holds.
+    func stopUpdate() {
+        guard let update else { return }
+        if let proto, snapshot.state == .streaming { sendUpdate(update.stop(ids: &proto.requestNumber, now: updateTime())) }
+        else { update.abandon(); reportUpdate() }
+    }
+
+    /// The band is streaming again after a dropped link, and the update asks it where to pick up.
+    private func resumeUpdate() {
+        guard let update, let proto else { return }
+        proto.watchesOther = true
+        updateSeen = ProcessInfo.processInfo.systemUptime
+        sendUpdate(update.resume(ids: &proto.requestNumber, now: updateTime()))
+    }
+
+    private func updateTime() -> TimeInterval {
+        let now = ProcessInfo.processInfo.systemUptime
+        updateClock += min(max(now - updateSeen, 0), 1); updateSeen = now
+        return updateClock
+    }
+
+    private func sendUpdate(_ bodies: [Data]) {
+        if let proto {
+            do { for body in bodies { try transport.write(proto.post(channel: BandTrial.channel, body: body)) } }
+            catch { reportUpdate(); fail(error); return }
+        }
+        reportUpdate()
+    }
+
+    /// Passes on what the update wrote, and clears it away once it has ended.
+    private func reportUpdate() {
+        guard let job = update else { return }
+        let lines = job.takeLines(), progress = job.progress
+        for line in lines { record("band_update", line) }
+        // Progress is passed on in half percent steps, not for every chunk.
+        func step(_ progress: FirmwareUpdate.Progress?) -> String { progress.map { "\($0.name) \($0.stage) \($0.sent * 200 / max($0.size, 1))" } ?? "" }
+        let moved = step(progress) != step(updateShown)
+        if moved { updateShown = progress }
+        guard job.done else {
+            if !lines.isEmpty || moved { onUpdate?(lines, progress, nil) }
+            return
+        }
+        update = nil; updateShown = nil
+        proto?.watchesOther = tightnessSince != nil
+        onUpdate?(lines, nil, job.succeeded)
+        if snapshot.state == .streaming { do { try reconcileStreams() } catch { fail(error) } }
     }
     func exportJournal(_ completion: @escaping (Result<URL, Error>) -> Void) {
         do { if journal == nil { journal = try EventJournal() }; completion(.success(try journal!.export())) }

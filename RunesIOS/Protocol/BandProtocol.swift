@@ -106,6 +106,18 @@ final class BandProtocol {
         nextID += 1
         return try encrypt(frame(channel | 0x8000, [], PB.field(1, nextID) + PB.field(field, payload)))
     }
+    /// The number of the last request sent, which a firmware update moves on as it numbers its own.
+    var requestNumber: UInt64 { get { nextID } set { nextID = max(nextID, newValue) } }
+    /// A request the caller numbered and built, sent with nothing waiting for its answer, so a
+    /// firmware update can have several in flight on one channel. The answers arrive as
+    /// `other` while `watchesOther` is set.
+    func post(channel: UInt16, body: Data) throws -> Data {
+        guard stage == "ready" else { throw BandError.wire("Request is invalid for this protocol state.") }
+        let words: [UInt32] = opened.contains(channel) ? [] : [0x8100ce56, 0x02000314]
+        if !words.isEmpty { types[channel] = nil; types[channel | 0x8000] = nil }
+        opened.insert(channel)
+        return try encrypt(frame(channel | 0x8000, words, body))
+    }
     func feed(_ input: Data, now: TimeInterval) throws -> (Data, [Signal]) {
         var signals = try tick(now: now)
         var output = Data(), data = input

@@ -19,22 +19,50 @@ final class FirmwareService: NSObject, URLSessionTaskDelegate, @unchecked Sendab
         text.addingPercentEncoding(withAllowedCharacters: CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"))!
     }
 
-    /// One question to one host. Returns the HTTP status and what the answer held.
-    func ask(_ question: FirmwareOffer.Question, host: String, serial: String, version: String, token: String, asMetaApp: Bool) async throws -> (status: Int, reply: FirmwareOffer.Reply) {
+    /// One form to one host. Returns the HTTP status and at most a megabyte of the answer.
+    private func post(_ form: [(String, String)], name: String, host: String, token: String, asMetaApp: Bool) async throws -> (status: Int, data: Data?) {
         var request = URLRequest(url: URL(string: "https://\(host)/graphql")!)
         request.httpMethod = "POST"
-        request.httpBody = Data(question.form(serial: serial, version: version, session: UUID().uuidString.lowercased())
-            .map { "\(encode($0.0))=\(encode($0.1))" }.joined(separator: "&").utf8)
+        request.httpBody = Data(form.map { "\(encode($0.0))=\(encode($0.1))" }.joined(separator: "&").utf8)
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.setValue("OAuth " + token, forHTTPHeaderField: "Authorization")
-        request.setValue(question.name, forHTTPHeaderField: "X-FB-Friendly-Name")
+        request.setValue(name, forHTTPHeaderField: "X-FB-Friendly-Name")
         if asMetaApp { request.setValue(Self.appAgent, forHTTPHeaderField: "User-Agent") }
         let (bytes, response) = try await session.bytes(for: request)
         var data = Data()
         for try await byte in bytes {
-            guard data.count < 1 << 20 else { return ((response as? HTTPURLResponse)?.statusCode ?? 0, .unreadable) }
+            guard data.count < 1 << 20 else { return ((response as? HTTPURLResponse)?.statusCode ?? 0, nil) }
             data.append(byte)
         }
-        return ((response as? HTTPURLResponse)?.statusCode ?? 0, FirmwareOffer.read(data))
+        return ((response as? HTTPURLResponse)?.statusCode ?? 0, data)
+    }
+
+    /// One question to one host. Returns the HTTP status and what the answer held.
+    func ask(_ question: FirmwareOffer.Question, host: String, serial: String, version: String, token: String, asMetaApp: Bool) async throws -> (status: Int, reply: FirmwareOffer.Reply) {
+        let form = question.form(serial: serial, version: version, session: UUID().uuidString.lowercased())
+        let answer = try await post(form, name: question.name, host: host, token: token, asMetaApp: asMetaApp)
+        return (answer.status, answer.data.map(FirmwareOffer.read) ?? .unreadable)
+    }
+
+    /// Asks for the key a package needs, wrapped by Meta for this one band.
+    func key(_ number: Int, host: String, serial: String, token: String, asMetaApp: Bool) async throws -> (status: Int, key: Data?) {
+        let answer = try await post(FirmwareOffer.keyForm(serial: serial, key: number), name: FirmwareOffer.keyName, host: host, token: token, asMetaApp: asMetaApp)
+        return (answer.status, answer.data.flatMap(FirmwarePackage.wrappedKey))
+    }
+
+    /// Fetches a package from the link in an offer. The link is not logged.
+    func download(_ link: URL) async throws -> (status: Int, data: Data) {
+        var request = URLRequest(url: link)
+        request.timeoutInterval = 60
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForResource = 900; config.httpCookieStorage = nil; config.urlCache = nil
+        let fetcher = URLSession(configuration: config, delegate: self, delegateQueue: nil)
+        defer { fetcher.finishTasksAndInvalidate() }
+        let (file, response) = try await fetcher.download(for: request)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        let size = (try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+        guard status == 200, size <= Zip.limit else { return (status == 200 ? 0 : status, Data()) }
+        return (status, try Data(contentsOf: file))
     }
 }

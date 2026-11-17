@@ -181,15 +181,18 @@ final class FirmwareUpdate {
     /// The person asked to stop. The band is told to discard what it holds.
     func stop(ids: inout UInt64, now: TimeInterval) -> [Data] {
         guard !done, !stopped else { return [] }
+        guard !away, touched else { abandon(); return [] }
         stopped = true; transfer = nil; waiting = nil
-        if away || !touched {
-            done = true
-            say(touched ? "Stopped while the band was away. The next run clears what it holds." : "Stopped. Nothing had been sent.")
-            return []
-        }
         say("Stopping. Asking the band to discard what it has.")
         closing = true
         return [ask(.abort, &ids, now)]
+    }
+
+    /// Ends the run with nothing more said to the band, for when it is not there to be told.
+    func abandon() {
+        guard !done else { return }
+        stopped = true; done = true; transfer = nil; waiting = nil
+        say(touched ? "Stopped without telling the band. The next run clears what it holds." : "Stopped. Nothing had been sent.")
     }
 
     /// The connection dropped. Whatever was in flight is forgotten until the band is back.

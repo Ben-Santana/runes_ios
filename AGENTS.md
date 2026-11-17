@@ -93,6 +93,10 @@ of wireless deployment. Do not uninstall the app to repair an ordinary update.
   late firmware, with public vectors for both. Run it and the connection diagnostics after any
   change to `Protocol/` or `Transport/`. Checks that compile `BandCrypto.swift` also need
   `BandLink.swift`, and those that compile `BandProtocol.swift` also need `BandStreams.swift`.
+  `Tests/BandLinkTests.swift` also compiles `Firmware/FirmwareUpdate.swift`. The update engine,
+  the package reader and Meta's answers have their own checks: `FirmwareUpdateTests.swift`,
+  `FirmwarePackageTests.swift` and `FirmwareOfferTests.swift`. Run them after any change in
+  `RunesIOS/Firmware/`.
   `Documentation/FirmwareUpdate.md` holds the update flow, what is proven and what is not.
   Nothing may send update data to a band without the confirmation described there.
 - Recovery requires explicit confirmation. Preserve saved credentials while

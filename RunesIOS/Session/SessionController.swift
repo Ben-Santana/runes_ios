@@ -122,6 +122,7 @@ final class SessionController: ObservableObject {
         core.onTrial = { line in Task { @MainActor in BandTests.shared.trials.append(line) } }
         core.onInfo = { info in Task { @MainActor in BandTests.shared.info = info } }
         core.onDeviceReply = { reply in Task { @MainActor in BandFirmwareTest.shared.deviceReply(reply) } }
+        core.onUpdate = { lines, progress, ended in Task { @MainActor in BandFirmwareTest.shared.updateHeard(lines, progress, ended) } }
         core.onCapability = { setting, capability in Task { @MainActor in BandTightnessTest.shared.described(setting, capability) } }
         core.onTightness = { line in Task { @MainActor in BandTightnessTest.shared.heard(line) } }
         WorkoutStore.shared.onSound = { voice, volume in ScoreAudio.shared.cue(voice, volume: volume) }
@@ -301,6 +302,9 @@ final class SessionController: ObservableObject {
     func stopVibration() { core.transport.perform { [core] in core.tryOnBand("stop", field: 17, BandTrial.stop) } }
     /// Asks the band which firmware it runs and whether an update is waiting. Reading only.
     func readFirmwareStatus() { core.transport.perform { [core] in core.tryOnBand("firmware", field: 7, BandTrial.firmwareStatus) } }
+    /// Runs a key install, a trial transfer or a discard on the band. The firmware tests page asks the person first.
+    func startUpdate(_ plan: FirmwareUpdate.Plan) { core.transport.perform { [core] in core.startUpdate(plan) } }
+    func stopUpdate() { core.transport.perform { [core] in core.stopUpdate() } }
     func writeNamedSetting(_ setting: NamedSettings.Setting, value: UInt64) {
         core.transport.perform { [core] in core.writeNamedSetting(setting, value: value) }
     }
