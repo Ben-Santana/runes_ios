@@ -38,6 +38,8 @@ final class SessionCore: @unchecked Sendable {
     var onPattern: ((UInt64, WristFeedbackResult, String) -> Void)?
     /// What the band said about its software when it connected (`BandInfo`).
     var onInfo: ((String) -> Void)?
+    /// The whole device information reply, for the firmware check. It holds the serial number, so it is never logged.
+    var onDeviceReply: ((Data) -> Void)?
     /// What a band test heard back, as a line for the tests page.
     var onTrial: ((String) -> Void)?
     /// Whether each gesture is acknowledged to the band, as the Meta app does. Off unless a test turns it on.
@@ -865,6 +867,7 @@ final class SessionCore: @unchecked Sendable {
                 trial("firmware: \(payload.isEmpty ? "no answer" : numbers)")
             case "device_info":
                 if let info = BandInfo.describe(payload) { record("band_info", info); onInfo?(info) }
+                onDeviceReply?(payload)
             case "named_trigger", "named_streams": tightnessAnswer(payload)
             case "set_hand":
                 if snapshot.handSetting.wrote() { try rpc("read_hand", 6, 5) }

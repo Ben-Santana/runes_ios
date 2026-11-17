@@ -104,12 +104,13 @@ struct BandTestsScreen: View {
                     ActionRow("Read update status") { controller.readFirmwareStatus() }
                         .disabled(!ready)
                 }
+                BandFirmwarePanel()
                 PanelGroup("Settings read on connecting", caption: "The band sends these when it connects.") {
                     lines(tests.settings ?? "Not read yet.")
                 }
                 PanelGroup(nil, caption: "Copies everything above as text.") {
                     ActionRow(copied ? "Copied" : "Copy results", icon: copied ? .check : .clipboardCopy) {
-                        UIPasteboard.general.string = ([tests.patternAnswer, tests.info, tests.settings] + tests.trials + tests.lines + BandTightnessTest.shared.lines).compactMap { $0 }.joined(separator: "\n")
+                        UIPasteboard.general.string = ([tests.patternAnswer, tests.info, tests.settings] + tests.trials + tests.lines + BandTightnessTest.shared.lines + BandFirmwareTest.shared.lines).compactMap { $0 }.joined(separator: "\n")
                         copied = true
                     }
                 }

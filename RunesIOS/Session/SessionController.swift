@@ -121,6 +121,7 @@ final class SessionController: ObservableObject {
         core.onNamedSetting = { setting, line in Task { @MainActor in BandTests.shared.named(setting, line) } }
         core.onTrial = { line in Task { @MainActor in BandTests.shared.trials.append(line) } }
         core.onInfo = { info in Task { @MainActor in BandTests.shared.info = info } }
+        core.onDeviceReply = { reply in Task { @MainActor in BandFirmwareTest.shared.deviceReply(reply) } }
         core.onCapability = { setting, capability in Task { @MainActor in BandTightnessTest.shared.described(setting, capability) } }
         core.onTightness = { line in Task { @MainActor in BandTightnessTest.shared.heard(line) } }
         WorkoutStore.shared.onSound = { voice, volume in ScoreAudio.shared.cue(voice, volume: volume) }
@@ -419,6 +420,8 @@ final class SessionController: ObservableObject {
             self.core.transport.perform { [core = self.core] in core.ownershipCompleted(result, attempt: attempt) }
         }
     }
+    /// A line from the firmware tests, for the journal.
+    func noteFirmware(_ line: String) { journal("band_update", line) }
     private func journal(_ kind: String, _ message: String) {
         core.transport.perform { [core] in core.note(kind, message) }
     }
