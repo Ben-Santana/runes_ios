@@ -21,11 +21,12 @@ final class WorkoutStore: ObservableObject {
         var unit: WeightUnit = .kg
         var sounds = WorkoutSounds()
         var endsAtTarget = false
+        var health = HealthSettings()
 
         init(plans: [WorkoutPlan], controls: WorkoutControls, sensitivity: RepSensitivity, history: [WorkoutRecord], unit: WeightUnit, sounds: WorkoutSounds,
-             endsAtTarget: Bool) {
+             endsAtTarget: Bool, health: HealthSettings) {
             self.plans = plans; self.controls = controls; self.sensitivity = sensitivity; self.history = history; self.unit = unit
-            self.sounds = sounds; self.endsAtTarget = endsAtTarget
+            self.sounds = sounds; self.endsAtTarget = endsAtTarget; self.health = health
         }
         /// Data saved before the split and units existed still loads.
         init(from decoder: Decoder) throws {
@@ -37,6 +38,7 @@ final class WorkoutStore: ObservableObject {
             unit = try c.decodeIfPresent(WeightUnit.self, forKey: .unit) ?? .kg
             sounds = (try? c.decodeIfPresent(WorkoutSounds.self, forKey: .sounds)) ?? WorkoutSounds()
             endsAtTarget = try c.decodeIfPresent(Bool.self, forKey: .endsAtTarget) ?? false
+            health = (try? c.decodeIfPresent(HealthSettings.self, forKey: .health)) ?? HealthSettings()
         }
     }
 
@@ -49,6 +51,12 @@ final class WorkoutStore: ObservableObject {
     /// Logs a set by itself once the band has counted its target reps, or a timed set has
     /// been held for its time, instead of waiting for Stop.
     @Published private(set) var endsAtTarget = false
+    /// Whether finished workouts are added to Apple Health. Off until the person turns it on.
+    @Published private(set) var health = HealthSettings()
+    /// What Health allows. Read only while the feature is on, so nothing is asked at launch.
+    @Published private(set) var healthAccess: HealthAccess = .notAsked
+    private lazy var healthLink = HealthLink()
+    private var savingToHealth = false
     @Published private(set) var run: WorkoutRun? {
         didSet {
             guard (oldValue == nil) != (run == nil), !previewOnly else { return }
@@ -90,12 +98,13 @@ final class WorkoutStore: ObservableObject {
 
     private init() {
         var saved = Saved(plans: WorkoutPlan.starterSplit, controls: .standard, sensitivity: .normal, history: [], unit: .kg, sounds: WorkoutSounds(),
-                          endsAtTarget: false)
+                          endsAtTarget: false, health: HealthSettings())
         if let data = UserDefaults.standard.data(forKey: Self.key),
            let decoded = try? JSONDecoder().decode(Saved.self, from: data) { saved = decoded }
         plans = saved.plans.map { $0.normalized() }
         controls = saved.controls; sensitivity = saved.sensitivity; history = saved.history; unit = saved.unit
-        sounds = saved.sounds; endsAtTarget = saved.endsAtTarget
+        sounds = saved.sounds; endsAtTarget = saved.endsAtTarget; health = saved.health
+        if !HealthLink.isAvailable { healthAccess = .unavailable }
         decider.onFire = { [weak self] id in
             guard let self, self.run != nil else { return }
             if id == SwitchControls.mappingID { ControlSwitch.shared.toggle(); return }
@@ -103,6 +112,8 @@ final class WorkoutStore: ObservableObject {
             self.perform(command)
         }
         decider.configure(controls.mappings)
+        // A workout that finished just before the app closed is sent now.
+        refreshHealth()
     }
 
     private func controlsChanged() {
@@ -113,9 +124,11 @@ final class WorkoutStore: ObservableObject {
 
     #if DEBUG
     /// Fixed state for screenshots and previews; never saved.
-    init(preview plans: [WorkoutPlan], run: WorkoutRun? = nil, history: [WorkoutRecord] = []) {
+    init(preview plans: [WorkoutPlan], run: WorkoutRun? = nil, history: [WorkoutRecord] = [],
+         health: HealthSettings = HealthSettings(), healthAccess: HealthAccess = .notAsked) {
         self.plans = plans; controls = .standard; sensitivity = .normal; self.history = history; self.run = run; unit = .kg
         sounds = WorkoutSounds()
+        self.health = health; self.healthAccess = healthAccess
         previewOnly = true
     }
     #endif
@@ -141,8 +154,8 @@ final class WorkoutStore: ObservableObject {
     func setUnit(_ value: WeightUnit) { unit = value; persist() }
     func setSounds(_ change: (inout WorkoutSounds) -> Void) { change(&sounds); persist() }
     func setEndsAtTarget(_ on: Bool) { endsAtTarget = on; persist() }
-    func clearHistory() { history = []; persist() }
-    func deleteRecord(_ id: String) { history.removeAll { $0.id == id }; persist() }
+    func clearHistory() { removeFromHealth(history); history = []; persist() }
+    func deleteRecord(_ id: String) { removeFromHealth(history.filter { $0.id == id }); history.removeAll { $0.id == id }; persist() }
     func move(planFrom source: IndexSet, to destination: Int) { plans.move(fromOffsets: source, toOffset: destination); persist() }
 
     // MARK: Reading
@@ -213,7 +226,7 @@ final class WorkoutStore: ObservableObject {
     private func persist() {
         guard !previewOnly else { return }
         let saved = Saved(plans: plans, controls: controls, sensitivity: sensitivity, history: history, unit: unit, sounds: sounds,
-                          endsAtTarget: endsAtTarget)
+                          endsAtTarget: endsAtTarget, health: health)
         if let data = try? JSONEncoder().encode(saved) { UserDefaults.standard.set(data, forKey: Self.key) }
     }
 
@@ -239,6 +252,7 @@ final class WorkoutStore: ObservableObject {
         onMotionDemand?(false)
         record(finished)
         onActivity?(nil, nil)
+        saveToHealth()
     }
 
     func perform(_ command: WorkoutCommand) { perform(command, settling: true) }
@@ -379,6 +393,70 @@ final class WorkoutStore: ObservableObject {
             history = Array(history.prefix(Self.historyLimit))
         }
         persist()
+    }
+
+    // MARK: Apple Health
+
+    /// The newest session that is over, and where it stands with Health.
+    var healthStatus: HealthStatus {
+        HealthStatus(last: history.first { !isRunning($0) }, settings: health, unit: unit)
+    }
+
+    /// Turning it on is the only moment Health's permission sheet is shown.
+    func setHealth(_ on: Bool) {
+        guard on != health.on, !on || healthAccess != .unavailable else { return }
+        // Only workouts finished from now on are sent.
+        health.on = on; health.since = on ? Date() : nil
+        persist()
+        guard on, !previewOnly else { return }
+        Task {
+            healthAccess = await healthLink.requestAccess()
+            saveToHealth()
+        }
+    }
+
+    /// Reads what Health allows again, for when the person comes back from changing it.
+    func refreshHealth() {
+        guard health.on, !previewOnly, healthAccess != .unavailable else { return }
+        healthAccess = healthLink.access
+        saveToHealth()
+    }
+
+    private func isRunning(_ record: WorkoutRecord) -> Bool {
+        run.map { $0.started == record.started && $0.name == record.name } ?? false
+    }
+
+    /// Sends every finished session Health does not have yet, oldest first. A failure is
+    /// marked on the session and tried again the next time this runs. Nothing here can
+    /// hold up or undo a workout.
+    private func saveToHealth() {
+        guard health.on, !previewOnly, !savingToHealth, healthAccess == .allowed else { return }
+        let pending = history.filter { $0.needsHealth(health, unit: unit) && !isRunning($0) }.compactMap { HealthWorkout($0, unit: unit) }
+        guard !pending.isEmpty else { return }
+        savingToHealth = true
+        Task {
+            for workout in pending.reversed() {
+                let mark: HealthMark
+                do { mark = .saved(try await healthLink.save(workout)) } catch { mark = .failed }
+                if let i = history.firstIndex(where: { $0.id == workout.id }) { history[i].health = mark }
+                // Deleted from the journal while it was being sent.
+                else if case .saved(let identifier) = mark { await healthLink.remove([identifier]) }
+            }
+            savingToHealth = false
+            persist()
+            // One that ended while these were being sent has not been tried yet.
+            if history.contains(where: { $0.health == nil && $0.needsHealth(health, unit: unit) && !isRunning($0) }) { saveToHealth() }
+        }
+    }
+
+    /// A session deleted in Runes leaves Health too, while saving to Health is on.
+    private func removeFromHealth(_ records: [WorkoutRecord]) {
+        let identifiers = records.compactMap { record -> String? in
+            if case .saved(let identifier) = record.health { return identifier }
+            return nil
+        }
+        guard health.on, !previewOnly, !identifiers.isEmpty else { return }
+        Task { await healthLink.remove(identifiers) }
     }
 
     // MARK: Text
