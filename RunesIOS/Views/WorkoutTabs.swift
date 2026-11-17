@@ -55,6 +55,7 @@ struct TodayTab: View {
     @ObservedObject var store: WorkoutStore
     let start: () -> Void
     let openRun: () -> Void
+    let openWearable: () -> Void
     @State private var inspecting: ExerciseGroup?
 
     var body: some View {
@@ -74,6 +75,7 @@ struct TodayTab: View {
                 .buttonStyle(PrimaryButtonStyle())
                 .disabled(store.plans.isEmpty)
             }
+            WearableRow(store: store, open: openWearable).padding(.vertical, -8)
             Hairline()
             WeekStrip(history: store.history)
         }
@@ -416,6 +418,7 @@ struct JournalTab: View {
         let minutes = max(1, Int(record.ended.timeIntervalSince(record.started) / 60))
         var parts = ["\(record.sets.count) sets", WorkoutStore.reps(record.totalReps), "\(minutes) min"]
         if record.volume > 0 { parts.append("\(Int(record.volume)) \(store.unit.title) moved") }
+        if let heart = record.heart { parts.append(heart.text) }
         return parts.joined(separator: " · ")
     }
 }
@@ -549,6 +552,7 @@ struct WorkoutSettingsScreen: View {
     @State private var clearing = false
     @State private var choosing: WorkoutCommand?
     @State private var choosingSound: WorkoutCue?
+    @State private var showWearable = false
 
     var body: some View {
         NavigationStack {
@@ -584,6 +588,23 @@ struct WorkoutSettingsScreen: View {
                     } header: {
                         Heading("Weights")
                     }
+                    Block {
+                        Button { showWearable = true } label: {
+                            HStack(spacing: 12) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("Wearable").font(.bodyText)
+                                    Text("A watch, band or strap worn with the band, for heart rate.").font(.caption).foregroundStyle(Color.muted)
+                                }
+                                Spacer(minLength: 8)
+                                Text(store.wearable?.name ?? "None").font(.label).foregroundStyle(Color.muted)
+                                LucideIcon(.chevronRight, size: 14).foregroundStyle(Color.faint)
+                            }
+                            .padding(.vertical, 12).contentShape(Rectangle())
+                        }
+                        .buttonStyle(PressRow())
+                    } header: {
+                        Heading("Worn with the band")
+                    }
                     WorkoutHealthBlock(store: store)
                     if !store.history.isEmpty {
                         Button("Clear journal") { clearing = true }.buttonStyle(.quiet)
@@ -594,6 +615,7 @@ struct WorkoutSettingsScreen: View {
             .page()
             .navigationTitle("Workout settings").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() }.font(.label) } }
+            .sheet(isPresented: $showWearable) { WearableSheet(store: store) }
             .confirmationDialog("Clear your journal?", isPresented: $clearing, titleVisibility: .visible) {
                 Button("Clear journal", role: .destructive, action: store.clearHistory)
             } message: { Text(store.health.on ? "Every logged workout is deleted, from Apple Health too. Your split stays." : "Every logged workout is deleted. Your split stays.") }

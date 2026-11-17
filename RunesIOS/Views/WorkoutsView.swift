@@ -153,12 +153,14 @@ struct WorkoutsScreen: View {
     @State private var tab: WorkoutTab = .today
     @State private var showSettings = false
     @State private var choosingDay = false
+    @State private var showWearable = false
 
     var body: some View {
         VStack(spacing: 0) {
             Group {
                 switch tab {
-                case .today: TodayTab(store: store, start: { choosingDay = true }, openRun: { path.append(.activeWorkout) })
+                case .today: TodayTab(store: store, start: { choosingDay = true }, openRun: { path.append(.activeWorkout) },
+                                      openWearable: { showWearable = true })
                 case .split: SplitTab(store: store, path: $path)
                 case .journal: JournalTab(store: store)
                 }
@@ -175,6 +177,7 @@ struct WorkoutsScreen: View {
             }
         }
         .sheet(isPresented: $showSettings) { WorkoutSettingsScreen(store: store) }
+        .sheet(isPresented: $showWearable) { WearableSheet(store: store) }
         .sheet(isPresented: $choosingDay) {
             ChooseDaySheet(store: store) { plan in
                 choosingDay = false
@@ -524,7 +527,10 @@ struct ActiveWorkoutScreen: View {
 
     var body: some View {
         Group {
-            if let run = store.run { ActiveWorkoutView(run: run, controls: store.controls, weightText: store.weightText, perform: store.perform, deleteLog: store.deleteLog, end: { confirmEnd = true }) }
+            if let run = store.run {
+                ActiveWorkoutView(run: run, controls: store.controls, heart: heart, weightText: store.weightText, perform: store.perform,
+                                  deleteLog: store.deleteLog, end: { confirmEnd = true })
+            }
             else { Text("No workout running").font(.bodyText).foregroundStyle(Color.muted).frame(maxWidth: .infinity, maxHeight: .infinity) }
         }
         .page()
@@ -533,12 +539,20 @@ struct ActiveWorkoutScreen: View {
             Button("End workout", role: .destructive) { store.end(); dismiss() }
         } message: { Text("Logged sets are saved to your journal.") }
     }
+
+    /// The linked wearable's reading, or that it has not started sharing yet.
+    private var heart: String? {
+        guard let wearable = store.wearable else { return nil }
+        return store.heartRate.map { "\($0) bpm" } ?? "Waiting for \(wearable.name)"
+    }
 }
 
 /// The run as values and closures, so previews can show any state.
 struct ActiveWorkoutView: View {
     let run: WorkoutRun
     let controls: WorkoutControls
+    /// A linked wearable's heart rate in words. nil without one.
+    var heart: String? = nil
     var weightText: (Double?) -> String? = { _ in nil }
     var perform: (WorkoutCommand) -> Void = { _ in }
     var deleteLog: (String) -> Void = { _ in }
@@ -590,6 +604,15 @@ struct ActiveWorkoutView: View {
                     Text(status).font(.caption).foregroundStyle(Color.muted).multilineTextAlignment(.center)
                 }
                 .contentTransition(.opacity)
+                if let heart {
+                    HStack(spacing: 6) {
+                        LucideIcon(.heart, size: 14)
+                        Text(heart).font(.caption).monospacedDigit().contentTransition(.numericText())
+                    }
+                    .foregroundStyle(Color.muted)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("Heart rate, \(heart)")
+                }
             } else {
                 FinishedMark().frame(width: 120, height: 120)
                 Text("Workout done").font(.display)

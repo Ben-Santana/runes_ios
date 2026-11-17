@@ -55,7 +55,9 @@ enum PreviewFixtures {
 
 extension PreviewFixtures {
     /// A workout two sets in, counting the third or waiting for it.
-    @MainActor static func workouts(running: Bool, counting: Bool = true, health: HealthAccess? = nil, mark: HealthMark? = nil) -> WorkoutStore {
+    @MainActor static func workouts(running: Bool, counting: Bool = true, health: HealthAccess? = nil, mark: HealthMark? = nil,
+                                    wearable: Wearable? = nil, heartState: HeartLinkState = .idle, sensors: [HeartSensor] = [],
+                                    heartRate: Int? = nil, bandHand: Handedness? = .right) -> WorkoutStore {
         var run = WorkoutRun(plan: WorkoutPlan.sample)
         run.apply(.start); for _ in 0..<12 { run.rep() }; run.apply(.stop)
         run.apply(.start); for _ in 0..<10 { run.rep() }; run.apply(.stop)
@@ -76,10 +78,27 @@ extension PreviewFixtures {
         var history: [WorkoutRecord] = [done(split[0], daysAgo: 0, bump: 10), done(split[2], daysAgo: 3, bump: 10), done(split[1], daysAgo: 6, bump: 7.5)]
         for week in 1...5 { history.append(done(split[week % 3], daysAgo: 6 + week * 7, bump: 10 - Double(week) * 2.5)) }
         history[0].health = mark
+        if wearable != nil { history[0].heart = HeartSummary([118, 131, 142].map { HeartSample(at: Date(), beats: $0) }) }
         // With an access given, saving to Health has been on for a day.
         return WorkoutStore(preview: split + [WorkoutPlan.sample], run: running ? run : nil, history: history,
                             health: HealthSettings(on: health != nil && health != .unavailable, since: Date().addingTimeInterval(-86_400)),
-                            healthAccess: health ?? .notAsked)
+                            healthAccess: health ?? .notAsked,
+                            wearable: wearable, heartState: heartState, heartSensors: sensors, heartRate: heartRate, bandHand: bandHand)
+    }
+
+    static let air = Wearable(id: "air", name: "Fitbit Air", wrist: .left)
+
+    /// The wearable screen's states by snapshot name: the offer, linked on either wrist or
+    /// off the wrist, the band's wrist unknown, and Bluetooth off.
+    @MainActor static func workoutWearable(_ name: String) -> WorkoutStore {
+        switch name {
+        case "workout-wearable": workouts(running: false)
+        case "workout-wearable-same": workouts(running: false, health: .allowed, wearable: Wearable(id: "air", name: "Fitbit Air", wrist: .right), heartState: .live, heartRate: 72)
+        case "workout-wearable-strap": workouts(running: false, wearable: Wearable(id: "h10", name: "Polar H10", wrist: nil), heartState: .waiting, bandHand: .left)
+        case "workout-wearable-unknown": workouts(running: false, wearable: air, heartState: .waiting, bandHand: nil)
+        case "workout-wearable-off": workouts(running: false, wearable: air, heartState: .unavailable)
+        default: workouts(running: false, health: .allowed, wearable: air, heartState: .live, heartRate: 72)
+        }
     }
 
     /// The Health block's states by snapshot name: on and saved, a failed save, not allowed, and no Health.
@@ -221,6 +240,16 @@ struct SnapshotGallery: View {
             // The real store, with no band: sets are started and stopped with the buttons, so a
             // whole workout can be run and ended, and Health saving checked end to end.
             ApplicationsScreen(workouts: .shared, initialPath: [.workouts])
+        } else if name == "workout-wearable-search" || name == "workout-wearable-none" {
+            // The search opens once Link a wearable is touched; these show it already under way.
+            let found = name == "workout-wearable-none" ? [] : [HeartSensor(id: "air", name: "Fitbit Air"), HeartSensor(id: "h10", name: "Polar H10")]
+            WearableSheet(store: PreviewFixtures.workouts(running: false, heartState: .searching, sensors: found), finding: true)
+        } else if name.hasPrefix("workout-wearable") {
+            WearableSheet(store: PreviewFixtures.workoutWearable(name))
+        } else if name == "workouts-wearable" {
+            NavigationStack { WorkoutsScreen(store: PreviewFixtures.workoutWearable("workout-wearable-linked"), path: .constant([])) }
+        } else if name == "workout-active-heart" {
+            NavigationStack { ActiveWorkoutScreen(store: PreviewFixtures.workouts(running: true, wearable: PreviewFixtures.air, heartState: .live, heartRate: 128)) }
         } else if name.hasPrefix("workout-health-save") {
             HealthSaveCheck(remove: name.hasSuffix("remove"))
         } else if name.hasPrefix("workout-health") {
@@ -262,11 +291,15 @@ private struct HealthSaveCheck: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).padding(Metric.gutter).page()
             .task {
                 let link = HealthLink()
-                let access = await link.requestAccess(heart: false)
+                let access = await link.requestAccess(heart: true)
                 lines.append("Access: \(access)")
-                guard access == .allowed, let record = PreviewFixtures.workouts(running: false).history.dropFirst().first,
-                      let workout = HealthWorkout(record, unit: .kg) else { return }
-                lines.append("\(workout.name): \(workout.activity.rawValue), \(workout.sets.count) sets, \(workout.totalReps) reps")
+                guard access == .allowed, let record = PreviewFixtures.workouts(running: false).history.dropFirst().first else { return }
+                // A made up pulse every five seconds, to see heart rate land with the workout.
+                let pulse = stride(from: 0.0, to: record.ended.timeIntervalSince(record.started), by: 5).map {
+                    HeartSample(at: record.started.addingTimeInterval($0), beats: 110 + Int($0 / 60))
+                }
+                guard let workout = HealthWorkout(record, unit: .kg, heart: pulse, heartSource: "Fitbit Air") else { return }
+                lines.append("\(workout.name): \(workout.activity.rawValue), \(workout.sets.count) sets, \(workout.totalReps) reps, \(workout.heart.count) heart readings")
                 do {
                     let identifier = try await link.save(workout)
                     lines.append("Saved to Health")
