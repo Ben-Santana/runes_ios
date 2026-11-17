@@ -247,6 +247,10 @@ struct WorkoutTests {
         precondition(held.reps == nil && held.seconds == 52 && held.weight == nil && held.counted, "A hold carries its seconds")
         precondition(workout.totalReps == 27 && workout.volume == 12.5 * 19 + 40 * 8, "Totals come from the logged sets only")
 
+        // The same session as text, for an app that takes a typed routine.
+        precondition(record.routineText(unit: .kg) == "Bicep curl: 9 reps at 12.5 kg, 10 reps at 12.5 kg\nOverhead press: 8 reps at 40 kg\nPlank: 52 seconds",
+                     "One exercise to a line, got \(record.routineText(unit: .kg))")
+
         // Nothing logged, or over in under a minute: not a workout.
         var none = record; none.sets = []
         precondition(HealthWorkout(none, unit: .kg) == nil, "No sets, no workout")

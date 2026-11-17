@@ -55,7 +55,7 @@ enum PreviewFixtures {
 
 extension PreviewFixtures {
     /// A workout two sets in, counting the third or waiting for it.
-    @MainActor static func workouts(running: Bool, counting: Bool = true) -> WorkoutStore {
+    @MainActor static func workouts(running: Bool, counting: Bool = true, health: HealthAccess? = nil, mark: HealthMark? = nil) -> WorkoutStore {
         var run = WorkoutRun(plan: WorkoutPlan.sample)
         run.apply(.start); for _ in 0..<12 { run.rep() }; run.apply(.stop)
         run.apply(.start); for _ in 0..<10 { run.rep() }; run.apply(.stop)
@@ -75,7 +75,22 @@ extension PreviewFixtures {
         let split = WorkoutPlan.starterSplit
         var history: [WorkoutRecord] = [done(split[0], daysAgo: 0, bump: 10), done(split[2], daysAgo: 3, bump: 10), done(split[1], daysAgo: 6, bump: 7.5)]
         for week in 1...5 { history.append(done(split[week % 3], daysAgo: 6 + week * 7, bump: 10 - Double(week) * 2.5)) }
-        return WorkoutStore(preview: split + [WorkoutPlan.sample], run: running ? run : nil, history: history)
+        history[0].health = mark
+        // With an access given, saving to Health has been on for a day.
+        return WorkoutStore(preview: split + [WorkoutPlan.sample], run: running ? run : nil, history: history,
+                            health: HealthSettings(on: health != nil && health != .unavailable, since: Date().addingTimeInterval(-86_400)),
+                            healthAccess: health ?? .notAsked)
+    }
+
+    /// The Health block's states by snapshot name: on and saved, a failed save, not allowed, and no Health.
+    @MainActor static func workoutHealth(_ name: String) -> WorkoutStore {
+        switch name {
+        case "workout-health-off": workouts(running: false)
+        case "workout-health-failed": workouts(running: false, health: .allowed, mark: .failed)
+        case "workout-health-denied": workouts(running: false, health: .denied)
+        case "workout-health-unavailable": workouts(running: false, health: .unavailable)
+        default: workouts(running: false, health: .allowed, mark: .saved("preview"))
+        }
     }
 }
 
@@ -202,6 +217,15 @@ struct SnapshotGallery: View {
             ExercisePicker(selected: .bicepCurl) { _ in }
         } else if name == "workout-settings" {
             WorkoutSettingsScreen(store: PreviewFixtures.workouts(running: false))
+        } else if name == "workouts-live" {
+            // The real store, with no band: sets are started and stopped with the buttons, so a
+            // whole workout can be run and ended, and Health saving checked end to end.
+            ApplicationsScreen(workouts: .shared, initialPath: [.workouts])
+        } else if name.hasPrefix("workout-health-save") {
+            HealthSaveCheck(remove: name.hasSuffix("remove"))
+        } else if name.hasPrefix("workout-health") {
+            // The settings sheet opened at its end, where the Health block is.
+            WorkoutSettingsScreen(store: PreviewFixtures.workoutHealth(name)).defaultScrollAnchor(.bottom)
         } else if name == "workout-editor" {
             NavigationStack { WorkoutEditor(store: PreviewFixtures.workouts(running: false), planID: WorkoutPlan.starterSplit[2].id) }
         } else if name == "workout-active" || name == "workout-waiting" {
@@ -224,6 +248,33 @@ struct SnapshotGallery: View {
         } else {
             Text("Unknown snapshot \(name)").page()
         }
+    }
+}
+
+/// Adds yesterday's fixture workout to the simulator's Health for real, to see the permission
+/// sheet and the saved workout. With `remove` it takes the workout out again afterwards.
+private struct HealthSaveCheck: View {
+    let remove: Bool
+    @State private var lines = ["Asking Health"]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) { ForEach(lines, id: \.self) { Text($0).font(.bodyText) } }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).padding(Metric.gutter).page()
+            .task {
+                let link = HealthLink()
+                let access = await link.requestAccess()
+                lines.append("Access: \(access)")
+                guard access == .allowed, let record = PreviewFixtures.workouts(running: false).history.dropFirst().first,
+                      let workout = HealthWorkout(record, unit: .kg) else { return }
+                lines.append("\(workout.name): \(workout.activity.rawValue), \(workout.sets.count) sets, \(workout.totalReps) reps")
+                do {
+                    let identifier = try await link.save(workout)
+                    lines.append("Saved to Health")
+                    if remove { await link.remove([identifier]); lines.append("Removed from Health") }
+                } catch {
+                    lines.append("Not saved: \((error as NSError).domain) \((error as NSError).code)")
+                }
+            }
     }
 }
 

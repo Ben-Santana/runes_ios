@@ -128,3 +128,21 @@ enum HealthStatus: Hashable, Sendable {
         }
     }
 }
+
+extension WorkoutRecord {
+    /// The session as plain text, one exercise to a line, for apps that take a typed routine.
+    /// Health has no fields for sets and reps, so this is how they reach an app such as Bevel.
+    func routineText(unit: WeightUnit) -> String {
+        var lines: [(name: String, sets: [String])] = []
+        for log in sets {
+            var text = log.exercise.measure == .seconds ? "\(log.reps) seconds" : log.reps == 1 ? "1 rep" : "\(log.reps) reps"
+            if let weight = log.weight, weight > 0 {
+                let number = weight.rounded() == weight ? String(Int(weight)) : String(format: "%.1f", weight)
+                text += " at \(number) \(unit.title)"
+            }
+            if lines.last?.name == log.exercise.name { lines[lines.count - 1].sets.append(text) }
+            else { lines.append((log.exercise.name, [text])) }
+        }
+        return lines.map { "\($0.name): \($0.sets.joined(separator: ", "))" }.joined(separator: "\n")
+    }
+}

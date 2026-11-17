@@ -215,6 +215,8 @@ struct JournalTab: View {
         }
         .confirmationDialog("Delete this workout?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible, presenting: deleting) { record in
             Button("Delete workout", role: .destructive) { withAnimation(.entrance) { store.deleteRecord(record.id) } }
+        } message: { record in
+            if store.health.on, record.health != nil, record.health != .failed { Text("It is removed from Apple Health too.") }
         }
     }
 
@@ -397,7 +399,10 @@ struct JournalTab: View {
                     }
                 }
                 .padding(.vertical, 12).contentShape(Rectangle())
-                .contextMenu { menuItem("Delete", .trash2, role: .destructive) { deleting = record } }
+                .contextMenu {
+                    menuItem("Copy", .copy) { UIPasteboard.general.string = record.routineText(unit: store.unit) }
+                    menuItem("Delete", .trash2, role: .destructive) { deleting = record }
+                }
                 .swipeToDelete(confirms: true) { deleting = record }
             }
         } header: {
@@ -578,6 +583,7 @@ struct WorkoutSettingsScreen: View {
                     } header: {
                         Heading("Weights")
                     }
+                    WorkoutHealthBlock(store: store)
                     if !store.history.isEmpty {
                         Button("Clear journal") { clearing = true }.buttonStyle(.quiet)
                     }
@@ -589,7 +595,7 @@ struct WorkoutSettingsScreen: View {
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() }.font(.label) } }
             .confirmationDialog("Clear your journal?", isPresented: $clearing, titleVisibility: .visible) {
                 Button("Clear journal", role: .destructive, action: store.clearHistory)
-            } message: { Text("Every logged workout is deleted. Your split stays.") }
+            } message: { Text(store.health.on ? "Every logged workout is deleted, from Apple Health too. Your split stays." : "Every logged workout is deleted. Your split stays.") }
             .sheet(item: $choosing) { command in
                 let current = store.controls.trigger(for: command)
                 let others = WorkoutCommand.allCases.filter { $0 != command }
@@ -678,6 +684,86 @@ struct WorkoutSettingsScreen: View {
             Heading("Gestures")
         } footer: {
             Note("A gesture or a spell each, the same for every workout. While a workout runs, mappings that use these gestures are off.")
+        }
+    }
+}
+
+// MARK: Apple Health
+
+/// The one place Workouts is connected to Apple Health: the switch, whether the last workout
+/// was saved, and the session as text for apps that take sets and reps that way.
+struct WorkoutHealthBlock: View {
+    @ObservedObject var store: WorkoutStore
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.openURL) private var openURL
+    @State private var copied = false
+
+    private var last: WorkoutRecord? { store.history.first }
+
+    var body: some View {
+        let unavailable = store.healthAccess == .unavailable
+        Block {
+            Toggle(isOn: Binding(get: { store.health.on }, set: store.setHealth)) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Save to Apple Health").font(.bodyText)
+                    Text(unavailable ? "Health is not available on this device." : "Adds each workout you finish, with its time and sets.")
+                        .font(.caption).foregroundStyle(Color.muted)
+                }
+            }
+            .toggleStyle(HairlineSwitch())
+            .padding(.vertical, 12)
+            .disabled(unavailable)
+            .opacity(unavailable ? 0.45 : 1)
+            if store.health.on, store.healthAccess == .denied {
+                NoticeCard(sentence: "Health is not letting Runes add workouts.", actionTitle: "Open Health") {
+                    openURL(HealthLink.appURL)
+                }
+                .padding(.bottom, 12)
+            } else if store.health.on {
+                Hairline(inset: 0)
+                HStack {
+                    Text("Last workout").font(.bodyText)
+                    Spacer(minLength: 8)
+                    Text(store.healthStatus.text).font(.label).foregroundStyle(Color.muted).contentTransition(.opacity)
+                }
+                .padding(.vertical, 12)
+                .accessibilityElement(children: .combine)
+            }
+            Hairline(inset: 0)
+            Button(action: copy) {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Copy last workout").font(.bodyText)
+                        Text("Health has no place for sets and reps, so paste them into Bevel under Log workout, then Describe routine.")
+                            .font(.caption).foregroundStyle(Color.muted).multilineTextAlignment(.leading)
+                    }
+                    Spacer(minLength: 8)
+                    if copied { Text("Copied").font(.label).foregroundStyle(Color.muted).transition(.opacity) }
+                    LucideIcon(copied ? .check : .copy, size: 16)
+                }
+                .padding(.vertical, 12).contentShape(Rectangle())
+            }
+            .buttonStyle(PressRow())
+            .disabled(last == nil)
+            .opacity(last == nil ? 0.45 : 1)
+        } header: {
+            Heading("Apple Health")
+        } footer: {
+            Note("Apps that read Apple Health, such as Bevel and Google Health, show these workouts with their time.")
+        }
+        .animation(.standard, value: store.health.on)
+        .animation(.standard, value: store.healthAccess)
+        .onAppear(perform: store.refreshHealth)
+        .onChange(of: scenePhase) { _, phase in if phase == .active { store.refreshHealth() } }
+    }
+
+    private func copy() {
+        guard let last else { return }
+        UIPasteboard.general.string = last.routineText(unit: store.unit)
+        withAnimation(.standard) { copied = true }
+        Task {
+            try? await Task.sleep(for: .seconds(2))
+            withAnimation(.standard) { copied = false }
         }
     }
 }
