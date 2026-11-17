@@ -2,7 +2,8 @@ import Foundation
 import HealthKit
 
 /// The only place Runes talks to Apple Health. It adds finished workouts and can remove the
-/// ones it added. It asks to write workouts and nothing else, and it reads nothing.
+/// ones it added. It asks to write workouts, and heart rate once a wearable is linked, and
+/// it reads nothing.
 final class HealthLink: @unchecked Sendable {
     /// False on a device without Health.
     static var isAvailable: Bool { HKHealthStore.isHealthDataAvailable() }
@@ -20,10 +21,12 @@ final class HealthLink: @unchecked Sendable {
         }
     }
 
-    /// Shows Health's permission sheet the first time. After that it answers at once.
-    func requestAccess() async -> HealthAccess {
+    /// Shows Health's permission sheet the first time, and once more when heart rate is first
+    /// asked for. After that it answers at once.
+    func requestAccess(heart: Bool) async -> HealthAccess {
         guard let store else { return .unavailable }
-        try? await store.requestAuthorization(toShare: [HKObjectType.workoutType()], read: [])
+        let types: Set<HKSampleType> = heart ? [HKObjectType.workoutType(), Self.heartRate] : [HKObjectType.workoutType()]
+        try? await store.requestAuthorization(toShare: types, read: [])
         return access
     }
 
@@ -35,6 +38,10 @@ final class HealthLink: @unchecked Sendable {
         let builder = HKWorkoutBuilder(healthStore: store, configuration: configuration, device: nil)
         try await builder.beginCollection(at: workout.start)
         do {
+            // Heart rate is extra: a workout is still saved when Health will not take it.
+            if !workout.heart.isEmpty, store.authorizationStatus(for: Self.heartRate) == .sharingAuthorized {
+                try? await builder.addSamples(Self.samples(workout))
+            }
             try await builder.addMetadata(Self.metadata(workout))
             try await builder.addWorkoutEvents(workout.sets.map { Self.event($0, unit: workout.unit) })
             try await builder.endCollection(at: workout.end)
@@ -51,6 +58,21 @@ final class HealthLink: @unchecked Sendable {
         let uuids = Set(identifiers.compactMap(UUID.init))
         guard let store, !uuids.isEmpty else { return }
         _ = try? await store.deleteObjects(of: HKObjectType.workoutType(), predicate: HKQuery.predicateForObjects(with: uuids))
+    }
+
+    private static let heartRate = HKQuantityType(.heartRate)
+
+    /// The wearable's readings as Health samples, named as coming from the wearable.
+    private static func samples(_ workout: HealthWorkout) -> [HKQuantitySample] {
+        let device = workout.heartSource.map {
+            HKDevice(name: $0, manufacturer: nil, model: nil, hardwareVersion: nil, firmwareVersion: nil, softwareVersion: nil,
+                     localIdentifier: nil, udiDeviceIdentifier: nil)
+        }
+        let unit = HKUnit.count().unitDivided(by: .minute())
+        return workout.heart.map {
+            HKQuantitySample(type: heartRate, quantity: HKQuantity(unit: unit, doubleValue: Double($0.beats)), start: $0.at, end: $0.at,
+                             device: device, metadata: nil)
+        }
     }
 
     // Health has no fields of its own for sets and reps, so they travel as the workout's

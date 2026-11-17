@@ -262,7 +262,7 @@ private struct HealthSaveCheck: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).padding(Metric.gutter).page()
             .task {
                 let link = HealthLink()
-                let access = await link.requestAccess()
+                let access = await link.requestAccess(heart: false)
                 lines.append("Access: \(access)")
                 guard access == .allowed, let record = PreviewFixtures.workouts(running: false).history.dropFirst().first,
                       let workout = HealthWorkout(record, unit: .kg) else { return }

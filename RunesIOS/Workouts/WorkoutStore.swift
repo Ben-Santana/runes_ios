@@ -22,11 +22,12 @@ final class WorkoutStore: ObservableObject {
         var sounds = WorkoutSounds()
         var endsAtTarget = false
         var health = HealthSettings()
+        var wearable: Wearable?
 
         init(plans: [WorkoutPlan], controls: WorkoutControls, sensitivity: RepSensitivity, history: [WorkoutRecord], unit: WeightUnit, sounds: WorkoutSounds,
-             endsAtTarget: Bool, health: HealthSettings) {
+             endsAtTarget: Bool, health: HealthSettings, wearable: Wearable?) {
             self.plans = plans; self.controls = controls; self.sensitivity = sensitivity; self.history = history; self.unit = unit
-            self.sounds = sounds; self.endsAtTarget = endsAtTarget; self.health = health
+            self.sounds = sounds; self.endsAtTarget = endsAtTarget; self.health = health; self.wearable = wearable
         }
         /// Data saved before the split and units existed still loads.
         init(from decoder: Decoder) throws {
@@ -39,6 +40,7 @@ final class WorkoutStore: ObservableObject {
             sounds = (try? c.decodeIfPresent(WorkoutSounds.self, forKey: .sounds)) ?? WorkoutSounds()
             endsAtTarget = try c.decodeIfPresent(Bool.self, forKey: .endsAtTarget) ?? false
             health = (try? c.decodeIfPresent(HealthSettings.self, forKey: .health)) ?? HealthSettings()
+            wearable = try? c.decodeIfPresent(Wearable.self, forKey: .wearable)
         }
     }
 
@@ -57,6 +59,19 @@ final class WorkoutStore: ObservableObject {
     @Published private(set) var healthAccess: HealthAccess = .notAsked
     private lazy var healthLink = HealthLink()
     private var savingToHealth = false
+    /// The watch, band or strap the person linked to wear along with the Meta band. nil until they do.
+    @Published private(set) var wearable: Wearable?
+    @Published private(set) var heartState: HeartLinkState = .idle
+    /// Wearables found while the person is choosing one.
+    @Published private(set) var heartSensors: [HeartSensor] = []
+    /// The wearable's latest reading, while it is being read.
+    @Published private(set) var heartRate: Int?
+    private lazy var heartLink = makeHeartLink()
+    /// The running workout's readings, and those of finished ones still to go to Health.
+    private var heartLog = HeartLog()
+    private var heartToSave: [String: [HeartSample]] = [:]
+    /// True while the wearable's screen shows its live reading outside a workout.
+    private var showingHeart = false
     @Published private(set) var run: WorkoutRun? {
         didSet {
             guard (oldValue == nil) != (run == nil), !previewOnly else { return }
@@ -98,12 +113,12 @@ final class WorkoutStore: ObservableObject {
 
     private init() {
         var saved = Saved(plans: WorkoutPlan.starterSplit, controls: .standard, sensitivity: .normal, history: [], unit: .kg, sounds: WorkoutSounds(),
-                          endsAtTarget: false, health: HealthSettings())
+                          endsAtTarget: false, health: HealthSettings(), wearable: nil)
         if let data = UserDefaults.standard.data(forKey: Self.key),
            let decoded = try? JSONDecoder().decode(Saved.self, from: data) { saved = decoded }
         plans = saved.plans.map { $0.normalized() }
         controls = saved.controls; sensitivity = saved.sensitivity; history = saved.history; unit = saved.unit
-        sounds = saved.sounds; endsAtTarget = saved.endsAtTarget; health = saved.health
+        sounds = saved.sounds; endsAtTarget = saved.endsAtTarget; health = saved.health; wearable = saved.wearable
         if !HealthLink.isAvailable { healthAccess = .unavailable }
         decider.onFire = { [weak self] id in
             guard let self, self.run != nil else { return }
@@ -125,12 +140,17 @@ final class WorkoutStore: ObservableObject {
     #if DEBUG
     /// Fixed state for screenshots and previews; never saved.
     init(preview plans: [WorkoutPlan], run: WorkoutRun? = nil, history: [WorkoutRecord] = [],
-         health: HealthSettings = HealthSettings(), healthAccess: HealthAccess = .notAsked) {
+         health: HealthSettings = HealthSettings(), healthAccess: HealthAccess = .notAsked,
+         wearable: Wearable? = nil, heartState: HeartLinkState = .idle, heartSensors: [HeartSensor] = [], heartRate: Int? = nil,
+         bandHand: Handedness? = .right) {
         self.plans = plans; controls = .standard; sensitivity = .normal; self.history = history; self.run = run; unit = .kg
         sounds = WorkoutSounds()
         self.health = health; self.healthAccess = healthAccess
+        self.wearable = wearable; self.heartState = heartState; self.heartSensors = heartSensors; self.heartRate = heartRate
+        previewHand = bandHand
         previewOnly = true
     }
+    private var previewHand: Handedness?
     #endif
 
     // MARK: Editing
@@ -226,7 +246,7 @@ final class WorkoutStore: ObservableObject {
     private func persist() {
         guard !previewOnly else { return }
         let saved = Saved(plans: plans, controls: controls, sensitivity: sensitivity, history: history, unit: unit, sounds: sounds,
-                          endsAtTarget: endsAtTarget, health: health)
+                          endsAtTarget: endsAtTarget, health: health, wearable: wearable)
         if let data = try? JSONEncoder().encode(saved) { UserDefaults.standard.set(data, forKey: Self.key) }
     }
 
@@ -237,6 +257,8 @@ final class WorkoutStore: ObservableObject {
         let next = WorkoutRun(plan: plan.normalized())
         guard next.phase != .finished else { return }
         run = next
+        heartLog = HeartLog()
+        followWearable()
         onMotionDemand?(true)
         if !previewOnly { onTrace?(.began(next)) }
         changed()
@@ -251,6 +273,8 @@ final class WorkoutStore: ObservableObject {
         Self.feed.count(nil, sensitivity: sensitivity)
         onMotionDemand?(false)
         record(finished)
+        keepHeart(of: finished)
+        followWearable()
         onActivity?(nil, nil)
         saveToHealth()
     }
@@ -409,8 +433,13 @@ final class WorkoutStore: ObservableObject {
         health.on = on; health.since = on ? Date() : nil
         persist()
         guard on, !previewOnly else { return }
+        askHealth()
+    }
+
+    /// Asks for what is in use: workouts, and heart rate once a wearable is linked.
+    private func askHealth() {
         Task {
-            healthAccess = await healthLink.requestAccess()
+            healthAccess = await healthLink.requestAccess(heart: wearable != nil)
             saveToHealth()
         }
     }
@@ -431,13 +460,15 @@ final class WorkoutStore: ObservableObject {
     /// hold up or undo a workout.
     private func saveToHealth() {
         guard health.on, !previewOnly, !savingToHealth, healthAccess == .allowed else { return }
-        let pending = history.filter { $0.needsHealth(health, unit: unit) && !isRunning($0) }.compactMap { HealthWorkout($0, unit: unit) }
+        let pending = history.filter { $0.needsHealth(health, unit: unit) && !isRunning($0) }
+            .compactMap { HealthWorkout($0, unit: unit, heart: heartToSave[$0.id] ?? [], heartSource: wearable?.name) }
         guard !pending.isEmpty else { return }
         savingToHealth = true
         Task {
             for workout in pending.reversed() {
                 let mark: HealthMark
                 do { mark = .saved(try await healthLink.save(workout)) } catch { mark = .failed }
+                if case .saved = mark { heartToSave[workout.id] = nil }
                 if let i = history.firstIndex(where: { $0.id == workout.id }) { history[i].health = mark }
                 // Deleted from the journal while it was being sent.
                 else if case .saved(let identifier) = mark { await healthLink.remove([identifier]) }
@@ -457,6 +488,93 @@ final class WorkoutStore: ObservableObject {
         }
         guard health.on, !previewOnly, !identifiers.isEmpty else { return }
         Task { await healthLink.remove(identifiers) }
+    }
+
+    // MARK: Wearable
+
+    /// The wrist the band is set for, as the session last confirmed it. Read only here:
+    /// it is changed in Settings, where the band is told.
+    var bandHand: Handedness? {
+        #if DEBUG
+        if previewOnly { return previewHand }
+        #endif
+        return UserDefaults.standard.string(forKey: "bandHand").flatMap(Handedness.init)
+    }
+
+    private func makeHeartLink() -> HeartRateLink {
+        let link = HeartRateLink()
+        link.onState = { [weak self] state in
+            guard let self else { return }
+            self.heartState = state
+            if state != .live { self.heartRate = nil }
+        }
+        link.onSensors = { [weak self] in self?.heartSensors = $0 }
+        link.onBeats = { [weak self] beats in
+            guard let self else { return }
+            self.heartRate = beats
+            if self.run != nil { self.heartLog.add(beats, at: Date()) }
+        }
+        return link
+    }
+
+    /// Looks for wearables sharing heart rate. Called only once the person has said they
+    /// want to link one, so Bluetooth is not searched before that.
+    func findWearables() {
+        guard !previewOnly else { return }
+        heartLink.search()
+    }
+
+    func stopFindingWearables() {
+        guard !previewOnly else { return }
+        heartLink.stopSearch()
+    }
+
+    /// Links the chosen wearable, worn at first on the wrist the band is not on.
+    func link(_ sensor: HeartSensor) {
+        wearable = Wearable(id: sensor.id, name: sensor.name, wrist: bandHand.map { $0 == .left ? .right : .left })
+        persist()
+        guard !previewOnly else { return }
+        heartLink.stopSearch()
+        followWearable()
+        if health.on { askHealth() }
+    }
+
+    func setWearableWrist(_ wrist: Handedness?) {
+        guard wearable != nil, wearable?.wrist != wrist else { return }
+        wearable?.wrist = wrist
+        persist()
+    }
+
+    func unlinkWearable() {
+        wearable = nil; heartRate = nil
+        persist()
+        followWearable()
+    }
+
+    /// Shows the live reading on the wearable's own screen, so the link can be seen working.
+    func showHeart(_ on: Bool) {
+        showingHeart = on
+        followWearable()
+    }
+
+    /// Reads the wearable while a workout runs or its screen is open, and lets it go otherwise.
+    private func followWearable() {
+        guard !previewOnly else { return }
+        if let wearable, run != nil || showingHeart { heartLink.follow(wearable.id) }
+        else if wearable != nil || heartState != .idle { heartLink.stop() }
+    }
+
+    /// Keeps what the wearable read during a workout: a summary in the journal, and the
+    /// readings until Health has them. They are not kept across a restart.
+    private func keepHeart(of finished: WorkoutRun) {
+        guard let i = history.firstIndex(where: { $0.started == finished.started && $0.name == finished.name }),
+              let last = history[i].sets.map(\.at).max() else { return }
+        let readings = heartLog.within(finished.started, last)
+        heartLog = HeartLog()
+        guard let summary = HeartSummary(readings) else { return }
+        history[i].heart = summary
+        heartToSave[history[i].id] = readings
+        persist()
     }
 
     // MARK: Text
