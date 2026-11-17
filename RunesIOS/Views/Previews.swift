@@ -97,6 +97,8 @@ struct SnapshotGallery: View {
             WristPreview(name: name)
         } else if name == "settings" {
             SettingsView(values: SettingsValues(battery: 82, handSetting: HandSetting(confirmed: .left), linked: true, version: "0.2.0 (2)")) { EmptyView() }
+        } else if name.hasPrefix("handwriting") {
+            NavigationStack { HandwritingLabScreen(snapshot: name) }
         } else if name == "runes-lab" {
             NavigationStack { RunesLabScreen(store: PreviewFixtures.mappings) }
         } else if name == "mappings" {

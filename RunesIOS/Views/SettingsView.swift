@@ -119,6 +119,8 @@ struct SettingsView<Advanced: View>: View {
                         PanelGroup("Developer") {
                             LinkRow("Runes lab") { VoiceLabScreen() }
                             Rule()
+                            LinkRow("Handwriting") { HandwritingLabScreen() }
+                            Rule()
                             LinkRow("Workout data") { MotionLabScreen() }
                             Rule()
                             LinkRow("Advanced") { advanced() }
