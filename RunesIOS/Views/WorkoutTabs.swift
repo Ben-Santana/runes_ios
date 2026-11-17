@@ -572,6 +572,7 @@ struct WorkoutSettingsScreen: View {
                                     .font(.caption).foregroundStyle(Color.muted)
                             }
                         }
+                        .toggleStyle(HairlineSwitch())
                         .padding(.vertical, 12)
                     } header: {
                         Heading("Sets")
@@ -623,6 +624,7 @@ struct WorkoutSettingsScreen: View {
                     Text("While a workout runs, also with your phone locked and on silent.").font(.caption).foregroundStyle(Color.muted)
                 }
             }
+            .toggleStyle(HairlineSwitch())
             .padding(.vertical, 12)
             Hairline(inset: 0)
             VStack(alignment: .leading, spacing: 6) {
