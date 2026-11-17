@@ -740,7 +740,6 @@ struct WorkoutHealthBlock: View {
                             .font(.caption).foregroundStyle(Color.muted).multilineTextAlignment(.leading)
                     }
                     Spacer(minLength: 8)
-                    if copied { Text("Copied").font(.label).foregroundStyle(Color.muted).transition(.opacity) }
                     LucideIcon(copied ? .check : .copy, size: 16)
                 }
                 .padding(.vertical, 12).contentShape(Rectangle())
@@ -748,6 +747,7 @@ struct WorkoutHealthBlock: View {
             .buttonStyle(PressRow())
             .disabled(last == nil)
             .opacity(last == nil ? 0.45 : 1)
+            .accessibilityValue(copied ? "Copied" : "")
         } header: {
             Heading("Apple Health")
         } footer: {
