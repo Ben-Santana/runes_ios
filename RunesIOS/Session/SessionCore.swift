@@ -832,6 +832,8 @@ final class SessionCore: @unchecked Sendable {
                 }
                 if snapshot.state == .streaming || pendingStreams == nil { try reconcileStreams() }
             case "start_streams":
+                // The band's answer as numbers only, to see what a firmware reports about its streams.
+                record("band_streams", (try? Fields(payload)).map { BandSettings.describe($0, depth: 0) } ?? "unreadable")
                 activeStreams = pendingStreams
                 pendingStreams = nil
                 let emgOn = pendingEMG ?? false
@@ -972,7 +974,8 @@ final class SessionCore: @unchecked Sendable {
     }
     private func protocolProgress() {
         updateConnectionProgress()
-        let message = "Protocol: \(proto?.stage ?? "closed"); enrollment: \(enrollment?.record.stage ?? "none")."
+        let link = proto?.linkNote ?? ""
+        let message = "Protocol: \(proto?.stage ?? "closed"); enrollment: \(enrollment?.record.stage ?? "none")\(link.isEmpty ? "" : "; link: " + link)."
         logger.info("\(message, privacy: .public)")
         record("protocol", message)
         publish()

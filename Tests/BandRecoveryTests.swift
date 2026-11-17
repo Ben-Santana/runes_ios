@@ -1,4 +1,4 @@
-// swiftc RunesIOS/Session/Models.swift RunesIOS/Protocol/Wire.swift RunesIOS/Persistence/IdentityStore.swift RunesIOS/Protocol/BandCrypto.swift RunesIOS/Authentication/OwnershipCeremony.swift Tests/BandRecoveryTests.swift -o /private/tmp/runes-band-recovery-tests
+// swiftc RunesIOS/Session/Models.swift RunesIOS/Protocol/Wire.swift RunesIOS/Persistence/IdentityStore.swift RunesIOS/Protocol/BandCrypto.swift RunesIOS/Protocol/BandLink.swift RunesIOS/Authentication/OwnershipCeremony.swift Tests/BandRecoveryTests.swift -o /private/tmp/runes-band-recovery-tests
 // Synthetic state and receipts only; no Bluetooth, Meta calls or Keychain access.
 import Foundation
 import CryptoKit

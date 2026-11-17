@@ -425,9 +425,9 @@ final class BandTransport: NSObject, CBCentralManagerDelegate, CBPeripheralDeleg
             guard error == nil else { fail(bluetoothError(error, fallback: "System Bluetooth pairing failed. Check OS pairing; saved ownership identities were retained.")); return }
             // A remembered pulse subscription can deliver 0x00 here before the read reply arrives.
             if value == Data([0x00]) { diagnostic("band_pulse before channel open; waiting for the PSM read"); return }
-            guard value == Data([0xff, 0x00]) else { fail(.wire("Unsupported band L2CAP PSM.")); return }
+            guard let psm = BandLink.psm(value) else { fail(.wire("Unsupported band L2CAP PSM.")); return }
             progress("Opening the band data channel.")
-            peripheral.openL2CAPChannel(255)
+            peripheral.openL2CAPChannel(psm)
         }
     }
     func peripheral(_ peripheral: CBPeripheral, didOpen channel: CBL2CAPChannel?, error: Error?) {
