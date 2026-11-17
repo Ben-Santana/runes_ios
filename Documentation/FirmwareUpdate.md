@@ -201,13 +201,16 @@ this phone does not depend on that.
 ## Stages
 
 1. Done: this document and the link work.
-2. Read only, run from the band tests page: the update status, and a check with Meta that shows
-   versions only.
+2. Read only, run from the band tests page: the update status, and "Check with Meta", which
+   signs in on Meta's page, asks as the band's own version and as version 1, and lists the
+   versions offered. Built, with an offline check (`Tests/FirmwareOfferTests.swift`), not yet
+   run on a phone. The sign-in and the serial number are held in memory only.
 3. A trial: key, transfer, verify, abort. Needs an update engine with several chunks in flight
    on one channel, resuming after a dropped link, and the screen kept on.
 4. The real update behind a confirmation, on the charger, then a checklist that journals each
    result.
 5. Settings and onboarding.
 
-First on the band, both read only: connect with this build and export the journal, then tap
-"Read update status" on the band tests page and export again.
+First on the band, all read only: connect with this build, tap "Read update status" and then
+"Check with Meta" on the band tests page, and export the journal. The lines to look for are
+`protocol` (ending `link: offered ...`), `band_streams`, `band_test` and `band_update`.
