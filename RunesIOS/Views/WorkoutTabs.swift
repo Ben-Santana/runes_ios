@@ -698,6 +698,7 @@ struct WorkoutHealthBlock: View {
     @ObservedObject var store: WorkoutStore
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.openURL) private var openURL
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var copied = false
 
     private var last: WorkoutRecord? { store.history.first }
@@ -753,8 +754,9 @@ struct WorkoutHealthBlock: View {
         } footer: {
             Note("Apps that read Apple Health, such as Bevel and Google Health, show these workouts with their time.")
         }
-        .animation(.standard, value: store.health.on)
-        .animation(.standard, value: store.healthAccess)
+        // Rows arriving push the ones below, which Reduce Motion leaves out.
+        .animation(reduceMotion ? nil : .standard, value: store.health.on)
+        .animation(reduceMotion ? nil : .standard, value: store.healthAccess)
         .onAppear(perform: store.refreshHealth)
         .onChange(of: scenePhase) { _, phase in if phase == .active { store.refreshHealth() } }
     }
