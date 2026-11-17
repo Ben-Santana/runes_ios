@@ -1,7 +1,11 @@
 import Foundation
 import CryptoKit
 
-struct MetaLoginRequest: Identifiable, Sendable { let id = UUID(); let url: URL; let nativeToken: String }
+struct MetaLoginRequest: Identifiable, Sendable {
+    let id = UUID(); let url: URL; let nativeToken: String
+    /// The web address the second sign-in ends at. The page itself is never loaded.
+    var redirect: String? = nil
+}
 struct MetaSession: Sendable { let accessToken: String }
 
 final class MetaService: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
@@ -63,10 +67,34 @@ final class MetaService: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
         let expected = SHA256.hash(data: Data(request.nativeToken.utf8)).map { String(format: "%02x", $0) }.joined().prefix(16)
         guard tokens.count == 1, blobs.count == 1, let token = tokens[0].value, let blob = blobs[0].value, !blob.isEmpty, BandCrypto.equal(Data(token.utf8), Data(expected.utf8)) else { throw BandError.authentication("Meta callback does not match this sign-in.") }
         let decrypted = try await post("https://meta.graph.meta.com/webview_blobs_decrypt", ["blob": blob, "request_token": request.nativeToken, "access_token": Self.frl].merging(lsd()) { _, b in b }, headers: ["Origin": "https://auth.meta.com"], multipart: true)
-        let frlToken = try text(decrypted, "access_token")
+        return try await session(frlToken: try text(decrypted, "access_token"))
+    }
+    private func session(frlToken: String) async throws -> MetaSession {
         let result = try await post("https://ar-genai.graph.meta.com/login", ["frl_access_token": frlToken, "logging_session_id": UUID().uuidString, "format": "json", "device_id": UUID().uuidString, "generate_session_cookies": "1", "generate_analytics_claim": "1", "method": "POST"], headers: ["Authorization": "OAuth " + Self.ar])
         guard result["user_id"] is String || result["user_id"] is NSNumber else { throw BandError.authentication("Meta did not return a user identity.") }
         return MetaSession(accessToken: try text(result, "access_token"))
+    }
+
+    // A second way to sign in, as the public visor project documents it: Meta's authorize page
+    // ends at a fixed web address with a code, and the code is exchanged for the same token
+    // the first way gives. These four values only work together.
+    private static let webApp = "934401142814369"
+    private static let webRedirect = "https://accounts.meta.com/native/oidc/redirect/metaai"
+    private static let webAgent = "Dalvik/2.1.0 (Linux; U; Android 15) [FBAN/Stella;FBAV/289.0.0.25.162;FBSN/Android;FBSV/15;FBLC/en_US]"
+    func prepareWebLogin() throws -> MetaLoginRequest {
+        let state = try BandCrypto.random(16).base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+        var url = URLComponents(string: "https://accounts.meta.com/oidc/")!
+        url.queryItems = [URLQueryItem(name: "app_id", value: Self.webApp), URLQueryItem(name: "scope", value: "openid"), URLQueryItem(name: "response_type", value: "code"),
+                          URLQueryItem(name: "redirect_uri", value: Self.webRedirect), URLQueryItem(name: "state", value: state)]
+        return MetaLoginRequest(url: url.url!, nativeToken: state, redirect: Self.webRedirect)
+    }
+    func finishWebLogin(_ callback: URL, request: MetaLoginRequest) async throws -> MetaSession {
+        guard let redirect = request.redirect, callback.absoluteString.hasPrefix(redirect), let items = URLComponents(url: callback, resolvingAgainstBaseURL: false)?.queryItems,
+              let state = items.first(where: { $0.name == "state" })?.value, BandCrypto.equal(Data(state.utf8), Data(request.nativeToken.utf8)),
+              let code = items.first(where: { $0.name == "code" })?.value, !code.isEmpty else { throw BandError.authentication("Meta callback does not match this sign-in.") }
+        let exchanged = try await post("https://api.accounts.meta.com/native/oidc/token-exchange/", ["mt_app_id": Self.webApp, "oidc_auth_code": code, "redirect_uri": redirect], headers: ["User-Agent": Self.webAgent])
+        guard exchanged["user_id"] is String || exchanged["user_id"] is NSNumber else { throw BandError.authentication("Meta did not return a user identity.") }
+        return try await session(frlToken: try text(exchanged, "access_token"))
     }
     func complete(_ step: OwnershipStep, session: MetaSession) async throws -> PairCompletion {
         var fields = ["access_token": Self.hw, "user_access_token": session.accessToken, "user_token_universe": "ar", "pair_protocol_version": "3", "method": "post"]

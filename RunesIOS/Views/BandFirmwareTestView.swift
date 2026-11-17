@@ -29,7 +29,7 @@ final class BandFirmwareTest: ObservableObject {
 
     /// Asks Meta what it offers this band: once as the version the band runs, and once as
     /// version 1, which the public projects use to be offered a whole build.
-    func check() {
+    func check(otherSignIn: Bool = false) {
         guard !checking, let band else { return }
         checking = true; lines = []
         task = Task { [weak self] in
@@ -38,11 +38,13 @@ final class BandFirmwareTest: ObservableObject {
             defer { meta.close(); service.close(); self.checking = false; self.task = nil }
             do {
                 if self.session == nil {
-                    let request = try await meta.prepareLogin()
+                    let request = try await otherSignIn ? meta.prepareWebLogin() : meta.prepareLogin()
+                    SessionController.shared.noteFirmware("sign-in: started, \(otherSignIn ? "second way" : "first way")")
                     let callback: URL = try await withCheckedThrowingContinuation { continuation in
                         self.signIn = continuation; self.login = request
                     }
-                    self.session = try await meta.finishLogin(callback, request: request)
+                    self.session = try await otherSignIn ? meta.finishWebLogin(callback, request: request) : meta.finishLogin(callback, request: request)
+                    SessionController.shared.noteFirmware("sign-in: done")
                 }
                 guard let token = self.session?.accessToken else { return }
                 self.say("Band runs \(band.software).")
@@ -93,8 +95,11 @@ struct BandFirmwarePanel: View {
     @ObservedObject private var test = BandFirmwareTest.shared
 
     var body: some View {
-        PanelGroup("Firmware update", caption: "Asks Meta which firmware it offers this band and shows the versions. You sign in on Meta's own page. Nothing is downloaded and nothing is sent to the band.") {
+        PanelGroup("Firmware update", caption: "Asks Meta which firmware it offers this band and shows the versions. You sign in on Meta's own page; the second row reaches it another way, for when the first is refused. Nothing is downloaded and nothing is sent to the band.") {
             ActionRow(test.checking ? "Asking Meta…" : "Check with Meta") { test.check() }
+                .disabled(test.checking || !test.knowsBand)
+            Rule()
+            ActionRow("Check with Meta, signing in another way") { test.check(otherSignIn: true) }
                 .disabled(test.checking || !test.knowsBand)
             if !test.knowsBand {
                 Rule()
@@ -107,7 +112,7 @@ struct BandFirmwarePanel: View {
         }
         .sheet(item: $test.login, onDismiss: test.cancelSignIn) { request in
             NavigationStack {
-                MetaLoginView(request: request, completed: test.signedIn, failed: test.signInFailed)
+                MetaLoginView(request: request, completed: test.signedIn, failed: test.signInFailed, trace: { SessionController.shared.noteFirmware($0) })
                     .navigationTitle("Meta sign-in").navigationBarTitleDisplayMode(.inline)
                     .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: test.cancelSignIn) } }
             }
