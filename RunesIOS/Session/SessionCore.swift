@@ -140,11 +140,16 @@ final class SessionCore: @unchecked Sendable {
     private var settingWrite: NamedSettings.Setting?
     /// How the band described each named setting when the list was last read, by the setting's number.
     private var capabilities: [UInt64: BandCapability] = [:]
-    /// The band tightness test while it runs: when it began, the setting it asks about and
+    /// The band tightness test while it runs: when it began, the settings it asks about and
     /// the steps still to do. Each step waits for its answer or its time before the next.
     private var tightnessSince: TimeInterval?
-    private var tightnessTarget: (setting: NamedSettings.Setting, capability: BandCapability, worn: UInt64?)?
+    private var tightnessTargets: [BandTightness.Subject: (setting: NamedSettings.Setting, capability: BandCapability)] = [:]
     private var tightnessSteps: [BandTightness.Step] = []
+    /// A value to run a check with, once the band has refused it without one.
+    private var tightnessValues: [BandTightness.Subject: Int64] = [:]
+    /// The wrist state each time it was read, and what changed it when it changed.
+    private var tightnessStates: [Double] = []
+    private var tightnessChange: String?
     /// The step whose answer is awaited, and a count that makes a wait that was cut short do nothing.
     private var tightnessAsked: BandTightness.Step?
     private var tightnessWait = 0
@@ -156,7 +161,7 @@ final class SessionCore: @unchecked Sendable {
     /// the streams were asked for at all, and whether updates were started.
     private var tightnessFlags: [Int] = []
     private var tightnessStreams = false
-    private var tightnessWatching = false
+    private var tightnessWatching: [BandTightness.Subject] = []
     private var tightnessClosing = false
     /// The band probe while it runs, and the count that tells one of its waits from the next.
     private var probe: BandProbe?
@@ -652,7 +657,7 @@ final class SessionCore: @unchecked Sendable {
                 line(nil, "No list (\(WristFeedbackResult.shape(payload))).")
                 return line(nil, "")
             }
-            settingRead = (count, 0, nil)
+            settingRead = (count, 0, nil); capabilities = [:]
             line(nil, "\(count) settings.")
             askNext()
         case "named_describe":
@@ -707,20 +712,27 @@ final class SessionCore: @unchecked Sendable {
 
     /// Runs the band tightness test: tries each way of getting the band's tightness in turn,
     /// stops at the first that returns a number, then puts back what it changed. It sends
-    /// only requests about the check, stream requests and one read. It writes no setting the band keeps.
-    func checkTightness(_ setting: NamedSettings.Setting, worn: UInt64?) {
+    /// only requests about the two checks and stream requests. It writes no setting the band keeps.
+    func checkTightness(_ settings: [NamedSettings.Setting]) {
         guard tightnessSince == nil, probe == nil else { return }
+        var targets: [BandTightness.Subject: (setting: NamedSettings.Setting, capability: BandCapability)] = [:]
+        for setting in settings {
+            if let subject = BandTightness.Subject(rawValue: setting.name), let capability = capabilities[setting.id] { targets[subject] = (setting, capability) }
+        }
         guard snapshot.state == .streaming, settingRead == nil, settingWrite == nil, pendingStreams == nil, !emgReading, update == nil, let proto,
-              setting.name == BandTightness.trigger, let capability = capabilities[setting.id], let steps = BandTightness.plan(capability) else {
+              let steps = BandTightness.plan(targets.mapValues(\.capability)) else {
             tightness("Not started: the band is busy, not connected, or does not list running the check.")
             onTightness?(""); return
         }
         tightnessSince = ProcessInfo.processInfo.systemUptime
-        tightnessTarget = (setting, capability, worn); tightnessSteps = steps
+        tightnessTargets = targets; tightnessSteps = steps; tightnessValues = [:]; tightnessStates = []; tightnessChange = nil
         tightnessAsked = nil; tightnessWay = ""; tightnessFound = nil; tightnessHeard = 0
-        tightnessFlags = []; tightnessStreams = false; tightnessWatching = false; tightnessClosing = false
+        tightnessFlags = []; tightnessStreams = false; tightnessWatching = []; tightnessClosing = false
         proto.watchesOther = true
-        tightness("Started: setting \(setting.id), actions \(capability.actions.map(String.init).joined(separator: " ")).")
+        let asked = BandTightness.Subject.allCases.compactMap { subject in
+            targets[subject].map { "\(subject.word) is setting \($0.setting.id), actions \($0.capability.actions.map(String.init).joined(separator: " "))" }
+        }
+        tightness("Started: \(asked.joined(separator: "; ")).")
         nextTightnessStep()
     }
 
@@ -731,10 +743,15 @@ final class SessionCore: @unchecked Sendable {
     }
 
     private func nextTightnessStep() {
-        guard tightnessSince != nil, tightnessAsked == nil, let target = tightnessTarget else { return }
+        guard tightnessSince != nil, tightnessAsked == nil else { return }
         guard snapshot.state == .streaming else { return endTightness() }
         guard !tightnessSteps.isEmpty else { return tightnessClosing ? endTightness() : closeTightness() }
         let step = tightnessSteps.removeFirst()
+        func about(_ subject: BandTightness.Subject, _ action: UInt64, _ value: Int64? = nil) -> (channel: UInt16, field: Int, payload: Data)? {
+            guard let target = tightnessTargets[subject] else { return nil }
+            return BandTightness.request(subject, id: target.setting.id, name: target.setting.name, capability: target.capability, action: action, value: value)
+                .map { (NamedSettings.channel, NamedSettings.field, $0) }
+        }
         var request: (channel: UInt16, field: Int, payload: Data)?
         switch step {
         case .listen(let seconds):
@@ -745,23 +762,24 @@ final class SessionCore: @unchecked Sendable {
                 self.nextTightnessStep()
             }
             return
-        case .worn:
-            guard let worn = target.worn else { return nextTightnessStep() }
-            request = (NamedSettings.channel, NamedSettings.field, NamedSettings.read(id: worn))
-        case .act(let action):
-            tightness("Asked action \(action).")
-            request = BandTightness.request(id: target.setting.id, name: target.setting.name, capability: target.capability, action: action, value: nil)
-                .map { (NamedSettings.channel, NamedSettings.field, $0) }
-        case .run(let value, let way):
-            tightnessWay = way
-            tightness("Asked action \(BandTightness.run)\(value.map { " value \($0)" } ?? ""): \(way).")
-            request = BandTightness.request(id: target.setting.id, name: target.setting.name, capability: target.capability, action: BandTightness.run, value: value)
-                .map { (NamedSettings.channel, NamedSettings.field, $0) }
+        case .read:
+            request = about(.state, BandTightness.read)
+        case .act(let subject, let action):
+            tightness("Asked \(subject.word) action \(action).")
+            request = about(subject, action)
+        case .run(let subject, let value, let way):
+            let value = value ?? tightnessValues[subject]
+            tightnessWay = "\(subject.word) \(way)"
+            tightness("Asked \(subject.word) action \(BandTightness.run)\(value.map { " value \($0)" } ?? ""): \(way).")
+            request = about(subject, BandTightness.run, value)
         case .streams(let flag):
+            // Once the wrist state has changed there is an answer, and the streams are left alone.
+            if flag != nil, tightnessChange != nil { tightnessSteps = []; return nextTightnessStep() }
             let extra = flag.map { tightnessFlags + [$0] } ?? []
             tightness(flag == nil ? "Asked for the usual streams." : "Asked for streams with \(extra.map(String.init).joined(separator: " ")).")
             tightnessStreams = true
-            let usual = BandProtocol.streamFlags(gyro: activeStreams?.gyro ?? false, orientation: activeStreams?.orientation ?? false, emg: activeEMG)
+            let usual = BandProtocol.streamFlags(gyro: activeStreams?.gyro ?? false, orientation: activeStreams?.orientation ?? false, emg: activeEMG,
+                                                 inference: activeWriting ? true : nil)
             request = (5, 4, BandTightness.flags(usual, with: extra))
         }
         guard let request else { tightness("Not sent: the band does not list this."); return nextTightnessStep() }
@@ -770,23 +788,38 @@ final class SessionCore: @unchecked Sendable {
     }
 
     private func tightnessAnswer(_ payload: Data) {
-        guard tightnessSince != nil, let step = tightnessAsked, let target = tightnessTarget else { return }
+        guard tightnessSince != nil, let step = tightnessAsked else { return }
+        func number(_ subject: BandTightness.Subject) -> Double? {
+            tightnessTargets[subject].flatMap { BandTightness.number(inAnswer: payload, id: $0.setting.id) }
+        }
         switch step {
-        case .worn:
-            if let worn = target.worn { tightness(BandTightness.worn(payload, id: worn)) }
-        case .act(let action):
+        case .read:
+            guard let state = number(.state) else { tightness("Wrist state: not readable. \(BandTightness.reply(payload))"); break }
+            tightness("Wrist state reads \(BandTightness.plain(state)).")
+            if let first = tightnessStates.first, state != first, tightnessChange == nil {
+                tightnessChange = "wrist state went from \(BandTightness.plain(first)) to \(BandTightness.plain(state)), \(tightnessWay)"
+            }
+            tightnessStates.append(state)
+        case .act(let subject, let action):
             tightness(BandTightness.reply(payload))
-            if action == BandTightness.watch { tightnessWatching = true }
-            if action == BandTightness.unwatch { tightnessWatching = false }
-            tightnessNumber(BandTightness.number(inAnswer: payload, id: target.setting.id))
-        case .run:
+            if action == BandTightness.watch { tightnessWatching.append(subject) }
+            if action == BandTightness.unwatch { tightnessWatching.removeAll { $0 == subject } }
+            tightnessNumber(number(subject), from: "the answer")
+        case .run(let subject, let value, let way):
             tightness(BandTightness.reply(payload))
-            tightnessNumber(BandTightness.number(inAnswer: payload, id: target.setting.id))
+            // A check the band will not run without a value is asked once more with 0, the value it took before.
+            if value == nil, tightnessValues[subject] == nil, BandTightness.refused(payload), !tightnessClosing,
+               let target = tightnessTargets[subject],
+               BandTightness.request(subject, id: target.setting.id, name: target.setting.name, capability: target.capability, action: BandTightness.run, value: 0) != nil {
+                tightnessValues[subject] = 0
+                tightnessSteps.insert(.run(subject, value: 0, way: way), at: 0)
+            }
+            tightnessNumber(number(subject), from: "the answer")
         case .streams(let flag):
             let answer = BandTightness.streams(payload, extra: flag.map { tightnessFlags + [$0] } ?? [])
             tightness(answer.line)
             if let flag {
-                // A flag the band will not take changes nothing, so the run that would follow it is skipped.
+                // A flag the band will not take changes nothing, so the runs that would follow it are skipped.
                 if answer.taken { tightnessFlags.append(flag) }
                 else if let next = tightnessSteps.firstIndex(where: { if case .streams = $0 { return true }; return false }) { tightnessSteps.removeFirst(next) }
                 else { tightnessSteps = [] }
@@ -802,9 +835,9 @@ final class SessionCore: @unchecked Sendable {
     }
 
     /// A number from the band ends the search. What is left is putting things back.
-    private func tightnessNumber(_ number: Double?) {
+    private func tightnessNumber(_ number: Double?, from source: String) {
         guard let number, tightnessFound == nil, !tightnessClosing else { return }
-        tightnessFound = "tightness \(BandTightness.plain(number)) arrived, \(tightnessWay.isEmpty ? "before any run" : tightnessWay)"
+        tightnessFound = "\(BandTightness.plain(number)) arrived in \(source), \(tightnessWay.isEmpty ? "before any run" : tightnessWay)"
         tightness("Number: \(BandTightness.plain(number)).")
         tightnessSteps = []
         // While an answer is awaited, that answer moves the test on. Otherwise the wait is cut short.
@@ -815,15 +848,19 @@ final class SessionCore: @unchecked Sendable {
     private func closeTightness() {
         guard !tightnessClosing else { return endTightness() }
         tightnessClosing = true
-        tightnessSteps = (tightnessStreams ? [.streams(nil)] : []) + (tightnessWatching ? [.act(BandTightness.unwatch)] : [])
+        tightnessSteps = (tightnessStreams ? [.streams(nil)] : []) + tightnessWatching.map { .act($0, BandTightness.unwatch) }
         nextTightnessStep()
     }
 
     private func endTightness() {
         guard tightnessSince != nil else { return }
-        tightness("Done: \(tightnessFound ?? "no tightness arrived"). \(tightnessHeard) other messages.")
-        tightnessSince = nil; tightnessTarget = nil; tightnessSteps = []; tightnessAsked = nil; tightnessWait += 1
-        tightnessFlags = []; tightnessStreams = false; tightnessWatching = false; tightnessClosing = false
+        var result = tightnessFound ?? tightnessChange ?? "no number arrived"
+        if let first = tightnessStates.first, let last = tightnessStates.last {
+            result += ". Wrist state read \(BandTightness.plain(first)) at first and \(BandTightness.plain(last)) at the end"
+        }
+        tightness("Done: \(result). \(tightnessHeard) other messages.")
+        tightnessSince = nil; tightnessTargets = [:]; tightnessSteps = []; tightnessAsked = nil; tightnessWait += 1
+        tightnessFlags = []; tightnessStreams = false; tightnessWatching = []; tightnessClosing = false
         proto?.watchesOther = update != nil
         onTightness?("")
         guard snapshot.state == .streaming else { return }
@@ -1065,7 +1102,9 @@ final class SessionCore: @unchecked Sendable {
             guard tightnessSince != nil, tightnessHeard < 60 else { return }
             tightnessHeard += 1
             tightness(BandTightness.describe(kind: kind, channel: channel, payload: payload))
-            if let id = tightnessTarget?.setting.id { tightnessNumber(BandTightness.number(kind: kind, payload: payload, id: id)) }
+            if let heard = BandTightness.number(kind: kind, payload: payload, ids: tightnessTargets.values.map(\.setting.id)) {
+                tightnessNumber(heard.value, from: heard.from)
+            }
         case .emg(let values, let sequence, let timestamp):
             guard snapshot.state == .streaming else { return }
             onRaw?(RawSample(kind: .emg, uptime: receipt.uptime, sequence: sequence, timestamp: timestamp, emg: values))

@@ -456,39 +456,61 @@ struct ConnectionDiagnosticsTests {
         precondition(BandCapability.code(from: named(3, PB.field(1, 3) + PB.field(3, 2))) == 2)
         precondition(BandCapability.code(from: named(3, PB.field(1, 3))) == nil && BandCapability.code(from: Data()) == nil)
 
-        // The band's real description of the check: a whole number 0 to 100 and actions 2, 3 and 4.
-        let name = BandTightness.trigger
-        let real = described(PB.field(3, Data(name.utf8)) + PB.field(4, 3) + PB.field(6, Data([2, 3, 4])) + PB.field(7, PB.field(3, 100)))!
-        precondition(real.summary == "whole number 0 to 100, now 0; actions 2 3 4")
-        // The ways are tried least first, and each needs the action the band lists for it.
-        precondition(BandTightness.plan(real)! == [
-            .worn, .run(value: nil, way: "run alone"), .listen(5),
-            .act(3), .listen(3), .run(value: nil, way: "after action 3"), .listen(8),
-            .run(value: 0, way: "after action 3, with value 0"), .listen(8),
-            .streams(22), .run(value: nil, way: "with setting updates on"), .listen(8),
-            .streams(27), .run(value: nil, way: "with detector updates on"), .listen(8)])
+        // The band's real descriptions: tightness is a whole number 0 to 100 with actions 2, 3 and 4,
+        // and later software adds a wrist state 0 to 3 that can also be read.
+        let name = BandTightness.trigger, stateName = BandTightness.Subject.state.rawValue
+        let real = described(PB.field(3, Data(name.utf8)) + PB.field(4, 4) + PB.field(6, Data([2, 3, 4])) + PB.field(7, PB.field(3, 100)))!
+        let wrist = described(PB.field(3, Data(stateName.utf8)) + PB.field(4, 5) + PB.field(6, Data([0, 2, 3, 4])) + PB.field(7, PB.field(3, 3)))!
+        precondition(real.summary == "whole number 0 to 100, now 0; actions 2 3 4" && wrist.summary == "whole number 0 to 3, now 0; actions 0 2 3 4")
+        // The ways are tried least first, each needs the action the band lists for it, and the wrist state is read after every run.
+        func round(_ way: String) -> [BandTightness.Step] {
+            [.run(.tightness, value: nil, way: way), .listen(4), .read, .run(.state, value: nil, way: way), .listen(4), .read]
+        }
+        precondition(BandTightness.plan([.tightness: real, .state: wrist])! == [.read] + round("run alone")
+            + [.act(.tightness, 3), .act(.state, 3), .listen(3)] + round("after action 3")
+            + [.streams(22)] + round("with setting updates on") + [.streams(27)] + round("with detector updates on"))
+        // The earlier software has the first setting alone and nothing to read.
+        precondition(BandTightness.plan([.tightness: real])! == [
+            .run(.tightness, value: nil, way: "run alone"), .listen(4),
+            .act(.tightness, 3), .listen(3), .run(.tightness, value: nil, way: "after action 3"), .listen(4),
+            .streams(22), .run(.tightness, value: nil, way: "with setting updates on"), .listen(4),
+            .streams(27), .run(.tightness, value: nil, way: "with detector updates on"), .listen(4)])
         var plain = trigger!; plain.actions = [2]
-        precondition(BandTightness.plan(plain)! == [
-            .worn, .run(value: nil, way: "run alone"), .listen(5),
-            .streams(22), .run(value: nil, way: "with setting updates on"), .listen(8),
-            .streams(27), .run(value: nil, way: "with detector updates on"), .listen(8)])
-        precondition(BandTightness.plan(trigger!) == nil && BandTightness.plan(haptics!) == nil)
+        precondition(BandTightness.plan([.state: plain])! == [
+            .run(.state, value: nil, way: "run alone"), .listen(4),
+            .streams(22), .run(.state, value: nil, way: "with setting updates on"), .listen(4),
+            .streams(27), .run(.state, value: nil, way: "with detector updates on"), .listen(4)])
+        var readable = wrist; readable.actions = [0]
+        precondition(BandTightness.plan([.tightness: trigger!]) == nil && BandTightness.plan([.state: readable]) == nil && BandTightness.plan([:]) == nil)
 
-        // The requests. Only the check's own setting is asked, never with a read or a write, and only as the band lists.
-        precondition(BandTightness.request(id: 3, name: name, capability: real, action: 2, value: nil) == Data([0x1a, 0x04, 0x08, 0x03, 0x10, 0x02]))
-        precondition(BandTightness.request(id: 3, name: name, capability: real, action: 3, value: nil) == Data([0x1a, 0x04, 0x08, 0x03, 0x10, 0x03]))
-        precondition(BandTightness.request(id: 3, name: name, capability: real, action: 4, value: nil) == Data([0x1a, 0x04, 0x08, 0x03, 0x10, 0x04]))
-        precondition(BandTightness.request(id: 3, name: name, capability: real, action: 2, value: 0) == Data([0x1a, 0x08, 0x08, 0x03, 0x10, 0x02, 0x1a, 0x02, 0x08, 0x00]))
-        precondition(BandTightness.request(id: 3, name: name, capability: real, action: 2, value: 100) != nil)
-        precondition(BandTightness.request(id: 3, name: name, capability: real, action: 2, value: 101) == nil)
-        precondition(BandTightness.request(id: 3, name: name, capability: real, action: 2, value: -1) == nil)
-        precondition(BandTightness.request(id: 3, name: name, capability: real, action: 3, value: 0) == nil)
+        // The requests. Only the two settings are asked, never with a write, and only as the band lists.
+        func asking(_ action: UInt64, _ value: Int64? = nil, capability: BandCapability? = nil) -> Data? {
+            BandTightness.request(.tightness, id: 4, name: name, capability: capability ?? real, action: action, value: value)
+        }
+        func askingState(_ action: UInt64, _ value: Int64? = nil, capability: BandCapability? = nil) -> Data? {
+            BandTightness.request(.state, id: 5, name: stateName, capability: capability ?? wrist, action: action, value: value)
+        }
+        precondition(asking(2) == Data([0x1a, 0x04, 0x08, 0x04, 0x10, 0x02]) && asking(3) == Data([0x1a, 0x04, 0x08, 0x04, 0x10, 0x03]))
+        precondition(asking(4) == Data([0x1a, 0x04, 0x08, 0x04, 0x10, 0x04]))
+        precondition(asking(2, 0) == Data([0x1a, 0x08, 0x08, 0x04, 0x10, 0x02, 0x1a, 0x02, 0x08, 0x00]))
+        precondition(asking(2, 100) != nil && asking(2, 101) == nil && asking(2, -1) == nil && asking(3, 0) == nil)
         var everything = real; everything.actions = [0, 1, 2, 3, 4, 5]
-        for action: UInt64 in [0, 1, 5] { precondition(BandTightness.request(id: 3, name: name, capability: everything, action: action, value: nil) == nil) }
-        precondition(BandTightness.request(id: 3, name: name, capability: plain, action: 3, value: nil) == nil)
-        precondition(BandTightness.request(id: 3, name: name, capability: plain, action: 2, value: 0) == nil)
-        precondition(BandTightness.request(id: 2, name: "band-tightness-threshold", capability: everything, action: 2, value: nil) == nil)
-        precondition(BandTightness.request(id: 22, name: "haptics", capability: everything, action: 2, value: 2) == nil)
+        for action: UInt64 in [0, 1, 5] { precondition(asking(action, capability: everything) == nil) }
+        precondition(asking(3, capability: plain) == nil && asking(2, 0, capability: plain) == nil)
+        // The wrist state can be read as well. A read is the same request the named settings read sends.
+        precondition(askingState(0) == NamedSettings.read(id: 5) && askingState(2) == Data([0x1a, 0x04, 0x08, 0x05, 0x10, 0x02]))
+        precondition(askingState(2, 3) != nil && askingState(2, 4) == nil && askingState(0, 1) == nil)
+        for action: UInt64 in [1, 5] { precondition(askingState(action, capability: everything) == nil) }
+        precondition(askingState(0, capability: real) == nil)
+        // Each setting answers only to its own name.
+        precondition(BandTightness.request(.tightness, id: 5, name: stateName, capability: everything, action: 2, value: nil) == nil)
+        precondition(BandTightness.request(.state, id: 4, name: name, capability: everything, action: 0, value: nil) == nil)
+        precondition(BandTightness.request(.tightness, id: 3, name: "band-tightness-threshold", capability: everything, action: 2, value: nil) == nil)
+        precondition(BandTightness.request(.state, id: 22, name: "haptics", capability: everything, action: 2, value: 2) == nil)
+        // A no is a status other than 1 or a result other than 0. Silence is not a no.
+        precondition(BandTightness.refused(named(3, PB.field(1, 4) + PB.field(2, 2) + PB.field(3, 1))))
+        precondition(BandTightness.refused(named(3, PB.field(1, 4) + PB.field(2, 2), status: 0)) && BandTightness.refused(PB.field(2, 3)))
+        precondition(!BandTightness.refused(named(3, PB.field(1, 4) + PB.field(2, 2))) && !BandTightness.refused(Data()))
 
         // Stream requests keep the usual flags and add to them, and the band has to say each extra one back.
         let usual = BandProtocol.streamFlags(gyro: true, orientation: false)
@@ -512,11 +534,6 @@ struct ConnectionDiagnosticsTests {
         precondition(BandTightness.number(inAnswer: named(3, PB.field(1, 3) + PB.field(3, 1) + PB.field(4, PB.field(1, 37))), id: 3) == nil)
         precondition(BandTightness.number(inAnswer: named(3, PB.field(1, 3) + PB.field(4, PB.field(1, 37)), status: 0), id: 3) == nil)
         precondition(BandTightness.number(inAnswer: Data(), id: 3) == nil)
-        // Whether the band says it is on a wrist.
-        precondition(BandTightness.worn(named(3, PB.field(1, 17) + PB.field(8, PB.field(1, 1))), id: 17) == "On wrist: yes.")
-        precondition(BandTightness.worn(named(3, PB.field(1, 17) + PB.field(8, Data())), id: 17) == "On wrist: no.")
-        precondition(BandTightness.worn(named(3, PB.field(1, 17) + PB.field(3, 1)), id: 17) == "On wrist: not readable.")
-        precondition(BandTightness.worn(Data(), id: 17) == "On wrist: not readable.")
 
         // What the band says back: the setting, the action, a result and a value of some kind.
         func said(_ message: Data) -> BandTightness.Answer { BandTightness.answer(try! Fields(message)) }
@@ -542,9 +559,10 @@ struct ConnectionDiagnosticsTests {
         // Messages the band sends without being asked, each written as what is known and then as numbers.
         let event = Data(repeating: 0xff, count: 16)
         let detector = PB.field(21, PB.field(1, event) + PB.field(2, 4) + PB.field(3, 2))
-        precondition(BandTightness.number(kind: BandTightness.update, payload: detector, id: 3) == 2)
-        precondition(BandTightness.number(kind: BandTightness.update, payload: PB.field(21, PB.field(2, 4)), id: 3) == nil)
-        precondition(BandTightness.number(kind: 0x0200020d, payload: detector, id: 3) == nil && BandTightness.number(kind: BandTightness.update, payload: Data(), id: 3) == nil)
+        let detected = BandTightness.number(kind: BandTightness.update, payload: detector, ids: [4, 5])
+        precondition(detected?.value == 2 && detected?.from == "a detector update")
+        precondition(BandTightness.number(kind: BandTightness.update, payload: PB.field(21, PB.field(2, 4)), ids: [4, 5]) == nil)
+        precondition(BandTightness.number(kind: 0x0200020d, payload: detector, ids: [4]) == nil && BandTightness.number(kind: BandTightness.update, payload: Data(), ids: [4]) == nil)
         precondition(BandTightness.describe(kind: BandTightness.update, channel: 0x8005, payload: detector)
             == "Frame 2000316 channel 5, 25 bytes: detector update 4 tightness 2 [21={1=bytes(16) 2=4 3=2}]")
         var ratio = PB.varint(UInt64(2 << 3 | 5)); ratio.append(half)
@@ -554,8 +572,9 @@ struct ConnectionDiagnosticsTests {
         let pushed = PB.field(15, PB.field(1, PB.field(1, 3) + PB.field(4, PB.field(1, 17))))
         precondition(BandTightness.describe(kind: BandTightness.update, channel: 1, payload: pushed)
             == "Frame 2000316 channel 1, 10 bytes: setting update: setting 3 action 0 result 0 kind 4 value 17 [15={1={1=3 4={1=17}}}]")
-        precondition(BandTightness.number(kind: BandTightness.update, payload: pushed, id: 3) == 17 && BandTightness.number(kind: BandTightness.update, payload: pushed, id: 2) == nil)
-        precondition(BandTightness.number(kind: BandTightness.update, payload: PB.field(15, PB.field(1, PB.field(1, 3) + PB.field(2, 3))), id: 3) == nil)
+        let told = BandTightness.number(kind: BandTightness.update, payload: pushed, ids: [3, 5])
+        precondition(told?.value == 17 && told?.from == "an update about setting 3" && BandTightness.number(kind: BandTightness.update, payload: pushed, ids: [2]) == nil)
+        precondition(BandTightness.number(kind: BandTightness.update, payload: PB.field(15, PB.field(1, PB.field(1, 3) + PB.field(2, 3))), ids: [3]) == nil)
         let other = PB.field(9, PB.field(1, 500) + PB.field(2, 6)) + PB.field(1, PB.field(1, 2) + PB.field(5, 1))
         precondition(BandTightness.describe(kind: BandTightness.update, channel: 5, payload: other)
             == "Frame 2000316 channel 5, 13 bytes: quality check, dead channels 6; device state 2 on wrist 1 reason 0 [1={1=2 5=1} 9={1=500 2=6}]")
@@ -570,7 +589,7 @@ struct ConnectionDiagnosticsTests {
         func isAnswer(_ signals: [BandProtocol.Signal], empty: Bool) -> Bool {
             signals.contains { if case .reply("named_trigger", let payload) = $0 { return payload.isEmpty == empty }; return false }
         }
-        let ask = BandTightness.request(id: 3, name: name, capability: real, action: 2, value: nil)!
+        let ask = asking(2)!
         func asked(_ fixture: TrustFixture, now: TimeInterval) throws -> UInt64 {
             let output = try fixture.host.request("named_trigger", channel: NamedSettings.channel, field: NamedSettings.field, payload: ask, now: now)
             let fields = try Fields(DataXReceiver().feed(fixture.bandRx.feed(output)[0])[0].payload)
