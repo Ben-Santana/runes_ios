@@ -1,10 +1,9 @@
 # Band firmware update
 
-Status on 2026-11-17: stage 3 of 5 is built and not yet run. The app speaks the link of newer
-firmware as well as the firmware the band runs today, and the changed app connects to the band
-as it is. The band's update status and Meta's offers have been read on the phone. The band
-tests page can now install the package's key and run a trial transfer, each behind a
-confirmation. Neither has been run on a band. Nothing in the app can install firmware.
+Status on 2026-11-17: stage 3 of 5 is done. The app speaks the link of newer firmware as well
+as the firmware the band runs today, and the changed app connects to the band as it is. Key 20
+is on the band, and a trial of build 72 sent both items, had the band verify each, and had it
+discard them. Nothing in the app can install firmware, and the band still runs `770435744`.
 
 An update is one way. The band refuses older firmware, and nobody has found a way back.
 
@@ -140,6 +139,27 @@ once its checksum matches the one Meta gave, with that checksum beside it, so a 
 use it without asking Meta. The wrapped key is asked for after that and stays in memory. The
 link, the key and the sign-in are never written to the journal.
 
+## The trial on 2026-11-17
+
+Run from the band tests page on the band's factory firmware, battery 91% to 89%, worn.
+
+- Key: the band had key 1. The install was answered `1={1=bytes(0)}`, a result that is there
+  and empty, and the status after it reported key 20. So this firmware does send a result for
+  a yes, with the zero code left out.
+- Build 72 (`1075365371`): firmware 5472878 bytes in 227 s, model bundle 7151732 bytes in
+  358 s, 18 to 26 KiB a second. The band offered 8192 bytes of memory, so eight chunks were in
+  flight. No chunk was sent twice. Part of the firmware went across with the app in the
+  background, kept running by the band's own traffic.
+- The band verified both items, accepted the discard, and then reported idle, stable firmware,
+  running and received both `770435744`, key 20.
+- After the discard it still reports the model bundle as `1075365371`. That number cannot be
+  trusted to skip a model bundle, so a real update must send every item, as band-core does.
+- Build 64's package holds firmware of 5326044 bytes and a model bundle of 5236658 bytes. It
+  was fetched and checked and has not been sent.
+
+Not shown by this: a dropped link part way, which only the offline check covers, and anything
+about a commit or the band after one.
+
 ## The update engine
 
 `FirmwareUpdate` writes the requests and reads the answers, and `SessionCore` carries them on
@@ -261,14 +281,13 @@ this phone does not depend on that.
 
 1. Done: this document and the link work.
 2. Done on 2026-11-17: the update status and "Check with Meta" from the band tests page.
-3. Built, not run on a band: get a package, install its key, and a trial of key, transfer,
-   verify and discard.
+3. Done on 2026-11-17: the key installed and a trial of build 72 passed.
 4. The real update behind a confirmation, on the charger, then a checklist that journals each
    result.
 5. Settings and onboarding.
 
-Next on the band, one step at a time with the journal read after each: "Check with Meta",
-"Get build 64", then "Install key 20", which is the first thing this app writes for an update
-and which the band keeps. The journal's `band_update` lines show the band's answer to the key
-as numbers. Only after that, "Trial transfer". Before stage 4, setting a band up again needs
-the sign-in that works, since a band that had to be reset after an update would need it.
+Before stage 4: setting a band up again needs the sign-in that works, since a band that had
+to be reset after an update would need it. The real update must send every item whatever
+model version the band reports, commit in the connection that verified them, and then run the
+checklist. Which build to install is the owner's choice: build 64 is the newest one a public
+project has connected to, and build 72 is what Meta's newer question offers.
