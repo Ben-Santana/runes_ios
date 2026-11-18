@@ -127,15 +127,18 @@ and the fields `fb_api_req_friendly_name`, `client_doc_id` and `variables`.
 - `FetchEncryptedKEKInfoByKEKId`, document `313699925716490204858433749875`, with the serial
   number and key number, answers with the key wrapped for that one band.
 
-The app has the sign-in (`MetaService`) and its token is the kind these calls take, but it is
-kept only while the app runs, so a check needs a fresh sign-in. The band's serial number
-arrives with its device information on every connection and is kept out of the journal.
+The app has the sign-in (`MetaService`) and its token is the kind these calls take. The
+firmware check keeps it in this phone's Keychain, readable only while the phone is unlocked, so
+a restart does not ask again. It is dropped when Meta stops accepting it, and a row on the band
+tests page forgets it. The band's serial number arrives with its device information on every
+connection and is kept out of the journal.
 
 On the phone: `FirmwareService` asks the questions and downloads the package,
 `FirmwarePackage` unpacks it in memory and checks every item's size and SHA-256 against the
 package's own list, and the package is kept in the app's Application Support under `Firmware`
-once its checksum matches the one Meta gave. The wrapped key is asked for after that and stays
-in memory. The link, the key and the sign-in are never written to the journal.
+once its checksum matches the one Meta gave, with that checksum beside it, so a later run can
+use it without asking Meta. The wrapped key is asked for after that and stays in memory. The
+link, the key and the sign-in are never written to the journal.
 
 ## The update engine
 

@@ -27,7 +27,9 @@ final class BandFirmwareTest: ObservableObject {
     /// Nothing is sent to a band whose battery is below this.
     static let batteryFloor = 50
     private var band: (serial: String, software: String)?
-    private var session: MetaSession?
+    /// The Meta sign-in, kept in the Keychain so a restart does not ask again.
+    private var session: MetaSession? = FirmwareSignIn.load() { didSet { signedInNow = session != nil } }
+    @Published private(set) var signedInNow = FirmwareSignIn.load() != nil
     private var signIn: CheckedContinuation<URL, Error>?
     private var task: Task<Void, Never>?
 
@@ -60,7 +62,8 @@ final class BandFirmwareTest: ObservableObject {
                         self.signIn = continuation; self.login = request
                     }
                     self.session = try await otherSignIn ? meta.finishWebLogin(callback, request: request) : meta.finishLogin(callback, request: request)
-                    SessionController.shared.noteFirmware("sign-in: done")
+                    if let session = self.session { FirmwareSignIn.save(session) }
+                    SessionController.shared.noteFirmware("sign-in: done, and kept on this phone")
                 }
                 guard let token = self.session?.accessToken else { return }
                 self.say("Band runs \(band.software).")
@@ -77,7 +80,10 @@ final class BandFirmwareTest: ObservableObject {
                                 note = answer.status == 200 ? " (answered only when asked as the Meta app)" : ""
                             }
                             // A sign-in Meta no longer accepts is asked for again on the next check.
-                            if answer.status == 401 || answer.status == 403 { self.session = nil }
+                            // Meta's code 190 is how it says a sign-in has ended.
+                            var ended = answer.status == 401 || answer.status == 403
+                            if case .refused(let codes) = answer.reply, codes.contains("code 190") { ended = true }
+                            if ended, self.session != nil { self.forgetSignIn(); self.say("Meta no longer accepts the kept sign-in. Check again to sign in.") }
                             switch answer.reply {
                             case .offer(let offer):
                                 if !offers.contains(offer) { offers.append(offer) }
@@ -202,7 +208,7 @@ final class BandFirmwareTest: ObservableObject {
                             self.say("Key \(package.keyNumber) for this band: received, \(key.count) bytes, still wrapped.")
                             return
                         }
-                        if answer.status == 401 || answer.status == 403 { self.session = nil }
+                        if answer.status == 401 || answer.status == 403 { self.forgetSignIn() }
                         self.say("Key \(package.keyNumber) from \(host.prefix(while: { $0 != "." }))\(asMetaApp ? ", asked as the Meta app" : ""): not given (HTTP \(answer.status)).")
                     }
                 }
@@ -230,6 +236,9 @@ final class BandFirmwareTest: ObservableObject {
         say("Band battery \(level)%.")
         controller.startUpdate(plan)
     }
+
+    /// Removes the kept Meta sign-in from this phone.
+    func forgetSignIn() { session = nil; FirmwareSignIn.clear() }
 
     func stop() { if running { SessionController.shared.stopUpdate() } }
 
@@ -292,6 +301,11 @@ struct BandFirmwarePanel: View {
             } else {
                 ActionRow("Have the band discard an update it holds") { asking = .cancel }
                     .disabled(busy || !connected)
+            }
+            if test.signedInNow {
+                Rule()
+                ActionRow("Forget the Meta sign-in kept on this phone") { test.forgetSignIn() }
+                    .disabled(busy)
             }
             if !test.knowsBand {
                 Rule()

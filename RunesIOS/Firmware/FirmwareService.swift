@@ -1,4 +1,26 @@
 import Foundation
+import Security
+
+/// Keeps the Meta sign-in used for firmware checks in this phone's Keychain, so a check after
+/// the app restarts does not ask again. It never leaves the device and is never logged.
+enum FirmwareSignIn {
+    private static let item: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                              kSecAttrService as String: "com.runes.ios.firmware-sign-in", kSecAttrAccount as String: "meta"]
+    static func load() -> MetaSession? {
+        var result: CFTypeRef?
+        let query = item.merging([kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]) { $1 }
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess, let data = result as? Data,
+              let token = String(data: data, encoding: .utf8), !token.isEmpty else { return nil }
+        return MetaSession(accessToken: token)
+    }
+    static func save(_ session: MetaSession) {
+        clear()
+        let attributes = item.merging([kSecValueData as String: Data(session.accessToken.utf8),
+                                       kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly]) { $1 }
+        SecItemAdd(attributes as CFDictionary, nil)
+    }
+    static func clear() { SecItemDelete(item as CFDictionary) }
+}
 
 /// Asks Meta what firmware it offers a band, from this phone, with the sign-in of its owner.
 /// Nothing from an answer is logged here, and no cookies or cache are kept.
