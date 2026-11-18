@@ -425,7 +425,7 @@ struct BandFirmwarePanel: View {
         case .key: return "This cannot be undone. The band keeps the key, and nothing else on it changes. Put the band on its charger first. Its battery must be at \(floor)% or more."
         case .trial: return "The band receives the firmware and checks it, then discards it. Nothing is installed. If the band lacks the key it is installed first, and that cannot be undone. Put the band on its charger and keep this screen open. It takes about 10 minutes."
         case .cancel: return "This clears a transfer that was cut off. The firmware the band runs is not touched."
-        case .install: return "The band restarts into the new firmware and can never go back to the old one. Other apps that talk to the band directly may stop working with it. Put the band on its charger first, with \(floor)% or more, and keep this screen open. It takes about 10 minutes, then the band restarts."
+        case .install: return "The band restarts into the new firmware and can never go back to the old one. Other apps that talk to the band directly may stop working with it. If the band refuses the model bundle as older than the one it holds, it is sent with the version check skipped, which nobody has tried. Put the band on its charger first, with \(floor)% or more, and keep this screen open. It takes about 10 minutes, then the band restarts."
         }
     }
 

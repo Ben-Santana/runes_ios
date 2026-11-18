@@ -185,8 +185,11 @@ What this shows and does not:
   down doing that after a trial, and if the bundle were not whole the band would run new
   firmware with the wrong models.
 - The start request has a switch to skip the version check. No source has tried it. A trial
-  now asks once more with that switch when the band refuses a model bundle as older, so the
-  journal shows whether the band lets it through. An install never does.
+  and an install now ask once more with that switch when the band refuses a model bundle as
+  older. If the band lets it through, the bundle is sent and verified again before anything
+  is installed, so the install is of items all verified in that connection. If the band
+  refuses again, the run ends with a discard. It never goes on with the firmware alone: that
+  choice is left to the owner. The firmware itself is never asked for with the switch.
 
 ## The update engine
 

@@ -74,8 +74,9 @@ final class FirmwareUpdate {
         let wrappedKey: Data?
         let mode: Mode
         /// Whether a model bundle the band refuses as older is asked for once more with the
-        /// version check skipped. The band did that on 2026-11-17 for a bundle it had already
-        /// been sent in a trial. Unproven on a band, so only a trial may do it.
+        /// version check skipped. The band refused one on 2026-11-17 that a trial had already
+        /// sent it. The switch is in the band's own messages and no source has tried it. The
+        /// firmware itself is never asked for this way.
         var forcesRefusedModel = false
     }
     struct Progress: Equatable {
@@ -307,7 +308,7 @@ final class FirmwareUpdate {
             let result = code(response, 1)
             guard result == 0 else {
                 say("Start answer: \(shape(response)).")
-                if result == 202, items[item].kind == 2, plan.forcesRefusedModel, plan.mode == .trial, !forcing {
+                if result == 202, items[item].kind == 2, plan.forcesRefusedModel, !forcing {
                     say("The band refused the \(items[item].name) as older than what it holds. Asking once more with the version check skipped.")
                     forcing = true
                     return [ask(.start, &ids, now)]

@@ -126,6 +126,6 @@ struct FirmwarePackage {
     }
 
     func plan(_ mode: FirmwareUpdate.Mode, wrappedKey: Data?) -> FirmwareUpdate.Plan {
-        FirmwareUpdate.Plan(version: version, items: items, keyNumber: keyNumber, wrappedKey: wrappedKey, mode: mode, forcesRefusedModel: mode == .trial)
+        FirmwareUpdate.Plan(version: version, items: items, keyNumber: keyNumber, wrappedKey: wrappedKey, mode: mode, forcesRefusedModel: mode == .trial || mode == .install)
     }
 }

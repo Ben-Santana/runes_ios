@@ -157,7 +157,7 @@ struct FirmwareUpdateTests {
             FirmwareUpdate.Item(kind: kind, name: name, data: data, md5: Data(Insecure.MD5.hash(data: data)))
         }
         return FirmwareUpdate.Plan(version: 1003366292, items: [item(0, "firmware", firmware)] + (model.map { [item(2, "model bundle", $0)] } ?? []),
-                                   keyNumber: 20, wrappedKey: key, mode: mode, forcesRefusedModel: forces ?? (mode == .trial))
+                                   keyNumber: 20, wrappedKey: key, mode: mode, forcesRefusedModel: forces ?? (mode == .trial || mode == .install))
     }
 
     /// Carries requests to the band and answers back until the update ends, the clock moving on
@@ -434,18 +434,32 @@ struct FirmwareUpdateTests {
             }
             precondition(last.suffix(6) == Data([0x3a, 0x04, 0x22, 0x02, 0x08, 0x00]) && job.committed)
         }
-        // A model bundle the band refuses as older stops an install, as it did on the band on
-        // 2026-11-17. An install does not skip the version check, and nothing is kept.
+        // A model bundle the band refuses as older, as it did on the band on 2026-11-17: the
+        // install asks once more with the version check skipped, and installs only once the
+        // bundle is sent and verified in this connection.
         do {
             let band = PretendBand(); band.allowsInstall = true; band.key = 20; band.model = 1075365371
             let (job, lines) = begin(.install, band)
-            precondition(job.done && !job.committed && !band.installed && band.state == 1 && band.seen.suffix(2) == ["start 2", "discard"], "\(band.seen)")
-            precondition(lines.contains("Failed: the band refused to start the model bundle: older version (202)."))
-            let forced = PretendBand(); forced.allowsInstall = true; forced.key = 20; forced.model = 1075365371
-            let job2 = FirmwareUpdate(plan(.install, forces: true))
+            precondition(job.succeeded && band.installed, lines.joined(separator: "\n"))
+            precondition(band.seen.suffix(5) == ["start 2", "start 2 skipping the version check", "setup 2", "verify 2", "install"], "\(band.seen)")
+            precondition(!band.seen.contains("start 0 skipping the version check"))
+        }
+        // A band that will not skip the check: the install stops there, discards, and keeps nothing.
+        // It never goes on with the firmware alone.
+        do {
+            let band = PretendBand(); band.allowsInstall = true; band.key = 20; band.model = 1075365371; band.honoursSkip = false
+            let (job, lines) = begin(.install, band)
+            precondition(job.done && !job.committed && !band.installed && band.state == 1, lines.joined(separator: "\n"))
+            precondition(band.seen.suffix(3) == ["start 2", "start 2 skipping the version check", "discard"] && !band.seen.contains("install"))
+        }
+        // A plan that does not ask for it stops at the first refusal, as the install on the band did.
+        do {
+            let band = PretendBand(); band.allowsInstall = true; band.key = 20; band.model = 1075365371
+            let job = FirmwareUpdate(plan(.install, forces: false))
             var ids: UInt64 = 10, clock = 0.0
-            run(job2, forced, ids: &ids, clock: &clock, queue: job2.begin(ids: &ids, now: clock))
-            precondition(!job2.committed && !forced.seen.contains("start 2 skipping the version check"), "an install never skips the check, whatever the plan says")
+            let lines = run(job, band, ids: &ids, clock: &clock, queue: job.begin(ids: &ids, now: clock))
+            precondition(!job.committed && band.seen.suffix(2) == ["start 2", "discard"])
+            precondition(lines.contains("Failed: the band refused to start the model bundle: older version (202)."))
         }
         // An earlier update the band holds is discarded first, and nothing verified before counts.
         do {
