@@ -1,8 +1,9 @@
 # Band firmware update
 
-Status on 2026-11-17: stage 4 of 5 is done. The band was updated from `770435744` to build 64
-(`1003366292`) from this app at 20:11, came back 49 seconds later, and answered everything on
-the checklist. See "The update on 2026-11-17". Settings and onboarding are not built.
+Status on 2026-11-17: the band runs build 72 (`1075365371`), installed from this app in two
+steps, build 64 at 20:11 and build 72 at 23:31. Build 72 speaks the newer link, and the app
+connects to it. Gestures on build 72 and the checklist there are not checked yet. Settings and
+onboarding are not built. See "The update on 2026-11-17" and "Build 72 on 2026-11-17".
 
 An update is one way. The band refuses older firmware, and nobody has found a way back.
 
@@ -216,6 +217,38 @@ Not checked yet on the new firmware: gestures with the phone locked or the app l
 background, the Mac link, EMG and motion streams, what the eleven new named settings are, and
 what Meta now offers a band on build 64.
 
+## Build 72 on 2026-11-17
+
+Run from "Update the band to build 72" on a band running build 64, battery 69% to 67%.
+
+- Meta offers build 72 to a band that says it runs build 64.
+- On build 64 the band offered 16384 bytes of memory where the factory firmware offered 8192.
+  The app still kept eight chunks in flight, and the rate rose to 62 to 70 KiB a second: the
+  firmware in 81 s and the model bundle in 105 s. Both starts were accepted with no version
+  check to skip, both items verified, and the install was answered `4={1=bytes(0) 2=1}`.
+- The band was reachable again 47 seconds after the link dropped.
+- It now offers schemes 27 and names 27. Bands in the public band-core project named 26. The
+  app had required the name to be 26 and refused the connection 28 times, harmlessly, until
+  it was changed. With the name only noted, the first way connected: the phone names 26 and
+  uses the rules known for 26, a key from the unhashed secret, the check under the record
+  key over `02 02 00 00` first, every record padded. So on this band 27 has 26's rules.
+- It reports firmware `213b0cca167f`, software `1075365371`, the same six models as build 64,
+  and two more it calls trial models: `cc_od_resetlstm_F1105975896_260701` and
+  `ia_od_F1068590897_260418`.
+- Trust, device information, the stream request and its answer `1=4 2=1 5={2=0 3=1 6=0 8=0}`,
+  the settings it sends on connecting and the wrist setting all went as on build 64. So the
+  channel bits, the padding and the split frames of the newer link are now met on hardware.
+
+The app no longer assumes one set of rules for newer firmware. `BandLink.ways` lists sixteen,
+the known one first, and `SessionCore` moves to the next after a failed handshake, two tries
+each. If the band sends a record that fails its check, every other way is tried on those
+same bytes and the one that reads them is used next. The way that works is kept in the
+app's settings. It is not tied to a firmware version, so a later firmware with other rules
+would need that setting cleared.
+
+Not checked yet on build 72: a gesture, a vibration, the named settings, the update status,
+the phone locked or the app long in the background, the Mac link, EMG and motion streams.
+
 ## The update from one tap
 
 "Update the band" on the band tests page runs the whole plan after one confirmation, which
@@ -380,7 +413,8 @@ this phone does not depend on that.
 1. Done: this document and the link work.
 2. Done on 2026-11-17: the update status and "Check with Meta" from the band tests page.
 3. Done on 2026-11-17: the key installed and a trial of build 72 passed.
-4. Done on 2026-11-17: the band runs build 64, installed from this app, and the checklist passed.
+4. Done on 2026-11-17: build 64 and then build 72 installed from this app. The checklist
+   passed on build 64 and has not been run on build 72.
 5. Settings and onboarding.
 
 Setting a band up now uses the sign-in that works (`MetaService.prepareWebLogin`), since a
