@@ -23,6 +23,12 @@ final class BandFirmwareTest: ObservableObject {
     /// The version an install was asked for, until the band is seen running it.
     @Published private(set) var awaiting: UInt64?
     @Published private(set) var verifying = false
+    /// The whole update from one tap is under way.
+    @Published private(set) var updating = false
+    private var ended: CheckedContinuation<FirmwareUpdate.Ending, Never>?
+    /// The build the one tap update installs, and the one it goes on to if the band will not
+    /// take the first one's models: the band reports holding that one's since a trial.
+    static let firstChoice = "1003366292", secondChoice = "1075365371"
     /// The key Meta wrapped for this band. It stays in memory.
     @Published private(set) var hasKey = false
     private var wrappedKey: Data? { didSet { hasKey = wrappedKey != nil } }
@@ -47,7 +53,7 @@ final class BandFirmwareTest: ObservableObject {
         guard let awaiting else { return }
         if identity.software == String(awaiting) {
             self.awaiting = nil
-            say("The band is back and says it runs \(identity.software), the new version. Run the checklist.")
+            say("The band is back and says it runs \(identity.software), the new version.")
         } else { say("The band is back and says it runs \(identity.software), not \(awaiting) yet.") }
     }
 
@@ -60,13 +66,20 @@ final class BandFirmwareTest: ObservableObject {
     /// version 1, which the public projects use to be offered a whole build. The sign-in is the
     /// one Meta's page finishes for this app today, unless the older one is asked for.
     func check(olderSignIn: Bool = false) {
+        guard !busy, band != nil else { return }
+        lines = []
+        task = Task { [weak self] in await self?.askMeta(older: olderSignIn) }
+    }
+
+    private var busy: Bool { checking || fetching || running || verifying || updating }
+
+    private func askMeta(older olderSignIn: Bool) async {
         let otherSignIn = !olderSignIn
-        guard !checking, !fetching, !running, let band else { return }
-        checking = true; lines = []
-        task = Task { [weak self] in
-            guard let self else { return }
+        guard !checking, let band else { return }
+        checking = true
+        do {
             let meta = MetaService(), service = FirmwareService()
-            defer { meta.close(); service.close(); self.checking = false; self.task = nil }
+            defer { meta.close(); service.close(); self.checking = false }
             do {
                 if self.session == nil {
                     let request = try await otherSignIn ? meta.prepareWebLogin() : meta.prepareLogin()
@@ -144,11 +157,16 @@ final class BandFirmwareTest: ObservableObject {
     /// Loads a package kept on this phone and checks it again. Nothing is asked of Meta, so
     /// the band's key is not in memory afterwards, and a band that lacks it is told nothing.
     func use(_ kept: Kept) {
-        guard !checking, !fetching, !running else { return }
+        guard !busy else { return }
+        task = Task { [weak self] in _ = await self?.loadKept(kept) }
+    }
+
+    @discardableResult
+    private func loadKept(_ kept: Kept) async -> Bool {
+        guard !fetching else { return false }
         fetching = true
-        task = Task { [weak self] in
-            guard let self else { return }
-            defer { self.fetching = false; self.task = nil }
+        do {
+            defer { self.fetching = false }
             do {
                 let file = try self.folder().appendingPathComponent("\(kept.target).zip")
                 let package = try await Task.detached { () throws -> FirmwarePackage in
@@ -160,8 +178,9 @@ final class BandFirmwareTest: ObservableObject {
                 self.package = package; self.wrappedKey = nil
                 self.packageName = kept.build.map { "build \($0)" } ?? "version \(package.version)"
                 self.say("Package checked from this phone: \(self.packageName), \(package.summary).")
-                self.say("The band's key is not in memory. A trial works if the band already has key \(package.keyNumber).")
-            } catch { self.say("Could not use the kept package: \(self.reason(error)).") }
+                self.say("The band's key is not in memory. That is fine if the band already has key \(package.keyNumber).")
+                return true
+            } catch { self.say("Could not use the kept package: \(self.reason(error))."); return false }
         }
     }
 
@@ -198,12 +217,17 @@ final class BandFirmwareTest: ObservableObject {
     /// Gets one offered package onto this phone, checks every item in it, and asks Meta for
     /// the key the band needs to read it. Nothing is sent to the band.
     func fetch(_ offer: FirmwareOffer) {
-        guard !checking, !fetching, !running, let band else { return }
+        guard !busy, band != nil else { return }
+        task = Task { [weak self] in _ = await self?.loadOffer(offer) }
+    }
+
+    @discardableResult
+    private func loadOffer(_ offer: FirmwareOffer) async -> Bool {
+        guard !fetching, let band else { return false }
         fetching = true
-        task = Task { [weak self] in
-            guard let self else { return }
+        do {
             let service = FirmwareService()
-            defer { service.close(); self.fetching = false; self.task = nil }
+            defer { service.close(); self.fetching = false }
             do {
                 let zip = try await self.bytes(of: offer, service)
                 let package = try await Task.detached { try FirmwarePackage.read(zip) }.value
@@ -213,7 +237,7 @@ final class BandFirmwareTest: ObservableObject {
                 self.say("Package checked: \(self.packageName), \(package.summary).")
                 guard let token = self.session?.accessToken else {
                     self.say("Not signed in, so the band's key was not asked for. Check with Meta, then get the package again.")
-                    return
+                    return true
                 }
                 for host in FirmwareService.hosts {
                     for asMetaApp in [false, true] {
@@ -221,14 +245,16 @@ final class BandFirmwareTest: ObservableObject {
                         if let key = answer.key {
                             self.wrappedKey = key
                             self.say("Key \(package.keyNumber) for this band: received, \(key.count) bytes, still wrapped.")
-                            return
+                            return true
                         }
                         if answer.status == 401 || answer.status == 403 { self.forgetSignIn() }
                         self.say("Key \(package.keyNumber) from \(host.prefix(while: { $0 != "." }))\(asMetaApp ? ", asked as the Meta app" : ""): not given (HTTP \(answer.status)).")
                     }
                 }
+                return true
             } catch {
                 if !Task.isCancelled { self.say("Could not get the package: \(self.reason(error)).") }
+                return false
             }
         }
     }
@@ -236,20 +262,86 @@ final class BandFirmwareTest: ObservableObject {
     /// Sends a key install, a trial transfer, a discard or an install to the band. The band
     /// must be connected and charged past the floor, and the page asks the person first.
     func start(_ mode: FirmwareUpdate.Mode) {
-        guard !checking, !fetching, !running, !verifying else { return }
-        let controller = SessionController.shared
-        guard controller.snapshot.state == .streaming else { return say("Not started: the band is not connected.") }
-        guard let level = controller.snapshot.battery else { return say("Not started: the band's battery level is not known yet.") }
-        guard level >= Self.batteryFloor else { return say("Not started: the band's battery is at \(level)%. Charge it past \(Self.batteryFloor)%.") }
+        guard !busy else { return }
         let plan: FirmwareUpdate.Plan
         if mode == .cancel { plan = FirmwareUpdate.Plan(version: 0, items: [], keyNumber: 0, wrappedKey: nil, mode: .cancel) }
         else if let package { plan = package.plan(mode, wrappedKey: wrappedKey) }
         else { return }
+        task = Task { [weak self] in _ = await self?.send(plan) }
+    }
+
+    /// Runs one plan on the band and waits for it to end.
+    private func send(_ plan: FirmwareUpdate.Plan) async -> FirmwareUpdate.Ending {
+        let controller = SessionController.shared
+        guard !running else { return .failed }
+        guard controller.snapshot.state == .streaming else { say("Not started: the band is not connected."); return .failed }
+        guard let level = controller.snapshot.battery else { say("Not started: the band's battery level is not known yet."); return .failed }
+        guard level >= Self.batteryFloor else { say("Not started: the band's battery is at \(level)%. Charge it past \(Self.batteryFloor)%."); return .failed }
         running = true; progress = nil
         // The phone must not lock part way: iOS would stop the app between the band's pulses.
         UIApplication.shared.isIdleTimerDisabled = true
-        say(mode == .cancel ? "Band battery \(level)%." : "Band battery \(level)%. Using \(packageName).")
-        controller.startUpdate(plan)
+        say(plan.mode == .cancel ? "Band battery \(level)%." : "Band battery \(level)%. Using \(packageName).")
+        return await withCheckedContinuation { continuation in
+            ended = continuation
+            controller.startUpdate(plan)
+        }
+    }
+
+    /// Makes one build ready on this phone: the kept copy if there is one, or Meta's.
+    private func ready(_ target: String) async -> (package: FirmwarePackage, name: String, key: Data?)? {
+        findKept()
+        if let kept = kept.first(where: { $0.target == target }), await loadKept(kept), let package { return (package, packageName, wrappedKey) }
+        if !offers.contains(where: { $0.target == target }) { await askMeta(older: false) }
+        guard let offer = offers.first(where: { $0.target == target }), await loadOffer(offer), let package else { return nil }
+        return (package, packageName, wrappedKey)
+    }
+
+    /// The whole update from one tap, after the page has asked once: both builds made ready,
+    /// the first installed, the second if the band will not take the first one's models, the
+    /// wait for the band to restart, and the checklist. It stops at the first thing that is
+    /// not as expected, and before the install is asked for that always leaves the band as it was.
+    func updateBand() {
+        guard !busy, band != nil else { return }
+        updating = true; lines = []
+        task = Task { [weak self] in
+            guard let self else { return }
+            defer { self.updating = false }
+            await self.update()
+        }
+    }
+
+    private func update() async {
+        let controller = SessionController.shared
+        say("Update: build 64 first. If the band will not take its models, build 72 as the Meta app would install it.")
+        guard let first = await ready(Self.firstChoice) else {
+            return say("Update: stopped. Build 64 could not be made ready, and nothing was sent to the band.")
+        }
+        // The second build is made ready before anything is sent, so a refusal can be followed at once.
+        let second = await ready(Self.secondChoice)
+        if second == nil { say("Update: build 72 could not be made ready, so there is nothing to go on to if build 64 is refused.") }
+        package = first.package; packageName = first.name; wrappedKey = first.key
+        var ending = await send(first.package.plan(.install, wrappedKey: first.key))
+        if ending == .modelRefused, let second {
+            say("Update: the band will not take \(first.name)'s models. Going on with \(second.name), whose models it reports holding.")
+            try? await Task.sleep(for: .seconds(3))
+            package = second.package; packageName = second.name; wrappedKey = second.key
+            var plan = second.package.plan(.install, wrappedKey: second.key)
+            plan.trustsHeldModel = true
+            ending = await send(plan)
+        }
+        guard ending == .installing else {
+            return say("Update: stopped before the install was asked for. Nothing was installed, and the band runs what it ran before.")
+        }
+        let back = await wait(900) { self.awaiting == nil && controller.snapshot.state == .streaming ? true : nil }
+        if back == nil {
+            say(controller.snapshot.state == .streaming
+                ? "Update: the band is connected and says it runs \(band?.software ?? "an unknown version"), not the new one."
+                : "Update: the band has not connected again in 15 minutes. The journal's connection and protocol lines say how far it gets.")
+        }
+        guard controller.snapshot.state == .streaming else { return }
+        try? await Task.sleep(for: .seconds(3))
+        await checklist()
+        say("Update: finished. The lines above are the band's answers on the firmware it runs now.")
     }
 
     /// Removes the kept Meta sign-in from this phone.
@@ -263,20 +355,26 @@ final class BandFirmwareTest: ObservableObject {
         guard let ending else { return }
         running = false
         UIApplication.shared.isIdleTimerDisabled = false
-        guard ending == .installing, let package else { return }
-        awaiting = package.version
-        say("Waiting for the band to restart and connect again. Keep the app open. This can take a few minutes.")
+        if ending == .installing, let package {
+            awaiting = package.version
+            say("Waiting for the band to restart and connect again. Keep the app open. This can take a few minutes.")
+        }
+        ended?.resume(returning: ending); ended = nil
     }
 
     /// Asks the band the things the app relies on and writes down each answer: its version,
     /// its update status, the wrist setting, a vibration, the named settings and a gesture.
     /// It is the same before an update and after one, so the two can be compared.
     func runChecklist() {
-        guard !checking, !fetching, !running, !verifying else { return }
+        guard !busy else { return }
+        task = Task { [weak self] in await self?.checklist() }
+    }
+
+    private func checklist() async {
+        guard !verifying else { return }
         verifying = true
-        task = Task { [weak self] in
-            guard let self else { return }
-            defer { self.verifying = false; self.task = nil }
+        do {
+            defer { self.verifying = false }
             let controller = SessionController.shared
             @MainActor func note(_ line: String) { self.say("Checklist: \(line)") }
             guard controller.snapshot.state == .streaming else {
@@ -324,12 +422,16 @@ struct BandFirmwarePanel: View {
     @ObservedObject private var test = BandFirmwareTest.shared
     @ObservedObject private var controller = SessionController.shared
     @State private var asking: FirmwareUpdate.Mode?
+    @State private var confirmUpdate = false
 
-    private var busy: Bool { test.checking || test.fetching || test.running || test.verifying }
+    private var busy: Bool { test.checking || test.fetching || test.running || test.verifying || test.updating }
     private var connected: Bool { controller.snapshot.state == .streaming }
 
     var body: some View {
         PanelGroup("Firmware update", caption: "Asks Meta which firmware it offers this band, on Meta's own sign-in page, and gets a package onto this phone. The key, trial and install rows send to the band and ask first. A trial ends with the band discarding everything. An install cannot be undone.") {
+            ActionRow(test.updating ? "Updating the band…" : "Update the band") { confirmUpdate = true }
+                .disabled(busy || !connected || !test.knowsBand)
+            Rule()
             ActionRow(test.checking ? "Asking Meta…" : "Check with Meta") { test.check() }
                 .disabled(busy || !test.knowsBand)
             Rule()
@@ -392,6 +494,12 @@ struct BandFirmwarePanel: View {
                     .navigationTitle("Meta sign-in").navigationBarTitleDisplayMode(.inline)
                     .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: test.cancelSignIn) } }
             }
+        }
+        .confirmationDialog("Update the band? This cannot be undone.", isPresented: $confirmUpdate, titleVisibility: .visible) {
+            Button("Update, this cannot be undone", role: .destructive) { test.updateBand() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Runes installs build 64. If the band will not take that build's models, it installs build 72 with the models the band already holds, as the Meta app would, and only if the band confirms them. The band restarts into the new firmware and can never go back to the old one. Other apps that talk to the band directly may stop working with it. Its battery must be at \(BandFirmwareTest.batteryFloor)% or more. Keep this screen open. It takes 10 to 20 minutes, then Runes checks the band by itself.")
         }
         .confirmationDialog(question, isPresented: Binding(get: { asking != nil }, set: { if !$0 { asking = nil } }), titleVisibility: .visible, presenting: asking) { mode in
             Button(button(mode), role: mode == .key || mode == .install ? .destructive : nil) { test.start(mode) }

@@ -24,6 +24,10 @@ final class PretendBand {
     var unavailable: UInt64?
     /// Whether a start that says to skip the version check is let past it.
     var honoursSkip = true
+    /// A model bundle left whole by an earlier trial, which the band will verify without being sent it again.
+    var heldModel: Data?
+    /// How it answers a verify of a model bundle it was not sent in this update.
+    var refuseHeld: UInt64?
     /// Chunks at these offsets are lost on the way this many times.
     var lose: [Int: Int] = [:]
     var nackAt: Int?
@@ -114,6 +118,12 @@ final class PretendBand {
             if let raw = try? request.bytes(3) {
                 let about = try! Fields(Fields(raw).bytes(1)), kind = try! about.integer(1, default: 0)
                 seen.append("verify \(kind)")
+                // A model bundle that was not started in this update: the one it holds, if it is whole.
+                if kind == 2, item?.kind != 2 {
+                    let code = refuseHeld ?? (heldModel != nil && state != 1 ? 0 : 205)
+                    if code == 0 { verified[2] = heldModel; verifiedIn[2] = connection; state = 3 }
+                    return reply(id, 8, PB.field(3, result(code)))
+                }
                 var whole = Data()
                 while let part = parts[whole.count] { whole.append(part) }
                 let good = item?.kind == kind && whole.count == item?.size && Data(Insecure.MD5.hash(data: whole)) == md5
@@ -152,12 +162,12 @@ struct FirmwareUpdateTests {
     static let firmware = Data((0..<20_000).map { UInt8(truncatingIfNeeded: $0 &* 7 &+ $0 >> 8) })
     static let model = Data((0..<12_345).map { UInt8(truncatingIfNeeded: $0 &* 3) })
 
-    static func plan(_ mode: FirmwareUpdate.Mode, key: Data? = Data(repeating: 9, count: 32), model: Data? = model, forces: Bool? = nil) -> FirmwareUpdate.Plan {
+    static func plan(_ mode: FirmwareUpdate.Mode, key: Data? = Data(repeating: 9, count: 32), model: Data? = model, forces: Bool? = nil, trusts: Bool = false) -> FirmwareUpdate.Plan {
         func item(_ kind: UInt64, _ name: String, _ data: Data) -> FirmwareUpdate.Item {
             FirmwareUpdate.Item(kind: kind, name: name, data: data, md5: Data(Insecure.MD5.hash(data: data)))
         }
         return FirmwareUpdate.Plan(version: 1003366292, items: [item(0, "firmware", firmware)] + (model.map { [item(2, "model bundle", $0)] } ?? []),
-                                   keyNumber: 20, wrappedKey: key, mode: mode, forcesRefusedModel: forces ?? (mode == .trial || mode == .install))
+                                   keyNumber: 20, wrappedKey: key, mode: mode, forcesRefusedModel: forces ?? (mode == .trial || mode == .install), trustsHeldModel: trusts)
     }
 
     /// Carries requests to the band and answers back until the update ends, the clock moving on
@@ -451,6 +461,35 @@ struct FirmwareUpdateTests {
             let (job, lines) = begin(.install, band)
             precondition(job.done && !job.committed && !band.installed && band.state == 1, lines.joined(separator: "\n"))
             precondition(band.seen.suffix(3) == ["start 2", "start 2 skipping the version check", "discard"] && !band.seen.contains("install"))
+            precondition(job.ending == .modelRefused, "the page is told why, so it can go on to the build the band holds models for")
+        }
+        // The Meta app's way: the band reports this package's model bundle already, so only the
+        // firmware is sent, the band is asked to verify the bundle it holds, and then it installs.
+        do {
+            let band = PretendBand(); band.allowsInstall = true; band.key = 20; band.model = 1003366292; band.heldModel = model
+            let job = FirmwareUpdate(plan(.install, trusts: true))
+            var ids: UInt64 = 10, clock = 0.0
+            let lines = run(job, band, ids: &ids, clock: &clock, queue: job.begin(ids: &ids, now: clock))
+            precondition(job.succeeded && band.installed, lines.joined(separator: "\n"))
+            precondition(band.seen == ["status", "start 0", "setup 1", "verify 0", "verify 2", "install"], "\(band.seen)")
+            precondition(band.chunks == 22 && lines.contains("The band reports this model bundle already, so it is not sent. Asking the band to verify the one it holds."))
+        }
+        // The band does not confirm the bundle it holds: nothing is installed, and it is told to discard.
+        for code: UInt64 in [205, 300] {
+            let band = PretendBand(); band.allowsInstall = true; band.key = 20; band.model = 1003366292; band.refuseHeld = code
+            let job = FirmwareUpdate(plan(.install, trusts: true))
+            var ids: UInt64 = 10, clock = 0.0
+            run(job, band, ids: &ids, clock: &clock, queue: job.begin(ids: &ids, now: clock))
+            precondition(job.done && !job.committed && !band.installed && band.state == 1 && band.seen.suffix(2) == ["verify 2", "discard"], "\(band.seen)")
+            precondition(job.ending == .failed)
+        }
+        // The band reports another version than the package's: the bundle is sent as usual.
+        do {
+            let band = PretendBand(); band.allowsInstall = true; band.key = 20; band.model = 5
+            let job = FirmwareUpdate(plan(.install, trusts: true))
+            var ids: UInt64 = 10, clock = 0.0
+            run(job, band, ids: &ids, clock: &clock, queue: job.begin(ids: &ids, now: clock))
+            precondition(job.succeeded && band.seen.contains("start 2") && band.chunks == 22 + 13)
         }
         // A plan that does not ask for it stops at the first refusal, as the install on the band did.
         do {

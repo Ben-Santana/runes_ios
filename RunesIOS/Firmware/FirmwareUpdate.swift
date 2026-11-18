@@ -78,6 +78,10 @@ final class FirmwareUpdate {
         /// sent it. The switch is in the band's own messages and no source has tried it. The
         /// firmware itself is never asked for this way.
         var forcesRefusedModel = false
+        /// Whether a model bundle the band already reports at this package's version is left
+        /// unsent, as the Meta app leaves it. The band is asked to verify the bundle it holds,
+        /// and nothing is installed unless it does.
+        var trustsHeldModel = false
     }
     struct Progress: Equatable {
         let name: String
@@ -121,6 +125,9 @@ final class FirmwareUpdate {
     private var stopped = false, failed = false, away = false
     /// The current item's start is being asked for again with the version check skipped.
     private var forcing = false
+    /// The band reports this package's model bundle already, and is asked to verify it unsent.
+    private var heldModel = false
+    private var modelRefused = false
     private var losses = 0
     private var log: [String] = []
     private(set) var done = false
@@ -132,8 +139,12 @@ final class FirmwareUpdate {
 
     /// How a run ended. An install that was asked for counts as installing even with no answer,
     /// since the band may already be restarting.
-    enum Ending: Equatable { case passed, failed, installing }
-    var ending: Ending? { !done ? nil : committed ? .installing : succeeded ? .passed : .failed }
+    enum Ending: Equatable {
+        case passed, failed, installing
+        /// It failed because the band would not take the model bundle, and nothing was installed.
+        case modelRefused
+    }
+    var ending: Ending? { !done ? nil : committed ? .installing : succeeded ? .passed : modelRefused ? .modelRefused : .failed }
 
     init(_ plan: Plan) { self.plan = plan }
 
@@ -313,6 +324,7 @@ final class FirmwareUpdate {
                     forcing = true
                     return [ask(.start, &ids, now)]
                 }
+                if result == 202, items[item].kind == 2 { modelRefused = true }
                 return fail("the band refused to start the \(items[item].name): \(Self.resultName(result))", &ids, now)
             }
             say("The band accepted the start of the \(items[item].name)\(forcing ? ", with the version check skipped" : "").")
@@ -427,11 +439,17 @@ final class FirmwareUpdate {
                 } else { items.append(candidate) }
             }
         }
+        heldModel = plan.trustsHeldModel && status.model == plan.version
         return nextItem(&ids, now)
     }
 
     private func nextItem(_ ids: inout UInt64, _ now: TimeInterval) -> [Data] {
         guard item >= items.count else {
+            if heldModel, items[item].kind == 2 {
+                say("The band reports this \(items[item].name) already, so it is not sent. Asking the band to verify the one it holds.")
+                touched = true
+                return [ask(.verify, &ids, now)]
+            }
             say("Starting the \(items[item].name), \(items[item].data.count) bytes.")
             return [ask(.start, &ids, now)]
         }

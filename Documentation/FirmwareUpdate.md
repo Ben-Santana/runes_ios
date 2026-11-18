@@ -191,6 +191,25 @@ What this shows and does not:
   refuses again, the run ends with a discard. It never goes on with the firmware alone: that
   choice is left to the owner. The firmware itself is never asked for with the switch.
 
+## The update from one tap
+
+"Update the band" on the band tests page runs the whole plan after one confirmation, which
+says it cannot be undone:
+
+1. Build 64 and build 72 are made ready on the phone, from the kept copies or from Meta.
+2. Build 64 is installed. If the band refuses its model bundle as older, the bundle is asked
+   for once more with the version check skipped.
+3. If the band refuses that too, nothing of build 64 is kept, and build 72 is installed the
+   way band-core describes the Meta app doing it: the firmware is sent and verified, the model
+   bundle the band reports holding is not sent, the band is asked to verify the bundle it
+   holds, and only if it does is it told to install. That last verify is this app's own
+   addition, so that nothing is installed on the band's report of a version alone.
+4. Any other failure stops with the band told to discard, and nothing installed.
+5. Once an install is asked for, the app waits up to 15 minutes for the band to connect on
+   the new version, then runs the checklist.
+
+Build 64 comes first because it is the newest firmware a public project has connected to.
+
 ## The update engine
 
 `FirmwareUpdate` writes the requests and reads the answers, and `SessionCore` carries them on
