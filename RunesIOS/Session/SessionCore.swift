@@ -42,6 +42,15 @@ final class SessionCore: @unchecked Sendable {
     var onDeviceReply: ((Data) -> Void)?
     /// What a band test heard back, as a line for the tests page.
     var onTrial: ((String) -> Void)?
+    /// The band's handwriting as it is read: whether it is on, the text so far, and how many
+    /// rows of scores have arrived. The text is what the person wrote, so it is never journalled.
+    var onWriting: ((Bool, String, Int) -> Void)?
+    private var writingWanted = false, activeWriting = false
+    private var pendingWriting: Bool?
+    private var writing = BandWriting.Decoder()
+    private var writingMessages = 0
+    /// The band's standby time as it last reported it, to put back after handwriting turned it off.
+    private var standby: UInt64?
     /// What a firmware update wrote, how far its current item is, and once it has ended, how it went.
     var onUpdate: (([String], FirmwareUpdate.Progress?, FirmwareUpdate.Ending?) -> Void)?
     private var update: FirmwareUpdate?
@@ -417,7 +426,7 @@ final class SessionCore: @unchecked Sendable {
         do { try reconcileStreams() } catch { fail(error) }
     }
 
-    private func resetEMG() { emgReady = false; emgReading = false; activeEMG = false; pendingEMG = nil }
+    private func resetEMG() { emgReady = false; emgReading = false; activeEMG = false; pendingEMG = nil; activeWriting = false; pendingWriting = nil }
     private func emgStatus(_ text: String) { record("emg", text); onEMGStatus?(text) }
 
     private func reconcileStreams() throws {
@@ -437,13 +446,16 @@ final class SessionCore: @unchecked Sendable {
         // started for this phone's combos never reach the Mac.
         let requested = RelayWire.Demand(active: true, gyro: !quiet && ((relayDemand.active && relayDemand.gyro) || localMotion),
                                          orientation: !quiet && ((relayDemand.active && relayDemand.orientation) || localMotion))
-        if activeStreams == requested, activeEMG == wantEMG {
+        let wantWriting = writingWanted && !quiet
+        if activeStreams == requested, activeEMG == wantEMG, activeWriting == wantWriting {
             onRelayReady?(relayDemand)
             return
         }
         onRelayReady?(nil)
-        try rpc("start_streams", 5, 4, BandProtocol.streamFlags(gyro: requested.gyro, orientation: requested.orientation, emg: wantEMG))
-        pendingStreams = requested; pendingEMG = wantEMG
+        // The model's scores are named only once handwriting has been asked for, on or off.
+        try rpc("start_streams", 5, 4, BandProtocol.streamFlags(gyro: requested.gyro, orientation: requested.orientation, emg: wantEMG,
+                                                                 inference: wantWriting || activeWriting ? wantWriting : nil))
+        pendingStreams = requested; pendingEMG = wantEMG; pendingWriting = wantWriting
     }
 
     /// Limit automatic reads; an explicit wrist change can retry.
@@ -856,6 +868,7 @@ final class SessionCore: @unchecked Sendable {
                 let emgOn = pendingEMG ?? false
                 if emgOn != activeEMG { emgStatus(emgOn ? "EMG streaming." : "EMG stopped.") }
                 activeEMG = emgOn; pendingEMG = nil
+                activeWriting = pendingWriting ?? false; pendingWriting = nil
                 if stoppingUntil != nil {
                     try rpc("stop_streams", 5, 4, BandProtocol.stopFlags)
                 } else {
@@ -877,6 +890,10 @@ final class SessionCore: @unchecked Sendable {
                 // One line for the first answer; a line per gesture would bury the journal.
                 if !acknowledgementNoted { acknowledgementNoted = true; trial("acknowledge: \(answer(payload))") }
             case "try_pattern", "try_stop": trial("\(operation.dropFirst(4)): \(answer(payload))")
+            case "try_writing":
+                record("band_writing", "The band's answer to the \(writingWanted ? "handwriting" : "usual") state: \(answer(payload)).")
+                if !writingWanted, !payload.isEmpty { UserDefaults.standard.removeObject(forKey: "bandStandbyToRestore") }
+                try reconcileStreams()
             case "try_firmware":
                 // The whole answer as numbers: update state, device state, and each item's kind and version.
                 let numbers = (try? Fields(payload)).map { BandSettings.describe($0, depth: 0) } ?? "unreadable"
@@ -890,6 +907,8 @@ final class SessionCore: @unchecked Sendable {
                 if snapshot.handSetting.wrote() { try rpc("read_hand", 6, 5) }
             case "read_hand":
                 if let haptics = BandSettings.haptics(payload) { heard(haptics: haptics) }
+                standby = BandWriting.standby(payload) ?? standby
+                settleWriting()
                 if let settings = BandSettings.describe(payload), settings != lastSettings {
                     lastSettings = settings
                     record("band_settings", settings); onSettings?(settings)
@@ -930,6 +949,14 @@ final class SessionCore: @unchecked Sendable {
             pulseSentAt = nil; patternInFlight = nil
             feedbackInFlight = nil
             sendPendingHand(); sendNextPulse(); publish()
+        case .inference(let scores, let pipeline):
+            guard writingWanted else { return }
+            writingMessages += 1
+            if writingMessages == 1 { record("band_writing", "Scores are arriving: \(scores.count) in a message, pipeline \(pipeline).") }
+            guard !scores.isEmpty, scores.count % BandWriting.symbols == 0 else { return }
+            let before = writing.symbols.count
+            for start in stride(from: 0, to: scores.count, by: BandWriting.symbols) { writing.push(Array(scores[start..<(start + BandWriting.symbols)])) }
+            if writing.symbols.count != before || writingMessages % 50 == 0 { onWriting?(true, writing.text, writing.rows) }
         case .other(let kind, let channel, let payload):
             if let update, let proto, kind == 0x02000315, BandLink.route(channel) == BandTrial.channel {
                 sendUpdate(update.receive(payload, ids: &proto.requestNumber, now: updateTime()))
@@ -1165,6 +1192,43 @@ final class SessionCore: @unchecked Sendable {
         catch { fail(error) }
         sendNextPulse()
         if let update, let proto, snapshot.state == .streaming { sendUpdate(update.tick(ids: &proto.requestNumber, now: updateTime())) }
+    }
+
+    /// Puts the band in its handwriting state, where its own model reads what the hand writes,
+    /// or back in its usual state. Turning it on turns the band's standby off, as the Meta app
+    /// does, and turning it off puts the band's own standby time back.
+    func setHandwriting(_ on: Bool) {
+        guard writingWanted != on else { return }
+        guard snapshot.state == .streaming, update == nil, tightnessSince == nil else {
+            record("band_writing", "Not changed: the band is busy or not connected."); onWriting?(writingWanted, writing.text, writing.rows); return
+        }
+        if on, let standby, standby != 0 { UserDefaults.standard.set(Int(standby), forKey: "bandStandbyToRestore") }
+        let kept = UInt64(max(0, UserDefaults.standard.integer(forKey: "bandStandbyToRestore")))
+        do {
+            try rpc("try_writing", 6, 5, BandWriting.state(on: on, standby: kept == 0 ? nil : kept))
+            writingWanted = on
+            if on { writing = BandWriting.Decoder(); writingMessages = 0 }
+            record("band_writing", on ? "Asked for the handwriting state, standby off." : "Asked for the usual state\(kept == 0 ? "" : ", standby back to \(kept) s").")
+            onWriting?(on, writing.text, writing.rows)
+        } catch {
+            record("band_writing", "Not changed: the band is answering something else. Try again.")
+            onWriting?(writingWanted, writing.text, writing.rows)
+        }
+    }
+
+    /// After the band's settings are read on connecting: handwriting that was on is asked for
+    /// again, since a new connection starts in the usual state, and a standby time that
+    /// handwriting turned off and never put back is put back.
+    private func settleWriting() {
+        guard snapshot.state == .streaming, update == nil else { return }
+        if writingWanted, !activeWriting, pendingWriting != true {
+            writingWanted = false
+            setHandwriting(true)
+        } else if !writingWanted, standby == 0 {
+            let kept = UInt64(max(0, UserDefaults.standard.integer(forKey: "bandStandbyToRestore")))
+            guard kept != 0 else { return }
+            do { try rpc("try_writing", 6, 5, BandWriting.state(on: false, standby: kept)); record("band_writing", "Standby put back to \(kept) s.") } catch {}
+        }
     }
 
     /// Starts a key install, a trial transfer, a discard or an install on the band. Vibration,

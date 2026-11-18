@@ -249,6 +249,27 @@ would need that setting cleared.
 Not checked yet on build 72: a gesture, a vibration, the named settings, the update status,
 the phone locked or the app long in the background, the Mac link, EMG and motion streams.
 
+## Handwriting on the band
+
+Built on 2026-11-17 from the public band-core project's description, not yet run on a band.
+The band has carried a handwriting model, `hw_t59_f1076659698_260503`, since build 64.
+
+- On: a settings write on channel 6, `6=4 13=0 21=0`, the handwriting state with standby off
+  as the Meta app sets it, then the stream request with field 4 on. Off: `6=2` with the
+  band's own standby time put back in field 21, and field 4 off. The standby time is read
+  from the settings the band reports on connecting and kept until it has been put back, so
+  an app that is closed part way still restores it on the next connection.
+- The band then sends messages of type `0200020c`: little endian scores in field 3, a
+  hundred to a row, one per symbol, the last being a blank. `BandWriting` reads them as the
+  Meta app does: the best of each row with the blank handicapped by ln 0.2, repeats merged,
+  each symbol judged on its surest row.
+- `SessionCore.setHandwriting` and `onWriting` are the way in. The band tests page has a
+  "Handwriting" section. What is read is the person's writing and is never journalled; the
+  journal's `band_writing` lines hold the band's answers and counts only.
+
+Not known until it is run: whether this band takes the state on build 72, whether its usual
+gestures stop meanwhile, and how well it reads.
+
 ## The update from one tap
 
 "Update the band" on the band tests page runs the whole plan after one confirmation, which

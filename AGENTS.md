@@ -92,7 +92,9 @@ of wireless deployment. Do not uninstall the app to repair an ordinary update.
 - `Tests/BandLinkTests.swift` runs whole connections against a pretend band on early and
   late firmware, with public vectors for both. Run it and the connection diagnostics after any
   change to `Protocol/` or `Transport/`. Checks that compile `BandCrypto.swift` also need
-  `BandLink.swift`, and those that compile `BandProtocol.swift` also need `BandStreams.swift`.
+  `BandLink.swift`, and those that compile `BandProtocol.swift` also need `BandStreams.swift`
+  and `BandWriting.swift`. `Tests/BandWritingTests.swift` checks how the band's own
+  handwriting is read.
   `Tests/BandLinkTests.swift` also compiles `Firmware/FirmwareUpdate.swift`. The update engine,
   the package reader and Meta's answers have their own checks: `FirmwareUpdateTests.swift`,
   `FirmwarePackageTests.swift` and `FirmwareOfferTests.swift`. Run them after any change in

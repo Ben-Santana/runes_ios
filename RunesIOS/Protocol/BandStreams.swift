@@ -7,7 +7,7 @@ import Foundation
 enum BandStreams {
     /// The kinds of gesture message a version 2 band can send.
     static let gestureKinds: [UInt64] = Array(60...70) + Array(100...109) + Array(150...156) + [200]
-    private static let gyroKind: UInt64 = 15, orientationKind: UInt64 = 18
+    private static let gyroKind: UInt64 = 15, orientationKind: UInt64 = 18, inferenceKind: UInt64 = 12
 
     /// The protocol version in a device information reply. A band that leaves it out is version 1.
     static func version(from reply: Data) -> UInt64 {
@@ -23,6 +23,7 @@ enum BandStreams {
         for kind in gestureKinds { request += PB.field(36, PB.field(1, kind) + PB.field(2, on(3))) }
         request += PB.field(36, PB.field(1, gyroKind) + PB.field(2, on(6)))
         request += PB.field(36, PB.field(1, orientationKind) + PB.field(2, on(8)))
+        if wanted.values[4] != nil { request += PB.field(36, PB.field(1, inferenceKind) + PB.field(2, on(4))) }
         return request + PB.field(37, Data("GenericC50".utf8))
     }
 

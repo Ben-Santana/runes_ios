@@ -1,6 +1,6 @@
 // Offline checks that the app speaks the band's link on both firmware generations: public test
 // vectors, the frame reader, and whole sessions against a pretend band. No Bluetooth, Keychain or network.
-// swiftc -module-cache-path /private/tmp/runes-swift-module-cache RunesIOS/Session/Models.swift RunesIOS/Session/BandStatus.swift RunesIOS/Protocol/Wire.swift RunesIOS/Protocol/BandCrypto.swift RunesIOS/Protocol/BandLink.swift RunesIOS/Protocol/BandStreams.swift RunesIOS/Protocol/BandProtocol.swift RunesIOS/Protocol/EMG.swift RunesIOS/Authentication/OwnershipCeremony.swift RunesIOS/Persistence/IdentityStore.swift RunesIOS/Relay/RelayWire.swift RunesIOS/Firmware/FirmwareUpdate.swift Tests/BandLinkTests.swift -o /private/tmp/runes-band-link-tests && /private/tmp/runes-band-link-tests
+// swiftc -module-cache-path /private/tmp/runes-swift-module-cache RunesIOS/Session/Models.swift RunesIOS/Session/BandStatus.swift RunesIOS/Protocol/Wire.swift RunesIOS/Protocol/BandCrypto.swift RunesIOS/Protocol/BandLink.swift RunesIOS/Protocol/BandStreams.swift RunesIOS/Protocol/BandWriting.swift RunesIOS/Protocol/BandProtocol.swift RunesIOS/Protocol/EMG.swift RunesIOS/Authentication/OwnershipCeremony.swift RunesIOS/Persistence/IdentityStore.swift RunesIOS/Relay/RelayWire.swift RunesIOS/Firmware/FirmwareUpdate.swift Tests/BandLinkTests.swift -o /private/tmp/runes-band-link-tests && /private/tmp/runes-band-link-tests
 // The vectors, the padding cases and the recorded gestures come from the public band-core project. See THIRD_PARTY_NOTICES.md.
 import Foundation
 import CryptoKit
@@ -260,6 +260,7 @@ private final class Pair {
         case .emgUnavailable(let reason): return "emg unavailable \(reason)"
         case .handUnavailable(let reason): return "hand unavailable \(reason)"
         case .wristFeedback(let result): return "feedback \(result.rawValue)"
+        case .inference(let scores, let pipeline): return "inference \(scores.count) \(pipeline)"
         case .other(let kind, let channel, _): return "other \(String(kind, radix: 16)) \(channel)"
         }
     }
@@ -296,6 +297,7 @@ struct BandLinkTests {
         try enrollment()
         try refusals()
         try ways()
+        try writing()
         print("Band link checks passed.")
     }
 
@@ -723,6 +725,49 @@ struct BandLinkTests {
         let proof = caught { _ = try forged.deliver(Frame(channel: 0x8002, words: [0x02001001], payload: PB.field(2, bad))) }
         guard case .trust(.invalidBandProof) = proof else { preconditionFailure("A forged band proof must be refused") }
         print("Refusals passed: unknown schemes, a renamed scheme, wrong keys, a refused owner key and a forged band proof.")
+    }
+
+    /// The scores of the band's own model, asked for with the streams and read as they come.
+    static func writing() throws {
+        for late in [false, true] {
+            let pair = try Pair(late: late)
+            try pair.authenticate(after: pair.handshake())
+            try pair.ask("request_active", 6, 5, PB.field(6, 2), answer: PB.field(2, 1))
+            var row = Data()
+            for index in 0..<200 { withUnsafeBytes(of: Float(index % 100 == 7 ? 5 : 0).bitPattern.littleEndian) { row.append(contentsOf: $0) } }
+            let message = Frame(channel: 0x8005, words: [0x0200020c], payload: PB.field(1, 1) + PB.field(2, 2) + PB.field(3, row) + PB.field(10, 3))
+            // Without the scores asked for, the request is what it always was, and scores are not read.
+            let usual = BandProtocol.streamFlags(gyro: false, orientation: false)
+            precondition(usual == PB.field(2, 0) + PB.field(3, 1) + PB.field(6, 0) + PB.field(8, 0))
+            try pair.ask("start_streams", 5, 4, usual, answer: PB.field(2, 1) + PB.field(5, late ? PB.field(3, 1) : usual))
+            let before = pair.log.count
+            try pair.deliver(message)
+            precondition(pair.log.count == before)
+            // Asked for: field 4 is on, and two rows of a hundred arrive as two hundred scores.
+            let asked = BandProtocol.streamFlags(gyro: false, orientation: false, inference: true)
+            precondition(asked == PB.field(2, 0) + PB.field(3, 1) + PB.field(4, 1) + PB.field(6, 0) + PB.field(8, 0))
+            try pair.ask("start_streams", 5, 4, asked, answer: PB.field(2, 1) + PB.field(5, late ? PB.field(3, 1) + PB.field(4, 1) : asked))
+            try pair.deliver(message)
+            precondition(pair.log.last == "inference 200 3")
+            // A message that will not parse is skipped and the connection stays up.
+            try pair.deliver(Frame(channel: 0x8005, words: [], payload: Data([0xff, 0xff, 0xff])))
+            precondition(pair.host.stage == "ready" && pair.log.last == "inference 200 3")
+            // Stopped again: field 4 is off, and scores are no longer read.
+            try pair.ask("start_streams", 5, 4, BandProtocol.streamFlags(gyro: false, orientation: false, inference: false), answer: PB.field(2, 1) + PB.field(5, late ? PB.field(3, 1) : usual))
+            let after = pair.log.count
+            try pair.deliver(message)
+            precondition(pair.log.count == after)
+            // The handwriting state goes out as a setting, like the wrist.
+            try pair.ask("try_writing", 6, 5, BandWriting.state(on: true, standby: nil), answer: PB.field(2, 1))
+        }
+        // A version 2 band is asked for the scores by kind as well.
+        let listed = try Fields(BandStreams.request(BandProtocol.streamFlags(gyro: false, orientation: false, inference: true), version: 2))
+        let kinds = (listed.values[36] ?? []).compactMap { value -> UInt64? in
+            guard case .bytes(2, let raw) = value, let entry = try? Fields(raw), (try? entry.integer(2)) == 1 else { return nil }
+            return try? entry.integer(1)
+        }
+        precondition(kinds.contains(12) && !kinds.contains(15))
+        print("Writing passed: the model's scores asked for, read, skipped when malformed and stopped, on early and late firmware.")
     }
 
     /// Newer firmware that does not follow the one known set of rules. A band on build 72 named

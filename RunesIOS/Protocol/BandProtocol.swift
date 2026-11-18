@@ -13,6 +13,9 @@ final class BandProtocol {
         case emgUnavailable(String)
         case handUnavailable(String)
         case wristFeedback(WristFeedbackResult)
+        /// One message of scores from the band's own model: nine while it reads gestures, and
+        /// rows of a hundred in its handwriting state.
+        case inference(scores: [Float], pipeline: UInt64)
         /// A frame that no request or stream here accounts for. Passed on only while `watchesOther` is set.
         case other(kind: UInt32, channel: UInt16, payload: Data)
     }
@@ -52,7 +55,7 @@ final class BandProtocol {
     private let clear = DataXReceiver(), frames = DataXReceiver()
     private var types: [UInt16: UInt32] = [:], pending: [UInt16: Pending] = [:], opened: Set<UInt16> = []
     private var nextID: UInt64 = 0
-    private var hostTrusted = false, bandTrusted = false, endSent = false, gesturesEnabled = false, gyroEnabled = false, orientationEnabled = false, emgEnabled = false
+    private var hostTrusted = false, bandTrusted = false, endSent = false, gesturesEnabled = false, gyroEnabled = false, orientationEnabled = false, emgEnabled = false, inferenceEnabled = false
     private(set) var stage = "idle"
     private var deadline = TimeInterval.infinity
     var canSendWristFeedback: Bool { stage == "ready" && pending.isEmpty }
@@ -301,6 +304,7 @@ final class BandProtocol {
                 gyroEnabled = try wanted.integer(6) == 1
                 orientationEnabled = try wanted.integer(8) == 1
                 emgEnabled = try wanted.integer(2) == 1
+                inferenceEnabled = try wanted.integer(4, default: 0) == 1
             }
             return (Data(), [.reply(operation: p.operation, payload: packet.payload)])
         }
@@ -320,6 +324,11 @@ final class BandProtocol {
         if stage == "ready", emgEnabled, kind == 0x0200020a {
             let f = try Fields(packet.payload), bytes = try f.bytes(3, count: 256)
             return (Data(), [.emg(values: EMG.decode(bytes), sequence: try f.integer(1), timestamp: try f.integer(2))])
+        }
+        if stage == "ready", inferenceEnabled, kind == 0x0200020c {
+            // Sensor data that will not parse is skipped, not fatal.
+            guard let f = try? Fields(packet.payload), let raw = try? f.bytes(3) else { return (Data(), []) }
+            return (Data(), [.inference(scores: BandWriting.scores(raw), pipeline: (try? f.integer(10, default: 0)) ?? 0)])
         }
         if stage == "ready", watchesOther { return (Data(), [.other(kind: kind, channel: packet.channel, payload: packet.payload)]) }
         return (Data(), [])
@@ -356,8 +365,10 @@ final class BandProtocol {
         if pending[channel] != nil || [5, 6, 7].contains(channel) { throw BandError.wire("Band service closed (\(String(kind, radix: 16))).") }
         return (Data(), [])
     }
-    static func streamFlags(gyro: Bool, orientation: Bool, emg: Bool = false) -> Data {
-        PB.field(2, emg ? 1 : 0) + PB.field(3, 1) + PB.field(6, gyro ? 1 : 0) + PB.field(8, orientation ? 1 : 0)
+    /// `inference` asks for the scores of the band's own model, or stops them. Left out, the
+    /// request says nothing about them, as it always has.
+    static func streamFlags(gyro: Bool, orientation: Bool, emg: Bool = false, inference: Bool? = nil) -> Data {
+        PB.field(2, emg ? 1 : 0) + PB.field(3, 1) + (inference.map { PB.field(4, $0 ? 1 : 0) } ?? Data()) + PB.field(6, gyro ? 1 : 0) + PB.field(8, orientation ? 1 : 0)
     }
     static func gyro(_ bytes: Data) -> [Double] {
         (0..<3).map { index in

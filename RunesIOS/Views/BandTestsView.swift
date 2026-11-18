@@ -105,6 +105,7 @@ struct BandTestsScreen: View {
                         .disabled(!ready)
                 }
                 BandFirmwarePanel()
+                BandWritingPanel()
                 PanelGroup("Settings read on connecting", caption: "The band sends these when it connects.") {
                     lines(tests.settings ?? "Not read yet.")
                 }
