@@ -12,6 +12,22 @@ struct BandWritingTests {
     }
 
     static func main() throws {
+        // A named setting is written in the field before the one it was read in: a whole number
+        // read in 4 goes in 3, a yes or no read in 8 in 7, and a choice read in 11 in 10.
+        precondition(NamedSettings.write(id: 29, value: 2) == Data([0x1a, 0x08, 0x08, 29, 0x10, 0x01, 0x1a, 0x02, 0x08, 0x02]))
+        precondition(NamedSettings.write(id: 27, value: 1, kind: 8) == Data([0x1a, 0x08, 0x08, 27, 0x10, 0x01, 0x3a, 0x02, 0x08, 0x01]))
+        precondition(NamedSettings.write(id: 28, value: 5, kind: 11) == Data([0x1a, 0x08, 0x08, 28, 0x10, 0x01, 0x52, 0x02, 0x08, 0x05]))
+        // Turning a yes or no off writes the zero itself, so the band sees a value.
+        precondition(NamedSettings.write(id: 27, value: 0, kind: 8) == Data([0x1a, 0x08, 0x08, 27, 0x10, 0x01, 0x3a, 0x02, 0x08, 0x00]))
+        let described = PB.field(2, 1) + PB.field(NamedSettings.field, PB.field(2, PB.field(3, Data(BandWriting.model.utf8)) + PB.field(4, 28)))
+        var setting = NamedSettings.setting(from: described)!
+        precondition(setting.name == "data-collection-model" && !setting.writable)
+        let read = NamedSettings.value(of: 28, from: PB.field(2, 1) + PB.field(NamedSettings.field, PB.field(3, PB.field(1, 28) + PB.field(11, PB.field(1, 4)))))!
+        setting.kind = read.kind; setting.value = read.value
+        precondition(setting.writable && setting.kind == 11 && setting.value == 4 && BandWriting.collectionModel == 5)
+        let off = NamedSettings.value(of: 27, from: PB.field(2, 1) + PB.field(NamedSettings.field, PB.field(3, PB.field(1, 27) + PB.field(8, Data()))))!
+        precondition(off.kind == 8 && off.value == 0)
+
         // The symbols, in the order the band's model scores them.
         precondition(BandWriting.symbol(0) == "a" && BandWriting.symbol(25) == "z" && BandWriting.symbol(26) == "A" && BandWriting.symbol(52) == "0")
         precondition(BandWriting.symbol(62) == "!" && BandWriting.symbol(93) == "~" && BandWriting.symbol(87) == "^" && BandWriting.symbol(88) == "_")

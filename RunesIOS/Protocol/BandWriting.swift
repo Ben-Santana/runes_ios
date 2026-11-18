@@ -130,6 +130,13 @@ enum BandWriting {
         return PB.field(6, 2) + (standby.map { PB.field(21, $0) } ?? Data())
     }
 
+    /// Firmware that does not offer the handwriting state can still run its handwriting model:
+    /// these two named settings, as the public Mac app sets them, turn on the band's data
+    /// collection and point it at that model. The band keeps both, so they are put back after.
+    static let collection = "data-collection", model = "data-collection-model"
+    /// The choice of model the band names `handwriting_cc`.
+    static let collectionModel: UInt64 = 5
+
     /// The band's standby time in seconds, from the settings it reports.
     static func standby(_ payload: Data) -> UInt64? {
         guard let config = try? Fields(Fields(payload).bytes(6)) else { return nil }

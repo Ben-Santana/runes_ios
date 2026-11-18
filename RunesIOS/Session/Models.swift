@@ -459,16 +459,20 @@ enum NamedSettings {
         /// What else the band says about it: its title, what it is for, the names of its
         /// choices and of anything it takes when it is an action.
         var detail = ""
-        /// Whether a new value can be written: only whole numbers, and only once one has been read.
-        var writable: Bool { kind == 4 && value != nil }
+        /// Whether a new value can be written: a whole number, a yes or no, or a choice, and only once one has been read.
+        var writable: Bool { [4, 8, 11].contains(kind ?? 0) && value != nil }
     }
 
     static func count() -> Data { PB.field(1, PB.field(1, list)) }
     /// Places run from 1. The Mac app notes that asking for place 0 can close the band's connection.
     static func describe(index: UInt64) -> Data { PB.field(2, PB.field(1, list) + PB.field(2, max(1, index))) }
     static func read(id: UInt64) -> Data { PB.field(3, PB.field(1, id) + PB.field(2, 0)) }
-    /// Writes a whole number. A value read in field 4 is written in field 3.
-    static func write(id: UInt64, value: UInt64) -> Data { PB.field(3, PB.field(1, id) + PB.field(2, 1) + PB.field(3, PB.field(1, value))) }
+    /// Writes a single value. `kind` is the field it was read in, and each kind is written in
+    /// the field before that: a whole number read in 4 goes in 3, a yes or no read in 8 in 7,
+    /// and a choice read in 11 in 10.
+    static func write(id: UInt64, value: UInt64, kind: Int = 4) -> Data {
+        PB.field(3, PB.field(1, id) + PB.field(2, 1) + PB.field(kind - 1, PB.field(1, value)))
+    }
 
     /// How many settings the band holds, from the answer to `count`. Nil for no answer, a refusal or a count that cannot be right.
     static func count(from reply: Data) -> UInt64? {

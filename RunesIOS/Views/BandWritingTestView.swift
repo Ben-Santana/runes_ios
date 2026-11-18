@@ -22,7 +22,7 @@ struct BandWritingPanel: View {
     @ObservedObject private var controller = SessionController.shared
 
     var body: some View {
-        PanelGroup("Handwriting", caption: "Puts the band in its handwriting state, where its own model reads letters you draw with your hand as if holding a pen. While it is on the band does not go to standby, and its usual gestures may stop. Stopping puts the band back as it was.") {
+        PanelGroup("Handwriting", caption: "Puts the band in its handwriting state, where its own model reads letters you draw with your hand as if holding a pen. If the band keeps its gesture model, Runes then turns on the band's data collection with its handwriting model, two settings the band keeps. While it is on the band does not go to standby, and its usual gestures may stop. Stopping puts everything back as it was, and so does the next connection if the app closes first.") {
             ActionRow(test.on ? "Stop handwriting" : "Start handwriting") { test.set(!test.on) }
                 .disabled(controller.snapshot.state != .streaming)
             if test.on || !test.text.isEmpty {

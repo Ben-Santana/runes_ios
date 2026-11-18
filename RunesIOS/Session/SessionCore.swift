@@ -51,6 +51,16 @@ final class SessionCore: @unchecked Sendable {
     private var writingMessages = 0
     /// The band's standby time as it last reported it, to put back after handwriting turned it off.
     private var standby: UInt64?
+    /// How many scores the band's messages carry and from which model, noted when either changes.
+    private var writingShape = ""
+    /// Counts each time handwriting is turned on, so a late check belongs to one try.
+    private var writingTry = 0
+    /// The named settings as last read, by name, and writes still to make, one at a time.
+    private var settingsByName: [String: NamedSettings.Setting] = [:]
+    private var settingQueue: [(name: String, value: UInt64)] = []
+    private var afterSettings: ((Bool) -> Void)?
+    /// Set while the named settings are being read for handwriting: what it wants once they are known.
+    private var collectionWanted: Bool?
     /// What a firmware update wrote, how far its current item is, and once it has ended, how it went.
     var onUpdate: (([String], FirmwareUpdate.Progress?, FirmwareUpdate.Ending?) -> Void)?
     private var update: FirmwareUpdate?
@@ -587,10 +597,26 @@ final class SessionCore: @unchecked Sendable {
 
     /// Writes a whole number to one named setting, then reads it back. The band keeps it.
     func writeNamedSetting(_ setting: NamedSettings.Setting, value: UInt64) {
-        guard snapshot.state == .streaming, settingRead == nil, settingWrite == nil, update == nil, setting.writable else { return }
+        guard snapshot.state == .streaming, settingRead == nil, settingWrite == nil, update == nil, setting.writable, let kind = setting.kind else { return }
         record("band_settings", "Writing \(setting.name) = \(value) (was \(setting.value.map(String.init) ?? "unknown")).")
         settingWrite = setting
-        askSetting("named_write", NamedSettings.write(id: setting.id, value: value))
+        askSetting("named_write", NamedSettings.write(id: setting.id, value: value, kind: kind))
+    }
+
+    /// Writes several named settings in order, each read back before the next. `done` hears
+    /// whether every one of them now holds its value.
+    private func writeSettings(_ writes: [(name: String, value: UInt64)], done: @escaping (Bool) -> Void) {
+        settingQueue = writes; afterSettings = done
+        writeNextSetting()
+    }
+
+    private func writeNextSetting(after last: NamedSettings.Setting? = nil, wanted: UInt64? = nil) {
+        guard let done = afterSettings else { return }
+        func end(_ held: Bool) { settingQueue = []; afterSettings = nil; done(held) }
+        if let last, last.value != wanted { return end(false) }
+        guard let next = settingQueue.first else { return end(true) }
+        guard let setting = settingsByName[next.name], setting.writable, settingRead == nil, settingWrite == nil, snapshot.state == .streaming, update == nil else { return end(false) }
+        writeNamedSetting(setting, value: next.value)
     }
 
     private func askNext() {
@@ -598,6 +624,7 @@ final class SessionCore: @unchecked Sendable {
         guard read.index < read.count else {
             settingRead = nil
             record("band_settings", "Named settings: done."); onNamedSetting?(nil, "")
+            settleCollection()
             return
         }
         read.index += 1; read.setting = nil; settingRead = read
@@ -607,8 +634,9 @@ final class SessionCore: @unchecked Sendable {
     private func askSetting(_ operation: String, _ payload: Data) {
         do { try rpc(operation, NamedSettings.channel, NamedSettings.field, payload) }
         catch {
-            settingRead = nil; settingWrite = nil
+            settingRead = nil; settingWrite = nil; collectionWanted = nil
             record("band_settings", "Named settings: could not ask."); onNamedSetting?(nil, "Could not ask the band."); onNamedSetting?(nil, "")
+            if let done = afterSettings { settingQueue = []; afterSettings = nil; done(false) }
         }
     }
 
@@ -640,6 +668,7 @@ final class SessionCore: @unchecked Sendable {
             guard let read = settingRead, var setting = read.setting else { return }
             let answer = NamedSettings.value(of: setting.id, from: payload)
             setting.kind = answer?.kind; setting.value = answer?.value
+            settingsByName[setting.name] = setting
             let range = capabilities[setting.id].map { " [\($0.summary)]" } ?? setting.range.map { " [\($0.lowerBound) to \($0.upperBound)]" } ?? ""
             let refusal = BandCapability.code(from: payload).map { "not readable (result \($0))" } ?? "not readable"
             let detail = setting.detail.isEmpty ? "" : " (\(setting.detail))"
@@ -649,7 +678,8 @@ final class SessionCore: @unchecked Sendable {
             guard let setting = settingWrite else { return }
             guard NamedSettings.value(of: setting.id, from: payload) != nil else {
                 settingWrite = nil
-                return line(setting, "\(setting.name): the band refused the write (\(WristFeedbackResult.shape(payload))).")
+                line(setting, "\(setting.name): the band refused the write (\(WristFeedbackResult.shape(payload))).")
+                return writeNextSetting(after: setting, wanted: nil)
             }
             askSetting("named_verify", NamedSettings.read(id: setting.id))
         default:
@@ -659,6 +689,8 @@ final class SessionCore: @unchecked Sendable {
             setting.kind = answer?.kind; setting.value = answer?.value
             if setting.name == "haptics", let value = answer?.value { heard(haptics: value) }
             line(setting, "\(setting.name): the band now reports \(answer?.value.map(String.init) ?? "nothing readable").")
+            if answer != nil { settingsByName[setting.name] = setting }
+            if settingQueue.first?.name == setting.name { writeNextSetting(after: setting, wanted: settingQueue.removeFirst().value) }
         }
     }
 
@@ -941,6 +973,7 @@ final class SessionCore: @unchecked Sendable {
                         transition(.streaming, candidate?.bandPoint == nil ? "Receiving band gestures. Compatibility mode: band identity is unverified." : "Receiving band gestures.")
                         // A read or write of a named setting cut off by a lost link is not carried over.
                         settingRead = nil; settingWrite = nil; lastAnswered = nil
+                        settingQueue = []; afterSettings = nil; collectionWanted = nil
                         endTightness()
                         requestHand()
                         resumeUpdate()
@@ -954,7 +987,7 @@ final class SessionCore: @unchecked Sendable {
                 if !acknowledgementNoted { acknowledgementNoted = true; trial("acknowledge: \(answer(payload))") }
             case "try_pattern", "try_stop": trial("\(operation.dropFirst(4)): \(answer(payload))")
             case "try_writing":
-                record("band_writing", "The band's answer to the \(writingWanted ? "handwriting" : "usual") state: \(answer(payload)).")
+                record("band_writing", "The band's answer to the \(writingWanted ? "handwriting" : "usual") state: \(answer(payload)) [\(BandSettings.describe(payload) ?? "no settings")].")
                 if !writingWanted, !payload.isEmpty { UserDefaults.standard.removeObject(forKey: "bandStandbyToRestore") }
                 try reconcileStreams()
             case "try_firmware":
@@ -1016,7 +1049,8 @@ final class SessionCore: @unchecked Sendable {
         case .inference(let scores, let pipeline):
             guard writingWanted else { return }
             writingMessages += 1
-            if writingMessages == 1 { record("band_writing", "Scores are arriving: \(scores.count) in a message, pipeline \(pipeline).") }
+            let shape = "\(scores.count) in a message, pipeline \(pipeline)"
+            if shape != writingShape { writingShape = shape; record("band_writing", "Scores are arriving: \(shape).") }
             guard !scores.isEmpty, scores.count % BandWriting.symbols == 0 else { return }
             let before = writing.symbols.count
             for start in stride(from: 0, to: scores.count, by: BandWriting.symbols) { writing.push(Array(scores[start..<(start + BandWriting.symbols)])) }
@@ -1272,7 +1306,7 @@ final class SessionCore: @unchecked Sendable {
         do {
             try rpc("try_writing", 6, 5, BandWriting.state(on: on, standby: kept == 0 ? nil : kept))
             writingWanted = on
-            if on { writing = BandWriting.Decoder(); writingMessages = 0 }
+            if on { writing = BandWriting.Decoder(); writingMessages = 0; writingShape = ""; checkWriting() } else { collectWriting(false) }
             record("band_writing", on ? "Asked for the handwriting state, standby off." : "Asked for the usual state\(kept == 0 ? "" : ", standby back to \(kept) s").")
             onWriting?(on, writing.text, writing.rows)
         } catch {
@@ -1289,11 +1323,68 @@ final class SessionCore: @unchecked Sendable {
         if writingWanted, !activeWriting, pendingWriting != true {
             writingWanted = false
             setHandwriting(true)
-        } else if !writingWanted, standby == 0 {
+        } else if !writingWanted {
+            collectWriting(false)
             let kept = UInt64(max(0, UserDefaults.standard.integer(forKey: "bandStandbyToRestore")))
-            guard kept != 0 else { return }
+            guard standby == 0, kept != 0 else { return }
             do { try rpc("try_writing", 6, 5, BandWriting.state(on: false, standby: kept)); record("band_writing", "Standby put back to \(kept) s.") } catch {}
         }
+    }
+
+    /// Three seconds after handwriting is asked for: a band that still sends no rows of a
+    /// hundred scores does not offer the handwriting state, and its data collection settings
+    /// are tried.
+    private func checkWriting() {
+        writingTry += 1
+        let attempt = writingTry
+        transport.perform(after: 3) { [weak self] in
+            guard let self, self.writingTry == attempt, self.writingWanted, self.snapshot.state == .streaming, self.writing.rows == 0 else { return }
+            self.record("band_writing", "No handwriting scores from the handwriting state (\(self.writingShape.isEmpty ? "no scores at all" : self.writingShape)). Trying the data collection settings.")
+            self.collectWriting(true)
+        }
+    }
+
+    /// Points the band's data collection at its handwriting model, or puts both settings back
+    /// as they were. The band keeps these settings, so what they were is saved before the
+    /// first write and put back when handwriting stops, or on the next connection if the app
+    /// was closed in between. The settings are found by name, which needs the list read once.
+    private func collectWriting(_ on: Bool, mayRead: Bool = true) {
+        let defaults = UserDefaults.standard, key = "bandCollectionToRestore"
+        let kept = (defaults.array(forKey: key) as? [Int]).flatMap { $0.count == 2 ? $0 : nil }
+        guard on || kept != nil, snapshot.state == .streaming, update == nil, afterSettings == nil else { return }
+        guard let collection = settingsByName[BandWriting.collection], let model = settingsByName[BandWriting.model],
+              let wasOn = collection.value, let wasModel = model.value, collection.writable, model.writable else {
+            guard mayRead, settingRead == nil, settingWrite == nil, tightnessSince == nil, probe == nil else {
+                if !mayRead { record("band_writing", "This firmware does not list the data collection settings.") }
+                return
+            }
+            collectionWanted = on
+            return readNamedSettings()
+        }
+        if on {
+            if let choices = capabilities[model.id]?.choices, !choices.isEmpty, !choices.contains(Int64(BandWriting.collectionModel)) {
+                return record("band_writing", "This firmware's data collection has no handwriting model.")
+            }
+            if kept == nil { defaults.set([Int(wasOn), Int(wasModel)], forKey: key) }
+            record("band_writing", "Data collection on with the handwriting model (was \(wasOn), model \(wasModel)).")
+            writeSettings([(BandWriting.collection, 1), (BandWriting.model, BandWriting.collectionModel)]) { [weak self] held in
+                self?.record("band_writing", held ? "The band took the data collection settings." : "The band did not take the data collection settings.")
+                if !held { self?.collectWriting(false) }
+            }
+        } else if let kept {
+            record("band_writing", "Putting data collection back to \(kept[0]), model \(kept[1]).")
+            writeSettings([(BandWriting.model, UInt64(kept[1])), (BandWriting.collection, UInt64(kept[0]))]) { [weak self] held in
+                if held { defaults.removeObject(forKey: key) }
+                self?.record("band_writing", held ? "Data collection is back as it was." : "Data collection could not be put back. It is tried again on the next connection.")
+            }
+        }
+    }
+
+    /// After a read of the named settings that handwriting asked for.
+    private func settleCollection() {
+        guard let on = collectionWanted else { return }
+        collectionWanted = nil
+        collectWriting(on, mayRead: false)
     }
 
     /// Starts a key install, a trial transfer, a discard or an install on the band. Vibration,

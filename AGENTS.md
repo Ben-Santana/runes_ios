@@ -95,6 +95,8 @@ of wireless deployment. Do not uninstall the app to repair an ordinary update.
   `BandLink.swift`, and those that compile `BandProtocol.swift` also need `BandStreams.swift`
   and `BandWriting.swift`. `Tests/BandWritingTests.swift` checks how the band's own
   handwriting is read.
+  `Tests/BandProbeTests.swift` checks the band probe, which tries streams and requests the
+  app does not use: it needs `Protocol/BandProbe.swift` beside the usual three files.
   `Tests/BandLinkTests.swift` also compiles `Firmware/FirmwareUpdate.swift`. The update engine,
   the package reader and Meta's answers have their own checks: `FirmwareUpdateTests.swift`,
   `FirmwarePackageTests.swift` and `FirmwareOfferTests.swift`. Run them after any change in
