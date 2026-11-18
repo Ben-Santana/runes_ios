@@ -30,13 +30,15 @@ final class AirShieldCipher {
     private var counter: UInt32
     private var records: UInt64 = 0
     private let link: BandLink
-    init(key: Data, iv: Data, counter: UInt64, link: BandLink = .original) throws {
-        guard key.count == 32, iv.count == 16, counter <= UInt32.max else { throw BandError.wire("Invalid AirShield parameters.") }
-        self.key = key; self.iv = iv; self.counter = UInt32(counter); self.link = link
+    /// The key for each record's check, when the link gives it one of its own.
+    private let checkKey: Data
+    init(key: Data, iv: Data, counter: UInt64, link: BandLink = .original, checkKey: Data? = nil) throws {
+        guard key.count == 32, iv.count == 16, counter <= UInt32.max, checkKey == nil || checkKey?.count == 32 else { throw BandError.wire("Invalid AirShield parameters.") }
+        self.key = key; self.iv = iv; self.counter = UInt32(counter); self.link = link; self.checkKey = checkKey ?? key
     }
     private func tag(_ body: Data) throws -> Data {
         guard records < 1 << 32 else { throw BandError.authentication("Encryption counter exhausted; reconnect.") }
-        return link.tag(body, counter: counter, key: key)
+        return link.tag(body, counter: counter, key: checkKey)
     }
     private func crypt(_ input: Data, operation: CCOperation) throws -> Data {
         var output = [UInt8](repeating: 0, count: input.count + 16), written = 0

@@ -85,6 +85,11 @@ final class SessionCore: @unchecked Sendable {
     private var appState = "launching"
     private var failures = 0
     private var trustRetried = false
+    /// Which way of making keys to try on firmware that leaves several open, kept across
+    /// launches, and whether the band has answered under it.
+    private var linkWay = UserDefaults.standard.integer(forKey: "bandLinkWay")
+    private var linkWayProven = UserDefaults.standard.bool(forKey: "bandLinkWayProven")
+    private var linkWayTries = 0, linkWaysTried = 0
     private var reconnectAt: TimeInterval? { didSet { if (oldValue == nil) != (reconnectAt == nil) { onRetryWait?(reconnectAt != nil) } } }
     private var waitingSince: TimeInterval?
     private var scanUntil: TimeInterval?
@@ -353,7 +358,7 @@ final class SessionCore: @unchecked Sendable {
                 logger.info("\(summary, privacy: .public)")
                 record("identity_diagnostic", summary)
             }
-            proto = try BandProtocol(identity: enrollment == nil ? candidate : nil, ceremony: enrollment)
+            proto = try BandProtocol(identity: enrollment == nil ? candidate : nil, ceremony: enrollment, way: linkWay)
             snapshot.connectionAttempt.reach(.encryption)
             transition(enrollment == nil ? .authenticating : .enrolling, enrollment == nil ? candidate?.bandPoint == nil ? "Authenticating phone in compatibility mode; band identity is unverified." : "Verifying the band and phone identity." : "Completing ownership enrollment; compatibility mode is allowed if Meta omits the band key.")
             try transport.write(proto!.start(now: ProcessInfo.processInfo.systemUptime))
@@ -814,6 +819,7 @@ final class SessionCore: @unchecked Sendable {
         switch signal {
         case .enrolled(let identity): candidate = identity; identityConfirmation.enrolled()
         case .ready:
+            keepLinkWay()
             let result = try identityConfirmation.authenticated {
                 guard let id = snapshot.selected, let account = candidateAccount, var candidate, candidate.canAuthenticate else { throw BandError.authentication("No usable host identity is selected. Choose a saved identity or import the Mac QR.") }
                 candidate.stage = candidate.bandPoint == nil ? "host_verified" : "verified"
@@ -1072,14 +1078,45 @@ final class SessionCore: @unchecked Sendable {
         snapshot.connectionAttempt.begin()
         transition(.reconnecting, systemReconnecting ? "Link lost; iOS is reconnecting automatically." : "Link lost; a pending connect is waiting for the band.")
     }
+    /// Notes that the band answered a record under the way in use, so it is kept from now on.
+    private func keepLinkWay() {
+        guard let proto, proto.linkIsGuess, proto.linkProven, !linkWayProven else { return }
+        linkWayProven = true; linkWayTries = 0; linkWaysTried = 0
+        UserDefaults.standard.set(linkWay, forKey: "bandLinkWay"); UserDefaults.standard.set(true, forKey: "bandLinkWayProven")
+        record("protocol", "The band's records check out. Link: \(proto.linkNote). This way is kept.")
+    }
+
+    /// On firmware whose key rules are not written down, a failure before the band has sent
+    /// one record that checks out may mean the wrong way was tried. This moves on to the next
+    /// way and says whether to connect again at once.
+    private func nextLinkWay(after error: BandError) -> Bool {
+        keepLinkWay()
+        guard let proto, proto.linkIsGuess, !proto.linkProven, !linkWayProven, enrollment == nil, ["encryption", "trust"].contains(proto.stage) else { return false }
+        if let better = proto.betterWay {
+            linkWay = better; linkWayTries = 0
+            record("protocol", "Another way reads what the band sent. Trying way \(better + 1) next.")
+        } else {
+            linkWayTries += 1
+            // A record that fails its check settles it. Otherwise each way gets two tries, since
+            // the band can ignore the handshake that follows an abandoned one.
+            if case .authentication = error { linkWayTries = 2 }
+            if linkWayTries >= 2 { linkWay += 1; linkWayTries = 0 }
+        }
+        UserDefaults.standard.set(linkWay, forKey: "bandLinkWay")
+        linkWaysTried += 1
+        return linkWaysTried <= 80
+    }
+
     private func fail(_ error: Error) {
         identityConfirmation.cancel()
         let error = error as? BandError ?? .wire("Band operation failed. Reconnect in the foreground.")
+        let searching = nextLinkWay(after: error)
         if snapshot.state != .disconnecting, snapshot.wantsConnection || snapshot.connectionAttempt.outcome == .connecting {
             updateConnectionProgress()
             snapshot.connectionAttempt.fail(error)
         }
-        let detail = "\(error.localizedDescription) Protocol: \(proto?.stage ?? "closed"); enrollment: \(enrollment?.record.stage ?? "none")."
+        let link = proto.map { $0.linkNote.isEmpty ? "" : " Link: \($0.linkNote)." } ?? ""
+        let detail = "\(error.localizedDescription) Protocol: \(proto?.stage ?? "closed"); enrollment: \(enrollment?.record.stage ?? "none").\(link)"
         logger.error("\(detail, privacy: .public)")
         record("error", detail); proto = nil; snapshot.startedAt = nil
         update?.linkLost(); reportUpdate()
@@ -1091,7 +1128,7 @@ final class SessionCore: @unchecked Sendable {
         if stoppingUntil != nil || snapshot.state == .disconnecting { transport.disconnect(); record("shutdown", "Stream stop was not acknowledged."); finishDisconnect(); return }
         let retryTrust = enrollment == nil && !trustRetried && ConnectionRetryPolicy.mayPass(error)
         if retryTrust { trustRetried = true }
-        if enrollment != nil || (ConnectionRetryPolicy.stopsAutoConnect(error) && !retryTrust) {
+        if enrollment != nil || (ConnectionRetryPolicy.stopsAutoConnect(error) && !retryTrust && !searching) {
             // Identity and ownership failures need the person; retrying cannot fix them.
             transport.disconnect()
             userRecoveryRequired = true; reconnectAt = nil; enrollment = nil; meta = nil; enrollmentAttempt = nil
@@ -1101,7 +1138,8 @@ final class SessionCore: @unchecked Sendable {
             transition(.failed, detail + " Automatic connection is paused. Saved and pending identities were retained.")
         } else if snapshot.wantsConnection {
             failures += 1
-            let delay = ConnectionRetryPolicy.backoff(failures: failures)
+            // While the ways of making keys are being worked through, the next try follows quickly.
+            let delay = searching ? 2 : ConnectionRetryPolicy.backoff(failures: failures)
             transport.close()
             reconnectAt = ProcessInfo.processInfo.systemUptime + delay
             if case .storage = error { snapshot.issue = .phoneLocked }

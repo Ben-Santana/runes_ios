@@ -12,6 +12,16 @@ struct BandLink: Equatable {
     let macPrefix: Data
     /// Whether a record whose frames already fill whole blocks still gets a block of padding.
     let padsEveryRecord: Bool
+    /// Where the key for each record's check comes from.
+    enum CheckKey: Equatable {
+        /// The record key itself.
+        case record
+        /// A key of its own, derived from the shared secret.
+        case derived
+        /// A key of its own, derived from a hash of the shared secret.
+        case derivedFromHash
+    }
+    var checkKey = CheckKey.record
 
     /// Firmware from early 2025, the rules this app has always spoken.
     static let original = BandLink(scheme: 3, hashesSecret: true, macPrefix: Data(), padsEveryRecord: false)
@@ -21,10 +31,29 @@ struct BandLink: Equatable {
 
     /// Picks the rules from the schemes a band offers in its encryption request. Older firmware
     /// offers exactly 3. Newer firmware offers 27 and then uses 26 whatever the phone names.
-    static func offered(_ schemes: UInt64) -> BandLink? {
-        if schemes == 3 { return .original }
-        if schemes & 24 != 0 { return .revised }
-        return nil
+    static func offered(_ schemes: UInt64) -> BandLink? { ways(offered: schemes).first }
+
+    /// Every way a band that offers these schemes may make its keys, likeliest first. Older
+    /// firmware has one. For newer firmware the rules of scheme 26 are known from other bands,
+    /// but a band on build 72 named 27 on 2026-11-17 and nobody has written 27's rules down,
+    /// so the app works through these until the band answers a record it can check. The
+    /// numbers are sets of switches: 27 is 26 with one more, and 31, which the glasses use
+    /// and which is known, is 27 with a key of its own for the check.
+    static func ways(offered schemes: UInt64) -> [BandLink] {
+        if schemes == 3 { return [.original] }
+        guard schemes & 24 != 0 else { return [] }
+        let prefix = Data([2, 2, 0, 0])
+        func way(_ scheme: UInt64, hashes: Bool, prefixed: Bool, _ check: CheckKey) -> BandLink {
+            BandLink(scheme: scheme, hashesSecret: hashes, macPrefix: prefixed ? prefix : Data(), padsEveryRecord: true, checkKey: check)
+        }
+        // What the phone names back: 26, as the public project does, or the band's own offer.
+        let named = schemes == 26 ? [26] : [26, schemes]
+        var ways: [BandLink] = []
+        for (hashes, prefixed, check) in [(false, true, CheckKey.record), (false, true, .derived), (true, false, .record), (false, false, .record),
+                                          (true, true, .record), (false, false, .derived), (true, false, .derivedFromHash), (true, true, .derivedFromHash)] {
+            for scheme in named { ways.append(way(scheme, hashes: hashes, prefixed: prefixed, check)) }
+        }
+        return ways
     }
 
     /// The key for one direction. The challenge is the receiver's and the seed is the sender's.
@@ -32,6 +61,19 @@ struct BandLink: Equatable {
         if hashesSecret { return BandCrypto.key(secret: secret, challenge: challenge, seed: seed) }
         let key = HKDF<SHA256>.deriveKey(inputKeyMaterial: SymmetricKey(data: secret), salt: Data(SHA256.hash(data: challenge + seed)),
                                          info: Data("AirShield".utf8), outputByteCount: 32)
+        return key.withUnsafeBytes { Data($0) }
+    }
+
+    /// The key for one direction's record checks, given that direction's record key.
+    func checkKey(secret: Data, challenge: Data, seed: Data, recordKey: Data) -> Data {
+        let hashed = Data(SHA256.hash(data: secret)), label = Data("hmac_derive".utf8)
+        let material: Data, salt: Data
+        switch checkKey {
+        case .record: return recordKey
+        case .derived: material = secret; salt = Data(SHA256.hash(data: seed + challenge + label))
+        case .derivedFromHash: material = hashed; salt = Data(SHA256.hash(data: seed + challenge + label + hashed))
+        }
+        let key = HKDF<SHA256>.deriveKey(inputKeyMaterial: SymmetricKey(data: material), salt: salt, info: Data("AirShield".utf8), outputByteCount: 32)
         return key.withUnsafeBytes { Data($0) }
     }
 

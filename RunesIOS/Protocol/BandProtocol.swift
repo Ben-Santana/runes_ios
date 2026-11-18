@@ -34,6 +34,19 @@ final class BandProtocol {
     private var link = BandLink.original
     /// What the band offered and which rules were chosen, for the journal.
     private(set) var linkNote = ""
+    /// Which of the possible ways of making keys this connection tries, when newer firmware
+    /// leaves more than one open.
+    private let way: Int
+    /// Whether the rules in use are one way among several, not yet shown to be the band's.
+    private(set) var linkIsGuess = false
+    /// Set once the band has sent a record whose check passed, which only the right rules allow.
+    private(set) var linkProven = false
+    /// Another way whose check does pass on what the band sent, found when this one's failed.
+    private(set) var betterWay: Int?
+    private var ways: [BandLink] = []
+    /// What is needed to try the other ways on the band's first records.
+    private var material: (secret: Data, iv: Data, counter: UInt64)?
+    private var unread = Data()
     /// The protocol version the band reported about itself, which decides how streams are asked for.
     private var version: UInt64 = 1
     private let clear = DataXReceiver(), frames = DataXReceiver()
@@ -48,9 +61,9 @@ final class BandProtocol {
     private(set) var feedbackNote = ""
     /// Set while a test listens for whatever else the band sends.
     var watchesOther = false
-    init(identity: BandIdentity?, ceremony: OwnershipCeremony? = nil) throws {
+    init(identity: BandIdentity?, ceremony: OwnershipCeremony? = nil, way: Int = 0) throws {
         guard (identity == nil) != (ceremony == nil) else { throw BandError.authentication("Provide identity or explicit enrollment.") }
-        self.identity = identity; self.ceremony = ceremony
+        self.identity = identity; self.ceremony = ceremony; self.way = max(0, way)
         challenge = try BandCrypto.random(16); seed = try BandCrypto.random(32); iv = try BandCrypto.random(16)
         counter = UInt64(try BandCrypto.random(4).be32(0))
     }
@@ -135,13 +148,34 @@ final class BandProtocol {
             if rx != nil { data = clear.pending; clear.pending = Data() }
         }
         if let rx {
-            for plain in try rx.feed(data) {
+            let records: [Data]
+            if linkIsGuess, !linkProven {
+                // Kept until one record's check passes, so the other ways can be tried on the same bytes.
+                if unread.count + data.count <= 1 << 16 { unread.append(data) }
+                do { records = try rx.feed(data) } catch { betterWay = wayThatReads(unread); throw error }
+                if !records.isEmpty { linkProven = true; unread = Data(); material = nil }
+            } else { records = try rx.feed(data) }
+            for plain in records {
                 for packet in try frames.feed(plain) {
                     let (out, emitted) = try receive(packet, now: now); output.append(out); signals.append(contentsOf: emitted)
                 }
             }
         }
         return (output, signals)
+    }
+    /// The cipher for what the band sends, under one way of making keys.
+    private func reader(_ link: BandLink, secret: Data, iv: Data, counter: UInt64) throws -> AirShieldCipher {
+        guard let peerSeed else { throw BandError.wire("Encryption is not established.") }
+        let key = link.key(secret: secret, challenge: challenge, seed: peerSeed)
+        return try AirShieldCipher(key: key, iv: iv, counter: counter, link: link, checkKey: link.checkKey(secret: secret, challenge: challenge, seed: peerSeed, recordKey: key))
+    }
+    /// Tries every other way on what the band has sent so far, and returns one whose check passes.
+    private func wayThatReads(_ bytes: Data) -> Int? {
+        guard let material else { return nil }
+        return ways.indices.first { index in
+            guard index != way % ways.count, let cipher = try? reader(ways[index], secret: material.secret, iv: material.iv, counter: material.counter) else { return false }
+            return ((try? AirShieldReceiver(cipher).feed(bytes))?.isEmpty == false)
+        }
     }
     private func handshake(_ packet: Frame, now: TimeInterval) throws -> Data {
         guard let kind = packet.words.last else { throw BandError.wire("Untyped encryption response.") }
@@ -150,18 +184,25 @@ final class BandProtocol {
         if kind == 0x02000001 {
             let schemes = try f.integer(4)
             linkNote = "offered \(schemes)"
-            guard BandLink.route(packet.channel) == 0x8001, peerPoint == nil, try f.integer(3) == 0, let offered = BandLink.offered(schemes) else { throw BandError.wire("Unsupported encryption request (schemes \(schemes)).") }
-            link = offered; linkNote += ", using \(link.scheme)"
+            ways = BandLink.ways(offered: schemes)
+            guard BandLink.route(packet.channel) == 0x8001, peerPoint == nil, try f.integer(3) == 0, !ways.isEmpty else { throw BandError.wire("Unsupported encryption request (schemes \(schemes)).") }
+            link = ways[way % ways.count]; linkIsGuess = ways.count > 1
+            linkNote += ", using \(link.scheme)" + (linkIsGuess ? " (way \(way % ways.count + 1) of \(ways.count))" : "")
             peerPoint = peer; peerChallenge = try f.bytes(2, count: 16)
             return try frame(1, [0x02000002], PB.field(1, point) + PB.field(2, seed) + PB.field(3, iv) + PB.field(4, counter) + PB.field(5, link.scheme))
         }
         let named = try f.integer(5, default: 0)
         linkNote += ", band named \(named)"
-        guard kind == 0x02000002, BandLink.route(packet.channel) == 1, peer == peerPoint, let peerChallenge, named == link.scheme else { throw BandError.wire("Unexpected encryption response (scheme \(named)).") }
+        // Older firmware names the one scheme it has. Newer firmware names what it likes, 26 on
+        // some bands and 27 on others, whatever the phone named, so there the name is only noted.
+        guard kind == 0x02000002, BandLink.route(packet.channel) == 1, peer == peerPoint, let peerChallenge, linkIsGuess || named == link.scheme else { throw BandError.wire("Unexpected encryption response (scheme \(named)).") }
         let peerSeed = try f.bytes(2, count: 32); self.peerSeed = peerSeed
         let secret = try ephemeral.sharedSecretFromKeyAgreement(with: publicKey).withUnsafeBytes { Data($0) }
-        tx = try AirShieldCipher(key: link.key(secret: secret, challenge: peerChallenge, seed: seed), iv: iv, counter: counter, link: link)
-        rx = try AirShieldReceiver(AirShieldCipher(key: link.key(secret: secret, challenge: challenge, seed: peerSeed), iv: f.bytes(3, count: 16), counter: f.integer(4), link: link))
+        let key = link.key(secret: secret, challenge: peerChallenge, seed: seed)
+        tx = try AirShieldCipher(key: key, iv: iv, counter: counter, link: link, checkKey: link.checkKey(secret: secret, challenge: peerChallenge, seed: seed, recordKey: key))
+        let peerIV = try f.bytes(3, count: 16), peerCounter = try f.integer(4)
+        rx = try AirShieldReceiver(reader(link, secret: secret, iv: peerIV, counter: peerCounter))
+        if linkIsGuess { material = (secret, peerIV, peerCounter) }
         frames.everyRecordPadded = link.padsEveryRecord
         if let ceremony { stage = "ceremony"; deadline = now + 180; return try encrypt(ceremony.start()) }
         stage = "trust"; deadline = now + 15; return try enableTrust()

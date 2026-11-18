@@ -27,8 +27,10 @@ private func expect(_ condition: @autoclosure () throws -> Bool, _ message: @aut
 /// checked against something other than itself.
 private final class PretendCipher {
     let key: Data, late: Bool
+    /// The key for the check, when it is not the record key.
+    let checkKey: Data?
     var iv: Data, counter: UInt32
-    init(key: Data, iv: Data, counter: UInt32, late: Bool) { self.key = key; self.iv = iv; self.counter = counter; self.late = late }
+    init(key: Data, iv: Data, counter: UInt32, late: Bool, checkKey: Data? = nil) { self.key = key; self.iv = iv; self.counter = counter; self.late = late; self.checkKey = checkKey }
 
     private func aes(_ input: Data, _ operation: Int) -> Data {
         var output = [UInt8](repeating: 0, count: input.count), written = 0
@@ -41,7 +43,7 @@ private final class PretendCipher {
     private func tag(_ body: Data) -> Data {
         var count = counter.littleEndian
         let message = (late ? Data([2, 2, 0, 0]) : Data()) + Swift.withUnsafeBytes(of: &count) { Data($0) } + body
-        return Data(HMAC<SHA256>.authenticationCode(for: message, using: SymmetricKey(data: key)).prefix(8))
+        return Data(HMAC<SHA256>.authenticationCode(for: message, using: SymmetricKey(data: checkKey ?? key)).prefix(8))
     }
     /// One record from plain bytes. Late firmware pads every record; early firmware only an uneven one.
     func seal(_ plain: Data) -> Data {
@@ -70,6 +72,8 @@ private final class PretendBand {
     var offered: UInt64
     /// Derives its keys by the early rules whatever it names, to see the phone refuse it.
     var wrongKeys = false
+    /// Checks its records with a key of its own, as the glasses' scheme does.
+    var ownCheckKey = false
     /// Late firmware sets these bits on the flagged channels it sends on.
     var tag: UInt16
     let agreement = P256.KeyAgreement.PrivateKey(), signing = P256.Signing.PrivateKey()
@@ -109,12 +113,13 @@ private final class PretendBand {
         let fields = try Fields(enable.payload)
         precondition(enable.channel == 1 && enable.words == [0x02000002])
         try expect(try fields.bytes(1) == hostPoint)
-        try expect(try fields.integer(5) == (late ? 26 : 3), "The phone names the scheme this firmware uses")
+        try expect(try (late ? [26, offered] : [3]).contains(fields.integer(5)), "The phone names a scheme this firmware knows")
         hostSeed = try fields.bytes(2, count: 32)
         let secret = try agreement.sharedSecretFromKeyAgreement(with: P256.KeyAgreement.PublicKey(x963Representation: Data([4]) + hostPoint))
             .withUnsafeBytes { Data($0) }
-        toHost = PretendCipher(key: key(secret, hostChallenge, seed), iv: iv, counter: 42, late: late)
-        fromHost = PretendCipher(key: key(secret, challenge, hostSeed), iv: try fields.bytes(3, count: 16), counter: UInt32(try fields.integer(4)), late: late)
+        func check(_ challenge: Data, _ seed: Data) -> Data? { ownCheckKey ? hkdf(secret, salt: sha(seed + challenge + Data("hmac_derive".utf8))) : nil }
+        toHost = PretendCipher(key: key(secret, hostChallenge, seed), iv: iv, counter: 42, late: late, checkKey: check(hostChallenge, seed))
+        fromHost = PretendCipher(key: key(secret, challenge, hostSeed), iv: try fields.bytes(3, count: 16), counter: UInt32(try fields.integer(4)), late: late, checkKey: check(challenge, hostSeed))
     }
 
     /// Frames as encrypted records. Late firmware can cut a frame across records, each one padded.
@@ -177,12 +182,12 @@ private final class Pair {
     var pieces = 1
     private(set) var log: [String] = []
 
-    init(late: Bool, ceremony: OwnershipCeremony? = nil, verifyBand: Bool = true) throws {
+    init(late: Bool, ceremony: OwnershipCeremony? = nil, verifyBand: Bool = true, way: Int = 0) throws {
         band = PretendBand(late: late)
         if let ceremony { host = try BandProtocol(identity: nil, ceremony: ceremony) }
         else {
             host = try BandProtocol(identity: BandIdentity(privateKey: hostKey.rawRepresentation, bandPoint: verifyBand ? BandCrypto.point(band.signing) : nil,
-                                                          stage: "verified", allowMissingBandKey: verifyBand ? nil : true))
+                                                          stage: "verified", allowMissingBandKey: verifyBand ? nil : true), way: way)
         }
     }
 
@@ -290,6 +295,7 @@ struct BandLinkTests {
         try streams()
         try enrollment()
         try refusals()
+        try ways()
         print("Band link checks passed.")
     }
 
@@ -311,6 +317,16 @@ struct BandLinkTests {
         precondition(BandLink.revised.tag(packet.portion(9..<packet.count), counter: 0xba8d8b80, key: checkKey) == packet.portion(1..<9))
         precondition(BandLink.original.tag(packet.portion(9..<packet.count), counter: 0xba8d8b80, key: checkKey) != packet.portion(1..<9))
 
+        // The same published record gives the key of its own that scheme 31 checks with.
+        let own = BandLink(scheme: 31, hashesSecret: false, macPrefix: Data([2, 2, 0, 0]), padsEveryRecord: true, checkKey: .derived)
+        precondition(own.checkKey(secret: secret, challenge: challenge, seed: seed, recordKey: Data(count: 32)) == checkKey)
+        precondition(BandLink.revised.checkKey(secret: secret, challenge: challenge, seed: seed, recordKey: bytes(0..<32)) == bytes(0..<32))
+        // Early firmware has one way. Newer firmware has the known one first, named 26 and then
+        // named as the band offered, and after it the other ways the public project lists.
+        precondition(BandLink.ways(offered: 3) == [.original] && BandLink.ways(offered: 4).isEmpty)
+        let ways = BandLink.ways(offered: 27)
+        precondition(ways.count == 16 && ways[0] == .revised && ways[1].scheme == 27 && ways[1].macPrefix == BandLink.revised.macPrefix && !ways[1].hashesSecret)
+        precondition(ways[2].checkKey == .derived && ways[2].scheme == 26 && ways.allSatisfy(\.padsEveryRecord) && BandLink.ways(offered: 26).count == 8)
         precondition(BandLink.offered(3) == .original && BandLink.offered(27) == .revised && BandLink.offered(31) == .revised)
         for mask: UInt64 in [0, 1, 2, 4, 7] { precondition(BandLink.offered(mask) == nil) }
         precondition(BandLink.route(0x9c01) == 0x8001 && BandLink.route(0x9801) == 0x8001 && BandLink.route(0x9502) == 0x8002)
@@ -423,7 +439,8 @@ struct BandLinkTests {
         try expect(try proof.bytes(1) == sha(BandCrypto.point(pair.hostKey)))
         try BandCrypto.verify(BandCrypto.transcript(pair.band.challenge, pair.band.point, pair.band.hostSeed, pair.band.hostPoint),
                               signature: proof.bytes(2, count: 64), point: BandCrypto.point(pair.hostKey))
-        precondition(pair.host.linkNote == (late ? "offered 27, using 26, band named 26" : "offered 3, using 3, band named 3"))
+        precondition(pair.host.linkNote == (late ? "offered 27, using 26 (way 1 of 16), band named 26" : "offered 3, using 3, band named 3"))
+        precondition(pair.host.linkIsGuess == late)
         try pair.authenticate(after: first)
 
         // What the app asks for as soon as the band is ready.
@@ -677,10 +694,7 @@ struct BandLinkTests {
         let unknown = try Pair(late: true); unknown.band.offered = 4
         let unsupported = caught { _ = try unknown.handshake() }
         precondition(unsupported.localizedDescription.contains("schemes 4") && unknown.host.linkNote == "offered 4")
-        // A band that names a scheme other than the one its offer leads to.
-        let other = try Pair(late: true); other.band.named = 31
-        let renamed = caught { _ = try other.handshake() }
-        precondition(renamed.localizedDescription.contains("scheme 31"))
+        // Early firmware must name the one scheme it has.
         let mixed = try Pair(late: false); mixed.band.named = 26
         try expect(caught { _ = try mixed.handshake() }.localizedDescription.contains("scheme 26"))
         // A band whose keys follow other rules than its scheme: the first record fails its check,
@@ -709,5 +723,50 @@ struct BandLinkTests {
         let proof = caught { _ = try forged.deliver(Frame(channel: 0x8002, words: [0x02001001], payload: PB.field(2, bad))) }
         guard case .trust(.invalidBandProof) = proof else { preconditionFailure("A forged band proof must be refused") }
         print("Refusals passed: unknown schemes, a renamed scheme, wrong keys, a refused owner key and a forged band proof.")
+    }
+
+    /// Newer firmware that does not follow the one known set of rules. A band on build 72 named
+    /// scheme 27 on 2026-11-17, where other bands name 26.
+    static func ways() throws {
+        // It names 27 and keeps the known rules: the first way connects, whatever the phone names back.
+        for way in [0, 1] {
+            let pair = try Pair(late: true, way: way); pair.band.named = 27
+            let first = try pair.handshake()
+            precondition(!pair.host.linkProven, "nothing from the band has been checked yet")
+            try pair.authenticate(after: first)
+            precondition(pair.host.linkProven && pair.host.betterWay == nil)
+            precondition(pair.host.linkNote == "offered 27, using \(way == 0 ? 26 : 27) (way \(way + 1) of 16), band named 27")
+        }
+        // It checks its records with a key of its own, or hashes the secret first. The first way
+        // fails on the band's first record, and that record is enough to find the way that reads it.
+        for (own, found) in [(true, 2), (false, 8)] {
+            let pair = try Pair(late: true); pair.band.named = 27; pair.band.ownCheckKey = own; pair.band.wrongKeys = !own
+            let output = try pair.feed(pair.band.hello(pair.host.start(now: 0))).0
+            let size = Int(output.be16(0) & 0x7fff) + 4
+            try pair.band.keys(DataXReceiver().feed(output.portion(0..<size), padded: false)[0])
+            let failed = caught { _ = try pair.feed(pair.band.send([Frame(channel: 2, words: [0x03001043], payload: Data())])) }
+            guard case .authentication = failed else { preconditionFailure("A record under other rules must fail its check") }
+            precondition(pair.host.betterWay == found && !pair.host.linkProven, "\(String(describing: pair.host.betterWay))")
+            // Connecting again that way works from the first record.
+            let again = try Pair(late: true, way: found); again.band.named = 27; again.band.ownCheckKey = own; again.band.wrongKeys = !own
+            try again.authenticate(after: again.handshake())
+            precondition(again.host.linkProven && again.host.stage == "ready")
+        }
+        // Rules nobody has listed: no way reads the record, and none is suggested.
+        do {
+            let pair = try Pair(late: true); pair.band.named = 27
+            let output = try pair.feed(pair.band.hello(pair.host.start(now: 0))).0
+            let size = Int(output.be16(0) & 0x7fff) + 4
+            try pair.band.keys(DataXReceiver().feed(output.portion(0..<size), padded: false)[0])
+            var record = try pair.band.send([Frame(channel: 2, words: [0x03001000], payload: Data())])
+            record[3] ^= 0x55
+            guard case .authentication = caught({ _ = try pair.feed(record) }) else { preconditionFailure() }
+            precondition(pair.host.betterWay == nil)
+        }
+        // Early firmware is never a guess, and a way number means nothing to it.
+        let early = try Pair(late: false, way: 5)
+        try early.authenticate(after: early.handshake())
+        precondition(!early.host.linkIsGuess && early.host.linkNote == "offered 3, using 3, band named 3")
+        print("Ways passed: a band that names 27, a band with its own check key, a band that hashes the secret, unknown rules, and early firmware untouched.")
     }
 }
