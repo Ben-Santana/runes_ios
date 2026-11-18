@@ -123,6 +123,11 @@ final class FirmwareUpdate {
     private(set) var committed = false
     private(set) var status: BandUpdateStatus?
 
+    /// How a run ended. An install that was asked for counts as installing even with no answer,
+    /// since the band may already be restarting.
+    enum Ending: Equatable { case passed, failed, installing }
+    var ending: Ending? { !done ? nil : committed ? .installing : succeeded ? .passed : .failed }
+
     init(_ plan: Plan) { self.plan = plan }
 
     var mode: Mode { plan.mode }
@@ -402,11 +407,10 @@ final class FirmwareUpdate {
         }
         if items.isEmpty {
             for candidate in plan.items {
-                // After a discard the band can still name the model bundle it threw away, so an
-                // install sends the bundle whatever the band reports.
-                let current = plan.mode != .install && plan.version <= (status.model ?? 0)
-                if candidate.kind == 2, candidate.data.count <= Self.modelFloor || current {
-                    say("The \(candidate.name) is not sent: the band's is current or the package's is a placeholder.")
+                // After a discard the band can still name the model bundle it threw away, so the
+                // version it reports does not decide what is sent. A trial sends what an install would.
+                if candidate.kind == 2, candidate.data.count <= Self.modelFloor {
+                    say("The \(candidate.name) is not sent: the package's is a placeholder.")
                 } else { items.append(candidate) }
             }
         }

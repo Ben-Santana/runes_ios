@@ -1,9 +1,10 @@
 # Band firmware update
 
-Status on 2026-11-17: stage 3 of 5 is done. The app speaks the link of newer firmware as well
-as the firmware the band runs today, and the changed app connects to the band as it is. Key 20
-is on the band, and a trial of build 72 sent both items, had the band verify each, and had it
-discard them. Nothing in the app can install firmware, and the band still runs `770435744`.
+Status on 2026-11-17: stage 3 of 5 is done and stage 4 is built and not run. The app speaks
+the link of newer firmware as well as the firmware the band runs today, and the changed app
+connects to the band as it is. Key 20 is on the band, and a trial of build 72 sent both items,
+had the band verify each, and had it discard them. The band still runs `770435744`. The band
+tests page can now install a package, behind a confirmation that says it cannot be undone.
 
 An update is one way. The band refuses older firmware, and nobody has found a way back.
 
@@ -163,8 +164,21 @@ about a commit or the band after one.
 ## The update engine
 
 `FirmwareUpdate` writes the requests and reads the answers, and `SessionCore` carries them on
-channel 1, the channel the status request was answered on. It has three runs: the key alone,
-a trial, and a discard. There is no request for a commit anywhere in it.
+channel 1, the channel the status request was answered on. It has four runs: the key alone,
+a trial, a discard, and an install. Only the install sends a commit.
+
+The install is the trial with a commit where the trial discards:
+
+- It sends every item whatever model version the band reports, and so does a trial.
+- A dropped link before the commit starts it again from the first item, after a discard, so
+  the commit is always asked for in the connection that verified everything.
+- A refused commit ends with a discard. A commit with no result, no answer, or a link that
+  drops just after it, is taken as asked for: nothing is discarded or stopped after that,
+  since the band may be part way through.
+- Once the commit is asked for, the page waits for the band to come back and says which
+  version it then reports. "Run the band checklist" asks the things the app relies on and
+  journals each answer: version, update status, wrist setting, a vibration, the named settings
+  and a gesture. It can be run before an update too, to compare.
 
 - While it runs, vibration, the wrist setting, named settings, the other band tests, EMG, gyro
   and orientation are held back, and gestures keep arriving.
@@ -175,7 +189,8 @@ a trial, and a discard. There is no request for a commit anywhere in it.
   After five drops it gives up.
 - Any failure after an item was started ends with the band told to discard what it holds.
 - The page refuses to start below 50% battery or with the level unknown, keeps the screen on,
-  and asks first. The key's confirmation says it cannot be undone.
+  and asks first. The key's and the install's confirmations say they cannot be undone. The app
+  cannot tell whether the band is on its charger, so the confirmation asks for it.
 
 ## What newer firmware changed in the link
 
@@ -228,7 +243,12 @@ byte for byte, the status this band gave, the key alone, a whole trial, an earli
 discarded first, lost chunks sent again, a chunk never answered, refusals of the key, a start,
 a chunk and a verify, a band that goes silent, a link dropped mid item with the band keeping or
 dropping what it had, a link dropped while verifying, stopping, and a discard on request. The
-pretend band fails the check if it is ever asked to install.
+pretend band fails the check if a key run, a trial or a discard ever asks it to install.
+
+For the install: the commit byte for byte, both forms of a yes, an answer with no result and
+no answer at all, a refusal, a failed verify that never reaches the commit, a link dropped in
+either item, a link dropped just after the commit, and stopping before and after it. The
+pretend band refuses a commit for anything verified in an earlier connection.
 
 `Tests/FirmwarePackageTests.swift` reads packages built in the check, stored and deflated, and
 refuses a changed byte, a wrong size, odd paths, a missing firmware, zips that are encrypted,
@@ -286,8 +306,20 @@ this phone does not depend on that.
    result.
 5. Settings and onboarding.
 
-Before stage 4: setting a band up again needs the sign-in that works, since a band that had
-to be reset after an update would need it. The real update must send every item whatever
-model version the band reports, commit in the connection that verified them, and then run the
-checklist. Which build to install is the owner's choice: build 64 is the newest one a public
-project has connected to, and build 72 is what Meta's newer question offers.
+Setting a band up now uses the sign-in that works (`MetaService.prepareWebLogin`), since a
+band that had to be reset after an update would need it. That path has not been run, because
+running it means resetting the band.
+
+Order on the band for the real update, the journal read between steps:
+
+1. "Run the band checklist" on the firmware the band has, as the answers to compare with.
+2. A trial of the build to be installed. The trial that passed was of build 72, and build 64
+   has not been sent to the band.
+3. The install, on the charger. Then wait for the band, and run the checklist again.
+
+Which build to install is the owner's choice: build 64 is the newest one a public project has
+connected to, and build 72 is what Meta's newer question offers.
+
+Not known until it is done: how long the band is away, whether it reports protocol version 2
+and takes the stream request written for it, whether the owner key is still accepted, and
+whether the pulse that keeps the app awake in the background still arrives.

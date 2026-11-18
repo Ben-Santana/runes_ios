@@ -265,12 +265,13 @@ struct FirmwareUpdateTests {
             let (job, _) = begin(.trial, band, key: nil)
             precondition(job.succeeded && !band.seen.contains("key 20"))
         }
-        // A small model bundle is a placeholder and is not sent, and neither is one the band already has.
+        // A small model bundle is a placeholder and is not sent. The band names a model bundle
+        // it threw away after an earlier trial, so the version it reports decides nothing.
         do {
             let band = PretendBand(); band.key = 20
             precondition(begin(.trial, band, model: Data(repeating: 1, count: 10_240)).job.succeeded && !band.seen.contains("start 2"))
-            let current = PretendBand(); current.key = 20; current.model = 1003366292
-            precondition(begin(.trial, current).job.succeeded && !current.seen.contains("start 2"))
+            let current = PretendBand(); current.key = 20; current.model = 1075365371
+            precondition(begin(.trial, current).job.succeeded && current.seen.contains("start 2"))
         }
         // An earlier update the band still holds is discarded before anything is sent.
         do {
@@ -412,7 +413,7 @@ struct FirmwareUpdateTests {
             }
             precondition(last.suffix(6) == Data([0x3a, 0x04, 0x22, 0x02, 0x08, 0x00]) && job.committed)
         }
-        // The band names a model bundle it threw away after a trial. An install sends the bundle anyway.
+        // An install sends the model bundle whatever the band reports, as a trial does.
         do {
             let band = PretendBand(); band.allowsInstall = true; band.key = 20; band.model = 1075365371
             precondition(begin(.install, band).job.succeeded && band.seen.contains("start 2"))

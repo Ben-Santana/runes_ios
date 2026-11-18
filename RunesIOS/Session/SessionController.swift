@@ -374,12 +374,14 @@ final class SessionController: ObservableObject {
                 try Task.checkCancellation()
                 try self.setupAuthorization.validate(authorization, selected: self.snapshot.selected, foreground: self.foreground)
                 guard released else { throw BandError.transport("Local Bluetooth release was not confirmed. Retry disconnect before starting ownership setup.") }
-                let request = try await service.prepareLogin(); try Task.checkCancellation()
+                // Meta's older sign-in page stopped finishing for this app in November 2026, so
+                // setting a band up uses the page that still does. Both give the same sign-in.
+                let request = try service.prepareWebLogin(); try Task.checkCancellation()
                 try self.setupAuthorization.validate(authorization, selected: self.snapshot.selected, foreground: self.foreground)
                 let callback = try await self.presentLogin(request)
                 try Task.checkCancellation()
                 try self.setupAuthorization.validate(authorization, selected: self.snapshot.selected, foreground: self.foreground)
-                let session = try await service.finishLogin(callback, request: request); try Task.checkCancellation()
+                let session = try await service.finish(callback, request: request); try Task.checkCancellation()
                 try self.setupAuthorization.validate(authorization, selected: self.snapshot.selected, foreground: self.foreground)
                 self.live.start()
                 self.core.transport.perform { [core = self.core] in core.beginEnrollment(session, for: authorization.band) }
@@ -424,6 +426,8 @@ final class SessionController: ObservableObject {
             self.core.transport.perform { [core = self.core] in core.ownershipCompleted(result, attempt: attempt) }
         }
     }
+    /// Where Meta's sign-in page went, by address only, for the journal.
+    func noteSignIn(_ line: String) { journal("sign_in", line) }
     /// A line from the firmware tests, for the journal.
     func noteFirmware(_ line: String) { journal("band_update", line) }
     private func journal(_ kind: String, _ message: String) {

@@ -96,6 +96,11 @@ final class MetaService: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
         guard exchanged["user_id"] is String || exchanged["user_id"] is NSNumber else { throw BandError.authentication("Meta did not return a user identity.") }
         return try await session(frlToken: try text(exchanged, "access_token"))
     }
+    /// Finishes whichever of the two sign-ins the request began.
+    func finish(_ callback: URL, request: MetaLoginRequest) async throws -> MetaSession {
+        if request.redirect != nil { return try await finishWebLogin(callback, request: request) }
+        return try await finishLogin(callback, request: request)
+    }
     func complete(_ step: OwnershipStep, session: MetaSession) async throws -> PairCompletion {
         var fields = ["access_token": Self.hw, "user_access_token": session.accessToken, "user_token_universe": "ar", "pair_protocol_version": "3", "method": "post"]
         let endpoint: String, receiptField: String

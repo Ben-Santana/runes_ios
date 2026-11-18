@@ -67,7 +67,7 @@ struct RootView: View {
         .sheet(item: Binding(get: { controller.loginRequest }, set: { if $0 == nil { controller.loginSheetDismissed() } }),
                onDismiss: controller.loginSheetDismissed) { request in
             NavigationStack {
-                MetaLoginView(request: request, completed: controller.loginCallback, failed: controller.loginFailed)
+                MetaLoginView(request: request, completed: controller.loginCallback, failed: controller.loginFailed, trace: controller.noteSignIn)
                     .navigationTitle("Meta sign-in").navigationBarTitleDisplayMode(.inline)
                     .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: controller.cancelSignIn) } }
             }

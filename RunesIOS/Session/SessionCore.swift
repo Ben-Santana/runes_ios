@@ -43,7 +43,7 @@ final class SessionCore: @unchecked Sendable {
     /// What a band test heard back, as a line for the tests page.
     var onTrial: ((String) -> Void)?
     /// What a firmware update wrote, how far its current item is, and once it has ended, how it went.
-    var onUpdate: (([String], FirmwareUpdate.Progress?, Bool?) -> Void)?
+    var onUpdate: (([String], FirmwareUpdate.Progress?, FirmwareUpdate.Ending?) -> Void)?
     private var update: FirmwareUpdate?
     private var updateShown: FirmwareUpdate.Progress?
     /// A clock for the update's timeouts that stands still while the app is suspended, so a
@@ -1129,13 +1129,14 @@ final class SessionCore: @unchecked Sendable {
         if let update, let proto, snapshot.state == .streaming { sendUpdate(update.tick(ids: &proto.requestNumber, now: updateTime())) }
     }
 
-    /// Starts a key install, a trial transfer or a discard on the band. Vibration, motion
-    /// streams and the other band tests stay off until it ends.
+    /// Starts a key install, a trial transfer, a discard or an install on the band. Vibration,
+    /// motion streams and the other band tests stay off until it ends. The firmware tests
+    /// page asks the person before any of them, and says an install cannot be undone.
     func startUpdate(_ plan: FirmwareUpdate.Plan) {
         guard update == nil else { return }
         guard snapshot.state == .streaming, let proto, tightnessSince == nil, settingRead == nil, settingWrite == nil, pendingStreams == nil, !emgReading else {
             let line = "Not started: the band is busy or not connected."
-            record("band_update", line); onUpdate?([line], nil, false); return
+            record("band_update", line); onUpdate?([line], nil, .failed); return
         }
         let job = FirmwareUpdate(plan)
         update = job; updateShown = nil; updateSeen = ProcessInfo.processInfo.systemUptime
@@ -1188,8 +1189,9 @@ final class SessionCore: @unchecked Sendable {
         }
         update = nil; updateShown = nil
         proto?.watchesOther = tightnessSince != nil
-        onUpdate?(lines, nil, job.succeeded)
-        if snapshot.state == .streaming { do { try reconcileStreams() } catch { fail(error) } }
+        onUpdate?(lines, nil, job.ending)
+        // A band told to install is about to restart, so nothing more is asked of it.
+        if snapshot.state == .streaming, !job.committed { do { try reconcileStreams() } catch { fail(error) } }
     }
     func exportJournal(_ completion: @escaping (Result<URL, Error>) -> Void) {
         do { if journal == nil { journal = try EventJournal() }; completion(.success(try journal!.export())) }

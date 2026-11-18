@@ -20,6 +20,9 @@ final class BandFirmwareTest: ObservableObject {
     /// Whether something is being sent to the band, and how far the current item is.
     @Published private(set) var running = false
     @Published private(set) var progress: FirmwareUpdate.Progress?
+    /// The version an install was asked for, until the band is seen running it.
+    @Published private(set) var awaiting: UInt64?
+    @Published private(set) var verifying = false
     /// The key Meta wrapped for this band. It stays in memory.
     @Published private(set) var hasKey = false
     private var wrappedKey: Data? { didSet { hasKey = wrappedKey != nil } }
@@ -38,7 +41,15 @@ final class BandFirmwareTest: ObservableObject {
     var knowsBand: Bool { band != nil }
 
     /// The band's device information, as it arrives on connecting.
-    func deviceReply(_ reply: Data) { if let identity = BandInfo.identity(reply) { band = identity } }
+    func deviceReply(_ reply: Data) {
+        guard let identity = BandInfo.identity(reply) else { return }
+        band = identity
+        guard let awaiting else { return }
+        if identity.software == String(awaiting) {
+            self.awaiting = nil
+            say("The band is back and says it runs \(identity.software), the new version. Run the checklist.")
+        } else { say("The band is back and says it runs \(identity.software), not \(awaiting) yet.") }
+    }
 
     private func say(_ line: String) {
         lines.append(line)
@@ -222,10 +233,10 @@ final class BandFirmwareTest: ObservableObject {
         }
     }
 
-    /// Sends a key install, a trial transfer or a discard to the band. The band must be
-    /// connected and charged past the floor, and the page asks the person first.
+    /// Sends a key install, a trial transfer, a discard or an install to the band. The band
+    /// must be connected and charged past the floor, and the page asks the person first.
     func start(_ mode: FirmwareUpdate.Mode) {
-        guard !checking, !fetching, !running else { return }
+        guard !checking, !fetching, !running, !verifying else { return }
         let controller = SessionController.shared
         guard controller.snapshot.state == .streaming else { return say("Not started: the band is not connected.") }
         guard let level = controller.snapshot.battery else { return say("Not started: the band's battery level is not known yet.") }
@@ -247,11 +258,59 @@ final class BandFirmwareTest: ObservableObject {
     func stop() { if running { SessionController.shared.stopUpdate() } }
 
     /// What the update wrote, already in the journal, and whether it has ended.
-    func updateHeard(_ new: [String], _ progress: FirmwareUpdate.Progress?, _ ended: Bool?) {
+    func updateHeard(_ new: [String], _ progress: FirmwareUpdate.Progress?, _ ending: FirmwareUpdate.Ending?) {
         lines += new; self.progress = progress
-        guard ended != nil else { return }
+        guard let ending else { return }
         running = false
         UIApplication.shared.isIdleTimerDisabled = false
+        guard ending == .installing, let package else { return }
+        awaiting = package.version
+        say("Waiting for the band to restart and connect again. Keep the app open. This can take a few minutes.")
+    }
+
+    /// Asks the band the things the app relies on and writes down each answer: its version,
+    /// its update status, the wrist setting, a vibration, the named settings and a gesture.
+    /// It is the same before an update and after one, so the two can be compared.
+    func runChecklist() {
+        guard !checking, !fetching, !running, !verifying else { return }
+        verifying = true
+        task = Task { [weak self] in
+            guard let self else { return }
+            defer { self.verifying = false; self.task = nil }
+            let controller = SessionController.shared
+            @MainActor func note(_ line: String) { self.say("Checklist: \(line)") }
+            guard controller.snapshot.state == .streaming else {
+                return note("the band is not connected. The journal's connection and protocol lines say how far it got.")
+            }
+            note("connected and receiving.")
+            note(self.band.map { "the band says it runs \($0.software)." } ?? "no device information was read.")
+            let heard = BandTests.shared.trials.count
+            controller.readFirmwareStatus()
+            let status = await self.wait(6) { BandTests.shared.trials.dropFirst(heard).last { $0.hasPrefix("firmware: ") } }
+            note(status.map { "update status, \($0.dropFirst(10))." } ?? "no answer to the update status.")
+            note(controller.snapshot.hand.map { "the wrist setting reads \($0.rawValue)." } ?? "the wrist setting has not been read.")
+            let answered = VibrationLab.shared.answers.count
+            controller.vibrate([BandPulse(duration: 150, amplitude: 230)])
+            let pulse = await self.wait(6) { VibrationLab.shared.answers.count > answered ? VibrationLab.shared.answers.last : nil }
+            note(pulse.map { "a vibration was \($0.result.rawValue) in \(Int($0.latency * 1000)) ms." } ?? "no answer to a vibration.")
+            BandTests.shared.startReading(); controller.readNamedSettings()
+            let read = await self.wait(40) { BandTests.shared.busy ? nil : BandTests.shared.named.count }
+            if read == nil { BandTests.shared.interrupted() }
+            note(read.map { "named settings read, \($0) of them." } ?? "the named settings did not finish reading.")
+            let total = controller.snapshot.gestureTotal
+            note("tap a finger and thumb together now.")
+            let gesture = await self.wait(20) { controller.snapshot.gestureTotal > total ? true : nil }
+            note(gesture == nil ? "no gesture arrived in 20 seconds." : "a gesture arrived.")
+        }
+    }
+
+    private func wait<T>(_ seconds: Double, for value: () -> T?) async -> T? {
+        let end = Date().addingTimeInterval(seconds)
+        while Date() < end, !Task.isCancelled {
+            if let found = value() { return found }
+            try? await Task.sleep(for: .milliseconds(200))
+        }
+        return value()
     }
 
     func signedIn(_ url: URL) { login = nil; signIn?.resume(returning: url); signIn = nil }
@@ -266,11 +325,11 @@ struct BandFirmwarePanel: View {
     @ObservedObject private var controller = SessionController.shared
     @State private var asking: FirmwareUpdate.Mode?
 
-    private var busy: Bool { test.checking || test.fetching || test.running }
+    private var busy: Bool { test.checking || test.fetching || test.running || test.verifying }
     private var connected: Bool { controller.snapshot.state == .streaming }
 
     var body: some View {
-        PanelGroup("Firmware update", caption: "Asks Meta which firmware it offers this band, on Meta's own sign-in page, and gets a package onto this phone. The key and trial rows send to the band and ask first. A trial ends with the band discarding everything. Nothing here installs firmware.") {
+        PanelGroup("Firmware update", caption: "Asks Meta which firmware it offers this band, on Meta's own sign-in page, and gets a package onto this phone. The key, trial and install rows send to the band and ask first. A trial ends with the band discarding everything. An install cannot be undone.") {
             ActionRow(test.checking ? "Asking Meta…" : "Check with Meta") { test.check() }
                 .disabled(busy || !test.knowsBand)
             Rule()
@@ -294,7 +353,13 @@ struct BandFirmwarePanel: View {
                 Rule()
                 ActionRow("Trial transfer of \(test.packageName)") { asking = .trial }
                     .disabled(busy || !connected)
+                Rule()
+                ActionRow("Install \(test.packageName) on the band") { asking = .install }
+                    .disabled(busy || !connected)
             }
+            Rule()
+            ActionRow(test.verifying ? "Running the checklist…" : "Run the band checklist") { test.runChecklist() }
+                .disabled(busy || !connected)
             Rule()
             if test.running {
                 ActionRow("Stop") { test.stop() }
@@ -329,7 +394,7 @@ struct BandFirmwarePanel: View {
             }
         }
         .confirmationDialog(question, isPresented: Binding(get: { asking != nil }, set: { if !$0 { asking = nil } }), titleVisibility: .visible, presenting: asking) { mode in
-            Button(mode == .key ? "Install the key" : mode == .trial ? "Start the trial" : "Discard", role: mode == .key ? .destructive : nil) { test.start(mode) }
+            Button(button(mode), role: mode == .key || mode == .install ? .destructive : nil) { test.start(mode) }
             Button("Cancel", role: .cancel) {}
         } message: { mode in
             Text(detail(mode))
@@ -340,7 +405,17 @@ struct BandFirmwarePanel: View {
         switch asking {
         case .key: return "Install key \(test.package?.keyNumber ?? 0) on the band?"
         case .trial: return "Send \(test.packageName) to the band as a trial?"
+        case .install: return "Install \(test.packageName) on the band? This cannot be undone."
         default: return "Have the band discard an update it holds?"
+        }
+    }
+
+    private func button(_ mode: FirmwareUpdate.Mode) -> String {
+        switch mode {
+        case .key: return "Install the key"
+        case .trial: return "Start the trial"
+        case .cancel: return "Discard"
+        case .install: return "Install, this cannot be undone"
         }
     }
 
@@ -350,6 +425,7 @@ struct BandFirmwarePanel: View {
         case .key: return "This cannot be undone. The band keeps the key, and nothing else on it changes. Put the band on its charger first. Its battery must be at \(floor)% or more."
         case .trial: return "The band receives the firmware and checks it, then discards it. Nothing is installed. If the band lacks the key it is installed first, and that cannot be undone. Put the band on its charger and keep this screen open. It takes about 10 minutes."
         case .cancel: return "This clears a transfer that was cut off. The firmware the band runs is not touched."
+        case .install: return "The band restarts into the new firmware and can never go back to the old one. Other apps that talk to the band directly may stop working with it. Put the band on its charger first, with \(floor)% or more, and keep this screen open. It takes about 10 minutes, then the band restarts."
         }
     }
 
