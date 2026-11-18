@@ -1,11 +1,8 @@
 # Band firmware update
 
-Status on 2026-11-17: stage 3 of 5 is done. Stage 4 is built, and one install was tried and
-stopped itself with nothing installed. The app speaks the link of newer firmware as well as
-the firmware the band runs today, and the changed app connects to the band as it is. Key 20
-is on the band, and a trial of build 72 sent both items, had the band verify each, and had it
-discard them. The band still runs `770435744`, and it now reports build 72's model bundle as
-the one it holds, which is why the install stopped. See "The install tried on 2026-11-17".
+Status on 2026-11-17: stage 4 of 5 is done. The band was updated from `770435744` to build 64
+(`1003366292`) from this app at 20:11, came back 49 seconds later, and answered everything on
+the checklist. See "The update on 2026-11-17". Settings and onboarding are not built.
 
 An update is one way. The band refuses older firmware, and nobody has found a way back.
 
@@ -191,6 +188,34 @@ What this shows and does not:
   refuses again, the run ends with a discard. It never goes on with the firmware alone: that
   choice is left to the owner. The firmware itself is never asked for with the switch.
 
+## The update on 2026-11-17
+
+Run from "Update the band", battery 82% to 80%, worn, the app in the background for most of it.
+
+- Build 64's firmware, 5326044 bytes, went across in 181 s and the band verified it.
+- The start of the model bundle was refused `1={1={1=202}}`, older version, as expected. Asked
+  again with the version check skipped, the band accepted it. So the switch works on the
+  factory firmware. The bundle, 5236658 bytes, went across in 178 s and the band verified it.
+- The install was answered `4={1=bytes(0) 2=1}`: a result that is there and empty, and the
+  band saying it will restart. The link dropped 9 seconds later.
+- The band was connected again 49 seconds after the link dropped, with no step by the owner.
+  The saved owner key was accepted.
+- It reports firmware `297b870dc9be`, software `1003366292`, and six models where it had two:
+  `cc_od_resetlstm_F1017719999_260108`, `ia_od_F1068590897_260418`,
+  `hw_t59_f1076659698_260503`, `Ceres_BOD_v48`, `Ceres_PLI_Detect_v38`,
+  `tightness_f1032497175_260207`.
+- Its link still offers scheme 3 and names 3, and its stream answer is unchanged,
+  `1=4 2=1 5={2=0 3=1 6=0 8=0}`. On this band build 64 speaks the link it always spoke. The
+  newer link that band-core saw on builds 64 and 70 was not met, so the code for it is still
+  proven only offline.
+- The checklist: update status idle and stable, running and received `1003366292`, model
+  `1003366292`, key 20. Wrist setting right. A vibration accepted in 58 ms. 38 named settings
+  where there were 27. A gesture arrived.
+
+Not checked yet on the new firmware: gestures with the phone locked or the app long in the
+background, the Mac link, EMG and motion streams, what the eleven new named settings are, and
+what Meta now offers a band on build 64.
+
 ## The update from one tap
 
 "Update the band" on the band tests page runs the whole plan after one confirmation, which
@@ -351,8 +376,7 @@ this phone does not depend on that.
 1. Done: this document and the link work.
 2. Done on 2026-11-17: the update status and "Check with Meta" from the band tests page.
 3. Done on 2026-11-17: the key installed and a trial of build 72 passed.
-4. The real update behind a confirmation, on the charger, then a checklist that journals each
-   result.
+4. Done on 2026-11-17: the band runs build 64, installed from this app, and the checklist passed.
 5. Settings and onboarding.
 
 Setting a band up now uses the sign-in that works (`MetaService.prepareWebLogin`), since a
