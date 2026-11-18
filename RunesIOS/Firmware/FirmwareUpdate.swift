@@ -73,6 +73,10 @@ final class FirmwareUpdate {
         /// The key as Meta wrapped it for this band. Needed only when the band lacks it.
         let wrappedKey: Data?
         let mode: Mode
+        /// Whether a model bundle the band refuses as older is asked for once more with the
+        /// version check skipped. The band did that on 2026-11-17 for a bundle it had already
+        /// been sent in a trial. Unproven on a band, so only a trial may do it.
+        var forcesRefusedModel = false
     }
     struct Progress: Equatable {
         let name: String
@@ -114,6 +118,8 @@ final class FirmwareUpdate {
     /// The final discard has been asked for.
     private var closing = false
     private var stopped = false, failed = false, away = false
+    /// The current item's start is being asked for again with the version check skipped.
+    private var forcing = false
     private var losses = 0
     private var log: [String] = []
     private(set) var done = false
@@ -166,7 +172,7 @@ final class FirmwareUpdate {
         case .key: request = PB.field(6, PB.field(1, plan.keyNumber) + PB.field(2, 0) + PB.field(3, plan.wrappedKey ?? Data()))
         case .start:
             touched = true
-            request = PB.field(2, PB.field(1, info(items[item].kind)) + PB.field(2, UInt64(items[item].data.count)) + PB.field(3, 0) + PB.field(4, 0))
+            request = PB.field(2, PB.field(1, info(items[item].kind)) + PB.field(2, UInt64(items[item].data.count)) + PB.field(3, forcing ? 1 : 0) + PB.field(4, 0))
         case .verify: request = PB.field(3, PB.field(1, info(items[item].kind)))
         // Install now, without putting the restart off.
         case .commit: request = PB.field(4, PB.field(1, 0))
@@ -285,7 +291,7 @@ final class FirmwareUpdate {
                 return fail("the band did not verify the \(items[item].name): \(Self.resultName(result))", &ids, now)
             }
             say("The band verified the \(items[item].name).")
-            item += 1; started = false
+            item += 1; started = false; forcing = false
             return nextItem(&ids, now)
         case .reset:
             say("Discarding the earlier update: \(Self.resultName(code(response, 1))).")
@@ -301,9 +307,15 @@ final class FirmwareUpdate {
             let result = code(response, 1)
             guard result == 0 else {
                 say("Start answer: \(shape(response)).")
+                if result == 202, items[item].kind == 2, plan.forcesRefusedModel, plan.mode == .trial, !forcing {
+                    say("The band refused the \(items[item].name) as older than what it holds. Asking once more with the version check skipped.")
+                    forcing = true
+                    return [ask(.start, &ids, now)]
+                }
                 return fail("the band refused to start the \(items[item].name): \(Self.resultName(result))", &ids, now)
             }
-            say("The band accepted the start of the \(items[item].name).")
+            say("The band accepted the start of the \(items[item].name)\(forcing ? ", with the version check skipped" : "").")
+            forcing = false
             started = true
             return startTransfer(&ids, now)
         case .abort:

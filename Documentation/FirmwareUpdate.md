@@ -1,10 +1,11 @@
 # Band firmware update
 
-Status on 2026-11-17: stage 3 of 5 is done and stage 4 is built and not run. The app speaks
-the link of newer firmware as well as the firmware the band runs today, and the changed app
-connects to the band as it is. Key 20 is on the band, and a trial of build 72 sent both items,
-had the band verify each, and had it discard them. The band still runs `770435744`. The band
-tests page can now install a package, behind a confirmation that says it cannot be undone.
+Status on 2026-11-17: stage 3 of 5 is done. Stage 4 is built, and one install was tried and
+stopped itself with nothing installed. The app speaks the link of newer firmware as well as
+the firmware the band runs today, and the changed app connects to the band as it is. Key 20
+is on the band, and a trial of build 72 sent both items, had the band verify each, and had it
+discard them. The band still runs `770435744`, and it now reports build 72's model bundle as
+the one it holds, which is why the install stopped. See "The install tried on 2026-11-17".
 
 An update is one way. The band refuses older firmware, and nobody has found a way back.
 
@@ -160,6 +161,32 @@ Run from the band tests page on the band's factory firmware, battery 91% to 89%,
 
 Not shown by this: a dropped link part way, which only the offline check covers, and anything
 about a commit or the band after one.
+
+## The install tried on 2026-11-17
+
+At 19:32 the checklist ran on the factory firmware and every answer came: version
+`770435744`, update status idle and stable with key 20, wrist setting right, a vibration
+accepted in 69 ms, 27 named settings, a gesture.
+
+An install of build 72 followed. The firmware went across in 200 s and the band verified it.
+The start of the model bundle was answered `1={1={1=202}}`, older version: the band still
+reported the model bundle of the earlier trial, `1075365371`, and would not take the same
+version again. The app had the band discard, the band accepted, and nothing was installed.
+
+What this shows and does not:
+
+- A discard clears the received firmware and leaves the model bundle's version. Whether the
+  bundle itself is still on the band, whole, is not known. The band verified it before the
+  discard.
+- The band refuses a model bundle that is not newer than the one it reports. So build 64's
+  bundle would be refused too, being older than 72's.
+- The Meta app, as band-core describes it, does not send a model bundle the band already
+  reports. That would mean installing build 72 with its firmware alone. Nobody has written
+  down doing that after a trial, and if the bundle were not whole the band would run new
+  firmware with the wrong models.
+- The start request has a switch to skip the version check. No source has tried it. A trial
+  now asks once more with that switch when the band refuses a model bundle as older, so the
+  journal shows whether the band lets it through. An install never does.
 
 ## The update engine
 

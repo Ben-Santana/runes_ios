@@ -22,6 +22,8 @@ final class PretendBand {
     private var verifiedIn: [UInt64: Int] = [:]
     private(set) var installed = false
     var unavailable: UInt64?
+    /// Whether a start that says to skip the version check is let past it.
+    var honoursSkip = true
     /// Chunks at these offsets are lost on the way this many times.
     var lose: [Int: Int] = [:]
     var nackAt: Int?
@@ -98,10 +100,14 @@ final class PretendBand {
             if let raw = try? request.bytes(2) {
                 let start = try! Fields(raw), about = try! Fields(start.bytes(1))
                 let kind = try! about.integer(1, default: 0), version = try! about.integer(2)
-                seen.append("start \(kind)")
-                precondition(try! start.integer(3) == 0 && start.integer(4) == 0)
+                let skips = try! start.integer(3) == 1
+                seen.append("start \(kind)\(skips ? " skipping the version check" : "")")
+                precondition(try! start.integer(4) == 0)
                 if let refuseStart { return reply(id, 8, general(refuseStart)) }
-                guard version > running else { return reply(id, 8, general(202)) }
+                // The band wants something newer than it holds, as the real one did on 2026-11-17
+                // for a model bundle left by a trial. A discard does not clear the model's version.
+                let held = kind == 2 ? model ?? 0 : running
+                guard version > held || (skips && honoursSkip) else { return reply(id, 8, general(202)) }
                 item = (kind, version, Int(try! start.integer(2))); parts = [:]; state = 2
                 return reply(id, 8, general(0))
             }
@@ -146,12 +152,12 @@ struct FirmwareUpdateTests {
     static let firmware = Data((0..<20_000).map { UInt8(truncatingIfNeeded: $0 &* 7 &+ $0 >> 8) })
     static let model = Data((0..<12_345).map { UInt8(truncatingIfNeeded: $0 &* 3) })
 
-    static func plan(_ mode: FirmwareUpdate.Mode, key: Data? = Data(repeating: 9, count: 32), model: Data? = model) -> FirmwareUpdate.Plan {
+    static func plan(_ mode: FirmwareUpdate.Mode, key: Data? = Data(repeating: 9, count: 32), model: Data? = model, forces: Bool? = nil) -> FirmwareUpdate.Plan {
         func item(_ kind: UInt64, _ name: String, _ data: Data) -> FirmwareUpdate.Item {
             FirmwareUpdate.Item(kind: kind, name: name, data: data, md5: Data(Insecure.MD5.hash(data: data)))
         }
         return FirmwareUpdate.Plan(version: 1003366292, items: [item(0, "firmware", firmware)] + (model.map { [item(2, "model bundle", $0)] } ?? []),
-                                   keyNumber: 20, wrappedKey: key, mode: mode)
+                                   keyNumber: 20, wrappedKey: key, mode: mode, forcesRefusedModel: forces ?? (mode == .trial))
     }
 
     /// Carries requests to the band and answers back until the update ends, the clock moving on
@@ -271,7 +277,22 @@ struct FirmwareUpdateTests {
             let band = PretendBand(); band.key = 20
             precondition(begin(.trial, band, model: Data(repeating: 1, count: 10_240)).job.succeeded && !band.seen.contains("start 2"))
             let current = PretendBand(); current.key = 20; current.model = 1075365371
-            precondition(begin(.trial, current).job.succeeded && current.seen.contains("start 2"))
+            let (job, lines) = begin(.trial, current)
+            precondition(job.succeeded && current.seen.contains("start 2") && current.seen.contains("start 2 skipping the version check"), "\(current.seen)")
+            precondition(lines.contains("The band accepted the start of the model bundle, with the version check skipped."))
+        }
+        // A second trial on the same band: the discard left the model's version behind, so the
+        // bundle is refused as older and asked for once more with the check skipped.
+        do {
+            let band = PretendBand(); band.key = 20
+            precondition(begin(.trial, band).job.succeeded && band.model == 1003366292)
+            let again = begin(.trial, band)
+            precondition(again.job.succeeded && band.seen.filter { $0 == "start 2 skipping the version check" }.count == 1)
+            // The firmware is never asked for that way, and a band that will not skip ends the trial.
+            precondition(!band.seen.contains("start 0 skipping the version check"))
+            band.honoursSkip = false
+            let refused = begin(.trial, band)
+            precondition(!refused.job.succeeded && band.state == 1 && band.seen.suffix(3) == ["start 2", "start 2 skipping the version check", "discard"], "\(band.seen.suffix(4))")
         }
         // An earlier update the band still holds is discarded before anything is sent.
         do {
@@ -413,10 +434,18 @@ struct FirmwareUpdateTests {
             }
             precondition(last.suffix(6) == Data([0x3a, 0x04, 0x22, 0x02, 0x08, 0x00]) && job.committed)
         }
-        // An install sends the model bundle whatever the band reports, as a trial does.
+        // A model bundle the band refuses as older stops an install, as it did on the band on
+        // 2026-11-17. An install does not skip the version check, and nothing is kept.
         do {
             let band = PretendBand(); band.allowsInstall = true; band.key = 20; band.model = 1075365371
-            precondition(begin(.install, band).job.succeeded && band.seen.contains("start 2"))
+            let (job, lines) = begin(.install, band)
+            precondition(job.done && !job.committed && !band.installed && band.state == 1 && band.seen.suffix(2) == ["start 2", "discard"], "\(band.seen)")
+            precondition(lines.contains("Failed: the band refused to start the model bundle: older version (202)."))
+            let forced = PretendBand(); forced.allowsInstall = true; forced.key = 20; forced.model = 1075365371
+            let job2 = FirmwareUpdate(plan(.install, forces: true))
+            var ids: UInt64 = 10, clock = 0.0
+            run(job2, forced, ids: &ids, clock: &clock, queue: job2.begin(ids: &ids, now: clock))
+            precondition(!job2.committed && !forced.seen.contains("start 2 skipping the version check"), "an install never skips the check, whatever the plan says")
         }
         // An earlier update the band holds is discarded first, and nothing verified before counts.
         do {
