@@ -714,12 +714,13 @@ final class SessionCore: @unchecked Sendable {
     /// stops at the first that returns a number, then puts back what it changed. It sends
     /// only requests about the two checks and stream requests. It writes no setting the band keeps.
     func checkTightness(_ settings: [NamedSettings.Setting]) {
-        guard tightnessSince == nil, probe == nil else { return }
+        guard tightnessSince == nil else { return }
         var targets: [BandTightness.Subject: (setting: NamedSettings.Setting, capability: BandCapability)] = [:]
         for setting in settings {
             if let subject = BandTightness.Subject(rawValue: setting.name), let capability = capabilities[setting.id] { targets[subject] = (setting, capability) }
         }
-        guard snapshot.state == .streaming, settingRead == nil, settingWrite == nil, pendingStreams == nil, !emgReading, update == nil, let proto,
+        // A probe that is running is another reason not to start. The page is told, so it does not go on waiting.
+        guard snapshot.state == .streaming, settingRead == nil, settingWrite == nil, pendingStreams == nil, !emgReading, update == nil, probe == nil, let proto,
               let steps = BandTightness.plan(targets.mapValues(\.capability)) else {
             tightness("Not started: the band is busy, not connected, or does not list running the check.")
             onTightness?(""); return
