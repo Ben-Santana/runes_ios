@@ -2,7 +2,7 @@
 
 Status on 2026-11-17: the band runs build 72 (`1075365371`), installed from this app in two
 steps, build 64 at 20:11 and build 72 at 23:31. Build 72 speaks the newer link, and the app
-connects to it. Gestures on build 72 and the checklist there are not checked yet. Settings and
+connects to it and gestures arrive. The checklist has not been run on build 72. Settings and
 onboarding are not built. See "The update on 2026-11-17" and "Build 72 on 2026-11-17".
 
 An update is one way. The band refuses older firmware, and nobody has found a way back.
@@ -246,8 +246,10 @@ same bytes and the one that reads them is used next. The way that works is kept 
 app's settings. It is not tied to a firmware version, so a later firmware with other rules
 would need that setting cleared.
 
-Not checked yet on build 72: a gesture, a vibration, the named settings, the update status,
-the phone locked or the app long in the background, the Mac link, EMG and motion streams.
+Gestures arrive on build 72: an index tap and an index hold were journalled at 23:57.
+
+Not checked yet on build 72: a vibration, the named settings, the update status, the phone
+locked or the app long in the background, the Mac link, EMG and motion streams.
 
 ## Handwriting on the band
 
