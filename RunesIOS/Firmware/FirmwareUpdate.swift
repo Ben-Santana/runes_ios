@@ -43,8 +43,9 @@ struct BandUpdateStatus: Equatable {
 
 /// One update, request by request. It writes the requests and reads the band's answers, and
 /// whoever owns the connection sends and receives them. The order and the timings are the ones
-/// the public band-core project used on a band. Nothing here can install firmware: a trial
-/// sends and verifies every item and then has the band discard them.
+/// the public band-core project used on a band. A trial sends and verifies every item and then
+/// has the band discard them. Only an install ends with the band told to keep them, and
+/// that cannot be undone.
 final class FirmwareUpdate {
     enum Mode: Equatable {
         /// Gives the band the key the package needs. The band keeps it.
@@ -53,6 +54,9 @@ final class FirmwareUpdate {
         case trial
         /// Has the band discard whatever update it holds.
         case cancel
+        /// The whole update in one connection: the key if needed, every item sent and verified,
+        /// then the band told to install them. It restarts into the new firmware. One way.
+        case install
     }
     struct Item {
         /// 0 for firmware and 2 for the model bundle, as the band numbers them.
@@ -87,7 +91,7 @@ final class FirmwareUpdate {
     static let lossLimit = 5
 
     private enum Ask { case first, afterReset, afterKey, resumed, last }
-    private enum Step: Equatable { case status(Ask), reset, key, start, setup, verify, abort, rescue }
+    private enum Step: Equatable { case status(Ask), reset, key, start, setup, verify, abort, rescue, commit }
     private struct Sent { var id: UInt64; var at: TimeInterval; var tries: Int }
     private struct Transfer {
         let number: UInt64
@@ -115,6 +119,8 @@ final class FirmwareUpdate {
     private(set) var done = false
     /// Whether the run ended the way its mode intends.
     private(set) var succeeded = false
+    /// The band was told to install, or may have been. From here nothing is discarded or stopped.
+    private(set) var committed = false
     private(set) var status: BandUpdateStatus?
 
     init(_ plan: Plan) { self.plan = plan }
@@ -157,6 +163,8 @@ final class FirmwareUpdate {
             touched = true
             request = PB.field(2, PB.field(1, info(items[item].kind)) + PB.field(2, UInt64(items[item].data.count)) + PB.field(3, 0) + PB.field(4, 0))
         case .verify: request = PB.field(3, PB.field(1, info(items[item].kind)))
+        // Install now, without putting the restart off.
+        case .commit: request = PB.field(4, PB.field(1, 0))
         case .setup: request = Data()
         }
         let (id, body) = update(request, &ids)
@@ -174,6 +182,7 @@ final class FirmwareUpdate {
             return [ask(.abort, &ids, now)]
         case .key: say("Key \(plan.keyNumber) for version \(plan.version).")
         case .trial: say("Trial of version \(plan.version). It ends with the band discarding everything, and nothing is installed.")
+        case .install: say("Update to version \(plan.version). It ends with the band installing it and restarting. This cannot be undone.")
         }
         return [ask(.status(.first), &ids, now)]
     }
@@ -181,6 +190,10 @@ final class FirmwareUpdate {
     /// The person asked to stop. The band is told to discard what it holds.
     func stop(ids: inout UInt64, now: TimeInterval) -> [Data] {
         guard !done, !stopped else { return [] }
+        if committed || waiting?.step == .commit {
+            say("The install has been asked for and cannot be stopped.")
+            return []
+        }
         guard !away, touched else { abandon(); return [] }
         stopped = true; transfer = nil; waiting = nil
         say("Stopping. Asking the band to discard what it has.")
@@ -190,7 +203,7 @@ final class FirmwareUpdate {
 
     /// Ends the run with nothing more said to the band, for when it is not there to be told.
     func abandon() {
-        guard !done else { return }
+        guard !done, !committed, waiting?.step != .commit else { return }
         stopped = true; done = true; transfer = nil; waiting = nil
         say(touched ? "Stopped without telling the band. The next run clears what it holds." : "Stopped. Nothing had been sent.")
     }
@@ -198,6 +211,11 @@ final class FirmwareUpdate {
     /// The connection dropped. Whatever was in flight is forgotten until the band is back.
     func linkLost() {
         guard !done, !away else { return }
+        if waiting?.step == .commit {
+            committed = true; done = true; waiting = nil
+            say("The link dropped just after the install was asked for. The band is most likely restarting into the new firmware.")
+            return
+        }
         away = true; losses += 1; waiting = nil; transfer = nil
         say("The link dropped. Waiting for the band to come back.")
     }
@@ -209,13 +227,17 @@ final class FirmwareUpdate {
         if losses > Self.lossLimit { return fail("the link dropped \(losses) times", &ids, now) }
         say("The band is back. Asking what it holds.")
         if closing { return [ask(.status(.resumed), &ids, now)] }
-        return [ask(.status(plan.mode == .trial && touched ? .resumed : .first), &ids, now)]
+        if plan.mode == .trial, touched { return [ask(.status(.resumed), &ids, now)] }
+        // An install is asked for in the connection that verified every item, so after a
+        // dropped link it starts again from the first one.
+        item = 0; started = false
+        return [ask(.status(.first), &ids, now)]
     }
 
     private func fail(_ why: String, _ ids: inout UInt64, _ now: TimeInterval) -> [Data] {
         say("Failed: \(why).")
         transfer = nil; failed = true
-        guard touched, !closing else { done = true; return [] }
+        guard touched, !closing, !committed else { done = true; return [] }
         say("Asking the band to discard what it has.")
         closing = true
         return [ask(.rescue, &ids, now)]
@@ -285,6 +307,18 @@ final class FirmwareUpdate {
         case .rescue:
             say("Discard after the failure: \(Self.resultName(code(response, 1))).")
             done = true
+            return []
+        case .commit:
+            let result = code(response, 4) ?? code(response, 1)
+            say("Install answer: \(shape(response)).")
+            if let result, result != 0 { return fail("the band refused to install: \(Self.resultName(result))", &ids, now) }
+            committed = true; done = true
+            if result == 0 {
+                succeeded = true
+                say("The band accepted the install. It now restarts into version \(plan.version).")
+            } else {
+                say("The band answered the install without a result. It may be restarting. Read its status when it is back.")
+            }
             return []
         case .setup: return []
         }
@@ -368,7 +402,10 @@ final class FirmwareUpdate {
         }
         if items.isEmpty {
             for candidate in plan.items {
-                if candidate.kind == 2, candidate.data.count <= Self.modelFloor || plan.version <= (status.model ?? 0) {
+                // After a discard the band can still name the model bundle it threw away, so an
+                // install sends the bundle whatever the band reports.
+                let current = plan.mode != .install && plan.version <= (status.model ?? 0)
+                if candidate.kind == 2, candidate.data.count <= Self.modelFloor || current {
                     say("The \(candidate.name) is not sent: the band's is current or the package's is a placeholder.")
                 } else { items.append(candidate) }
             }
@@ -380,6 +417,10 @@ final class FirmwareUpdate {
         guard item >= items.count else {
             say("Starting the \(items[item].name), \(items[item].data.count) bytes.")
             return [ask(.start, &ids, now)]
+        }
+        if plan.mode == .install {
+            say("Every item is verified. Asking the band to install them.")
+            return [ask(.commit, &ids, now)]
         }
         say("Every item is verified. Asking the band to discard them.")
         closing = true
@@ -473,6 +514,11 @@ final class FirmwareUpdate {
         guard !done, !away else { return [] }
         if let (_, deadline, step) = waiting, now >= deadline {
             waiting = nil
+            if step == .commit {
+                committed = true; done = true
+                say("No answer to the install request. The band may be restarting. Read its status when it is back.")
+                return []
+            }
             if step == .rescue || (closing && failed) {
                 say("No answer to the discard after the failure. Read the update status.")
                 done = true

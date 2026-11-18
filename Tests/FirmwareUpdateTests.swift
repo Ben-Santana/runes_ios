@@ -12,7 +12,15 @@ final class PretendBand {
     var memory = 16_000
     var goodKey = Data(repeating: 9, count: 32)
     /// Refusals to give instead of the usual answer.
-    var refuseKey: UInt64?, refuseStart: UInt64?, refuseVerify: UInt64?
+    var refuseKey: UInt64?, refuseStart: UInt64?, refuseVerify: UInt64?, refuseInstall: UInt64?
+    /// Only a check of an install lets the band be asked to install. Any other check fails on it.
+    var allowsInstall = false
+    /// How it answers an install: with its own answer, with a general one, with no result, or not at all.
+    var installAnswer = "own"
+    /// Counts connections. The band installs only what it verified in the connection that asks.
+    var connection = 0
+    private var verifiedIn: [UInt64: Int] = [:]
+    private(set) var installed = false
     var unavailable: UInt64?
     /// Chunks at these offsets are lost on the way this many times.
     var lose: [Int: Int] = [:]
@@ -33,21 +41,37 @@ final class PretendBand {
         while let part = parts[offset] { offset += part.count }
         return offset
     }
+    /// A yes is a result that is there and empty, as the real band sent on 2026-11-17.
+    private func result(_ code: UInt64) -> Data { PB.field(1, code == 0 ? Data() : PB.field(1, code)) }
     private func general(_ code: UInt64) -> Data {
         if bareAnswers, code == 0 { return PB.field(1, Data()) }
-        return PB.field(1, PB.field(1, PB.field(1, code)))
+        return PB.field(1, result(code))
     }
     private func reply(_ id: UInt64, _ field: Int, _ body: Data) -> Data { PB.field(1, id) + PB.field(2, 1) + PB.field(field, body) }
 
     /// Drops what it holds, as it does when told to or when it loses its place.
-    func forget() { state = 1; item = nil; parts = [:]; received = nil; verified = [:] }
+    func forget() { state = 1; item = nil; parts = [:]; received = nil; verified = [:]; verifiedIn = [:] }
 
     func answer(_ body: Data) -> Data? {
         let fields = try! Fields(body), id = try! fields.integer(1)
-        if silent { seen.append("unanswered"); return nil }
+        if silent || installed { seen.append("unanswered"); return nil }
         if let raw = try? fields.bytes(7) {
             let request = try! Fields(raw)
-            precondition(request.values[4] == nil, "nothing here may ask the band to install")
+            if let raw = try? request.bytes(4) {
+                precondition(allowsInstall, "only an install may ask the band to install")
+                precondition(try! Fields(raw).integer(1) == 0, "the restart is not put off")
+                seen.append("install")
+                if let refuseInstall { return reply(id, 8, PB.field(4, result(refuseInstall))) }
+                // What was verified in an earlier connection does not count.
+                guard state == 3, !verified.isEmpty, verifiedIn.values.allSatisfy({ $0 == connection }) else { return reply(id, 8, PB.field(4, result(205))) }
+                running = received ?? running; installed = true
+                switch installAnswer {
+                case "general": return reply(id, 8, general(0))
+                case "bare": return reply(id, 8, PB.field(4, Data()))
+                case "none": return nil
+                default: return reply(id, 8, PB.field(4, result(0) + PB.field(2, 1)))
+                }
+            }
             if request.values[1] != nil {
                 seen.append("status")
                 var info = PB.field(2, 1) + PB.field(4, unavailable == nil ? state : 0)
@@ -89,10 +113,10 @@ final class PretendBand {
                 let good = item?.kind == kind && whole.count == item?.size && Data(Insecure.MD5.hash(data: whole)) == md5
                 let code = refuseVerify ?? (good ? 0 : 300)
                 if code == 0 {
-                    verified[kind] = whole; state = 3
+                    verified[kind] = whole; verifiedIn[kind] = connection; state = 3
                     if kind == 0 { received = item?.version } else { model = item?.version }
                 }
-                return reply(id, 8, PB.field(3, PB.field(1, PB.field(1, code))))
+                return reply(id, 8, PB.field(3, result(code)))
             }
             preconditionFailure("unknown update request")
         }
@@ -366,6 +390,94 @@ struct FirmwareUpdateTests {
             let (job, lines) = begin(.cancel, band)
             precondition(job.succeeded && band.seen == ["discard", "status"] && lines.last == "Discarded. The band holds nothing new.")
             precondition(begin(.cancel, PretendBand()).job.succeeded)
+        }
+
+        // The install: everything in one connection, then the band is told to keep it.
+        for answer in ["own", "general"] {
+            let band = PretendBand(); band.allowsInstall = true; band.installAnswer = answer
+            let (job, lines) = begin(.install, band)
+            precondition(job.succeeded && job.committed && band.installed && band.running == 1003366292, lines.joined(separator: "\n"))
+            precondition(band.seen == ["status", "key 20", "status", "start 0", "setup 1", "verify 0", "start 2", "setup 2", "verify 2", "install"], "\(band.seen)")
+            precondition(lines.last == "The band accepted the install. It now restarts into version 1003366292.")
+        }
+        // The install request itself, byte for byte: request 11 asks to install now.
+        do {
+            let band = PretendBand(); band.allowsInstall = true; band.key = 20
+            let job = FirmwareUpdate(plan(.install, model: nil))
+            var ids: UInt64 = 10, clock = 0.0, last = Data()
+            var queue = job.begin(ids: &ids, now: clock)
+            while !job.done, !queue.isEmpty {
+                last = queue.removeFirst()
+                if let reply = band.answer(last) { queue += job.receive(reply, ids: &ids, now: clock) }
+            }
+            precondition(last.suffix(6) == Data([0x3a, 0x04, 0x22, 0x02, 0x08, 0x00]) && job.committed)
+        }
+        // The band names a model bundle it threw away after a trial. An install sends the bundle anyway.
+        do {
+            let band = PretendBand(); band.allowsInstall = true; band.key = 20; band.model = 1075365371
+            precondition(begin(.install, band).job.succeeded && band.seen.contains("start 2"))
+        }
+        // An earlier update the band holds is discarded first, and nothing verified before counts.
+        do {
+            let band = PretendBand(); band.allowsInstall = true; band.key = 20; band.state = 3; band.received = 5
+            let (job, _) = begin(.install, band)
+            precondition(job.succeeded && band.seen.prefix(4) == ["status", "discard", "status", "start 0"])
+        }
+        // An answer with no result, or no answer at all: taken as asked for, never stopped or discarded.
+        for answer in ["bare", "none"] {
+            let band = PretendBand(); band.allowsInstall = true; band.key = 20; band.installAnswer = answer
+            let (job, lines) = begin(.install, band)
+            precondition(job.done && job.committed && !job.succeeded && band.seen.last == "install", lines.joined(separator: "\n"))
+            var ids: UInt64 = 900
+            precondition(job.stop(ids: &ids, now: 0).isEmpty && job.tick(ids: &ids, now: 9999).isEmpty)
+        }
+        // A refused install: the band keeps running what it had and is told to discard.
+        do {
+            let band = PretendBand(); band.allowsInstall = true; band.key = 20; band.refuseInstall = 201
+            let (job, lines) = begin(.install, band)
+            precondition(job.done && !job.committed && !job.succeeded && !band.installed && band.state == 1 && band.seen.suffix(2) == ["install", "discard"])
+            precondition(lines.contains("Failed: the band refused to install: power state (201)."))
+        }
+        // A failed verify during an install never reaches the install request.
+        do {
+            let band = PretendBand(); band.allowsInstall = true; band.key = 20; band.refuseVerify = 300
+            let (job, _) = begin(.install, band)
+            precondition(!job.committed && !band.seen.contains("install") && band.seen.last == "discard")
+        }
+        // A dropped link during an install: it starts again from the first item, so that the
+        // install is asked for in the connection that verified everything.
+        for drop in [9_500, 20_000 + 4_750] {
+            let band = PretendBand(); band.allowsInstall = true; band.key = 20
+            let job = FirmwareUpdate(plan(.install))
+            var ids: UInt64 = 10, clock = 0.0
+            var lines = run(job, band, ids: &ids, clock: &clock, queue: job.begin(ids: &ids, now: clock)) { band.bytes >= drop }
+            job.linkLost(); band.connection += 1
+            ids = 3
+            lines += run(job, band, ids: &ids, clock: &clock, queue: job.resume(ids: &ids, now: clock))
+            precondition(job.succeeded && band.installed, lines.joined(separator: "\n"))
+            precondition(band.seen.filter { $0 == "start 0" }.count == 2 && band.seen.filter { $0 == "discard" }.count == 1 && band.seen.filter { $0 == "install" }.count == 1)
+        }
+        // A link that drops just after the install was asked for: the update ends there and asks nothing more.
+        do {
+            let band = PretendBand(); band.allowsInstall = true; band.key = 20; band.installAnswer = "none"
+            let job = FirmwareUpdate(plan(.install))
+            var ids: UInt64 = 10, clock = 0.0
+            run(job, band, ids: &ids, clock: &clock, queue: job.begin(ids: &ids, now: clock)) { band.installed }
+            // Once the install is asked for, stopping sends nothing: a discard now could meet a band part way through.
+            precondition(!job.done && job.stop(ids: &ids, now: clock).isEmpty && !job.done)
+            job.linkLost()
+            precondition(job.done && job.committed && job.resume(ids: &ids, now: clock).isEmpty)
+            job.abandon()
+            precondition(job.committed)
+        }
+        // Stopping an install part way discards, and the band keeps what it ran.
+        do {
+            let band = PretendBand(); band.allowsInstall = true; band.key = 20
+            let job = FirmwareUpdate(plan(.install))
+            var ids: UInt64 = 10, clock = 0.0
+            run(job, band, ids: &ids, clock: &clock, queue: job.begin(ids: &ids, now: clock)) { band.bytes >= 4_750 }
+            run(job, band, ids: &ids, clock: &clock, queue: job.stop(ids: &ids, now: clock))
+            precondition(job.done && !job.committed && !band.installed && band.state == 1 && band.running == 770435744)
         }
         print("FirmwareUpdateTests passed")
     }
