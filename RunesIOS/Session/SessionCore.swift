@@ -148,6 +148,13 @@ final class SessionCore: @unchecked Sendable {
     private var tightnessStreams = false
     private var tightnessWatching = false
     private var tightnessClosing = false
+    /// The band probe while it runs, and the count that tells one of its waits from the next.
+    private var probe: BandProbe?
+    private var probeWait = 0
+    /// Stream switches the probe tried, named as off the next time the usual streams are asked for.
+    private var streamsOff = Data()
+    /// Lines from the band probe as it runs, and whether it is still running.
+    var onProbe: (([String], Bool) -> Void)?
     private var lastSettings: String?
     private var pendingHandTarget: (band: UUID, attempt: Date)?
     private static let notNearbyAfter: TimeInterval = 30
@@ -242,7 +249,7 @@ final class SessionCore: @unchecked Sendable {
             snapshot.handSetting.cancel(); feedbackInFlight = nil
             wristFeedbackGate.cancel(); pendingHandTarget = nil
             onRelayReady?(nil)
-            endTightness()
+            endTightness(); endProbe()
         }
         record("connection", "\(state.rawValue): \(message)"); publish()
     }
@@ -431,7 +438,7 @@ final class SessionCore: @unchecked Sendable {
 
     private func reconcileStreams() throws {
         // The band tightness test asks for streams itself while it runs, and this is called again when it ends.
-        guard pendingStreams == nil, !emgReading, tightnessSince == nil || snapshot.state != .streaming else { return }
+        guard pendingStreams == nil, !emgReading, (tightnessSince == nil && probe == nil) || snapshot.state != .streaming else { return }
         // A firmware update runs with gestures alone. The extra traffic made a band lose its place.
         let quiet = update != nil
         let wantEMG = localEMG && emgBlocked == nil && !emgHardBlocked && !quiet
@@ -454,8 +461,8 @@ final class SessionCore: @unchecked Sendable {
         onRelayReady?(nil)
         // The model's scores are named only once handwriting has been asked for, on or off.
         try rpc("start_streams", 5, 4, BandProtocol.streamFlags(gyro: requested.gyro, orientation: requested.orientation, emg: wantEMG,
-                                                                 inference: wantWriting || activeWriting ? wantWriting : nil))
-        pendingStreams = requested; pendingEMG = wantEMG; pendingWriting = wantWriting
+                                                                 inference: wantWriting || activeWriting ? wantWriting : nil) + streamsOff)
+        pendingStreams = requested; pendingEMG = wantEMG; pendingWriting = wantWriting; streamsOff = Data()
     }
 
     /// Limit automatic reads; an explicit wrist change can retry.
@@ -571,7 +578,7 @@ final class SessionCore: @unchecked Sendable {
 
     /// Reads every setting the band can name, one request at a time.
     func readNamedSettings() {
-        guard tightnessSince == nil else { onNamedSetting?(nil, "Wait for the band tightness test to end."); onNamedSetting?(nil, ""); return }
+        guard tightnessSince == nil, probe == nil else { onNamedSetting?(nil, "Wait for the band test to end."); onNamedSetting?(nil, ""); return }
         guard snapshot.state == .streaming, settingRead == nil, settingWrite == nil, update == nil else { return }
         record("band_settings", "Named settings: reading.")
         settingRead = (0, 0, nil)
@@ -670,7 +677,7 @@ final class SessionCore: @unchecked Sendable {
     /// stops at the first that returns a number, then puts back what it changed. It sends
     /// only requests about the check, stream requests and one read. It writes no setting the band keeps.
     func checkTightness(_ setting: NamedSettings.Setting, worn: UInt64?) {
-        guard tightnessSince == nil else { return }
+        guard tightnessSince == nil, probe == nil else { return }
         guard snapshot.state == .streaming, settingRead == nil, settingWrite == nil, pendingStreams == nil, !emgReading, update == nil, let proto,
               setting.name == BandTightness.trigger, let capability = capabilities[setting.id], let steps = BandTightness.plan(capability) else {
             tightness("Not started: the band is busy, not connected, or does not list running the check.")
@@ -791,6 +798,62 @@ final class SessionCore: @unchecked Sendable {
         do { try reconcileStreams() } catch { fail(error) }
     }
 
+    /// Runs the band probe: tries stream switches and requests the app does not use, one at a
+    /// time, and writes down what the band does. The usual streams are asked for again at the end.
+    func startProbe(_ trials: [BandProbe.Trial]) {
+        guard probe == nil else { return }
+        guard snapshot.state == .streaming, let proto, update == nil, tightnessSince == nil, !writingWanted, pendingStreams == nil, !emgReading,
+              settingRead == nil, settingWrite == nil else {
+            record("band_probe", "Not started: the band is busy or not connected."); onProbe?(["Not started: the band is busy or not connected."], false); return
+        }
+        probe = BandProbe(trials, usual: BandProtocol.streamFlags(gyro: activeStreams?.gyro ?? false, orientation: activeStreams?.orientation ?? false, emg: activeEMG))
+        proto.watchesOther = true
+        record("band_probe", "Started: \(trials.count) to try.")
+        stepProbe()
+    }
+
+    /// Ends the probe after whatever is on has been turned off.
+    func stopProbe() {
+        guard let probe else { return }
+        probe.stop(); probeWait += 1
+        stepProbe()
+    }
+
+    private func stepProbe() {
+        guard let probe else { return }
+        let ask = probe.next()
+        switch ask {
+        case .send(let channel, let field, let payload):
+            do { try rpc(BandProbe.operation, channel, field, payload) } catch { return endProbe("Could not ask the band.") }
+        case .listen(let seconds):
+            probeWait += 1
+            let wait = probeWait
+            transport.perform(after: seconds) { [weak self] in
+                guard let self, self.probeWait == wait else { return }
+                self.stepProbe()
+            }
+        case .wait: break
+        case .done: return endProbe()
+        }
+        let lines = probe.takeLines()
+        lines.forEach { record("band_probe", $0) }
+        onProbe?(lines + ["Trying \(probe.progress)."], true)
+    }
+
+    private func endProbe(_ problem: String? = nil) {
+        guard let probe else { return }
+        self.probe = nil; probeWait += 1
+        let dropped = snapshot.state == .streaming ? nil : probe.on.map { "The link dropped while these were on: \($0)." } ?? "The link dropped."
+        let lines = probe.takeLines() + [problem, dropped, "Done."].compactMap { $0 }
+        lines.forEach { record("band_probe", $0) }
+        onProbe?(lines, false)
+        proto?.watchesOther = update != nil
+        guard snapshot.state == .streaming else { return }
+        // The usual streams are asked for the normal way, with every switch tried named as off.
+        streamsOff = probe.off; activeStreams = nil
+        do { try reconcileStreams() } catch { fail(error) }
+    }
+
     /// Plays one of the band's own patterns, 1 or 2, in place of anything still playing.
     /// The reference implementation calls these its gesture feedback patterns.
     func perform(pattern: UInt64) {
@@ -903,6 +966,7 @@ final class SessionCore: @unchecked Sendable {
                 if let info = BandInfo.describe(payload) { record("band_info", info); onInfo?(info) }
                 onDeviceReply?(payload)
             case "named_trigger", "named_streams": tightnessAnswer(payload)
+            case BandProbe.operation: probe?.answered(payload); stepProbe()
             case "set_hand":
                 if snapshot.handSetting.wrote() { try rpc("read_hand", 6, 5) }
             case "read_hand":
@@ -962,6 +1026,7 @@ final class SessionCore: @unchecked Sendable {
                 sendUpdate(update.receive(payload, ids: &proto.requestNumber, now: updateTime()))
                 return
             }
+            if let probe { probe.heard(kind: kind, payload: payload); return }
             // The journal is bounded, so a band that floods is cut off at 60 lines.
             guard tightnessSince != nil, tightnessHeard < 60 else { return }
             tightnessHeard += 1
@@ -1199,7 +1264,7 @@ final class SessionCore: @unchecked Sendable {
     /// does, and turning it off puts the band's own standby time back.
     func setHandwriting(_ on: Bool) {
         guard writingWanted != on else { return }
-        guard snapshot.state == .streaming, update == nil, tightnessSince == nil else {
+        guard snapshot.state == .streaming, update == nil, tightnessSince == nil, probe == nil else {
             record("band_writing", "Not changed: the band is busy or not connected."); onWriting?(writingWanted, writing.text, writing.rows); return
         }
         if on, let standby, standby != 0 { UserDefaults.standard.set(Int(standby), forKey: "bandStandbyToRestore") }
@@ -1236,7 +1301,7 @@ final class SessionCore: @unchecked Sendable {
     /// page asks the person before any of them, and says an install cannot be undone.
     func startUpdate(_ plan: FirmwareUpdate.Plan) {
         guard update == nil else { return }
-        guard snapshot.state == .streaming, let proto, tightnessSince == nil, settingRead == nil, settingWrite == nil, pendingStreams == nil, !emgReading else {
+        guard snapshot.state == .streaming, let proto, tightnessSince == nil, probe == nil, settingRead == nil, settingWrite == nil, pendingStreams == nil, !emgReading else {
             let line = "Not started: the band is busy or not connected."
             record("band_update", line); onUpdate?([line], nil, .failed); return
         }
