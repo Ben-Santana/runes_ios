@@ -235,6 +235,10 @@ says it cannot be undone:
 
 Build 64 comes first because it is the newest firmware a public project has connected to.
 
+The button goes one build at a time. On a band that runs build 64 it installs build 72, and
+only if Meta offers build 72 when asked as the version the band runs. There is no second
+build to fall back on in that step: a refusal stops it with nothing installed.
+
 ## The update engine
 
 `FirmwareUpdate` writes the requests and reads the answers, and `SessionCore` carries them on

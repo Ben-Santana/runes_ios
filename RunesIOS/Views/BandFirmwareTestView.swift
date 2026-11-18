@@ -26,9 +26,17 @@ final class BandFirmwareTest: ObservableObject {
     /// The whole update from one tap is under way.
     @Published private(set) var updating = false
     private var ended: CheckedContinuation<FirmwareUpdate.Ending, Never>?
-    /// The build the one tap update installs, and the one it goes on to if the band will not
-    /// take the first one's models: the band reports holding that one's since a trial.
-    static let firstChoice = "1003366292", secondChoice = "1075365371"
+    /// The builds the one tap update installs, lowest first, one step at a time. Build 64 is
+    /// the first step from older firmware because it is the one this app was proven on.
+    static let ladder: [(target: String, name: String)] = [("1003366292", "build 64"), ("1075365371", "build 72")]
+    /// The builds Meta offered when asked as the version the band runs now.
+    private var offeredToBand: Set<String> = []
+    /// The next build up from what the band runs, if this app installs one.
+    var nextStep: (target: String, name: String)? {
+        guard let running = band.flatMap({ UInt64($0.software) }) else { return nil }
+        return Self.ladder.first { (UInt64($0.target) ?? 0) > running }
+    }
+    @Published private(set) var nextName: String?
     /// The key Meta wrapped for this band. It stays in memory.
     @Published private(set) var hasKey = false
     private var wrappedKey: Data? { didSet { hasKey = wrappedKey != nil } }
@@ -50,6 +58,7 @@ final class BandFirmwareTest: ObservableObject {
     func deviceReply(_ reply: Data) {
         guard let identity = BandInfo.identity(reply) else { return }
         band = identity
+        nextName = nextStep?.name
         guard let awaiting else { return }
         if identity.software == String(awaiting) {
             self.awaiting = nil
@@ -94,6 +103,7 @@ final class BandFirmwareTest: ObservableObject {
                 guard let token = self.session?.accessToken else { return }
                 self.say("Band runs \(band.software).")
                 var offers: [FirmwareOffer] = []
+                self.offeredToBand = []
                 for version in [band.software, "1"] {
                     for host in FirmwareService.hosts {
                         for question in FirmwareOffer.Question.allCases {
@@ -113,6 +123,7 @@ final class BandFirmwareTest: ObservableObject {
                             switch answer.reply {
                             case .offer(let offer):
                                 if !offers.contains(offer) { offers.append(offer) }
+                                if version == band.software { self.offeredToBand.insert(offer.target) }
                                 self.say("\(asked): \(offer.summary)\(note)")
                             case .nothing: self.say("\(asked): nothing offered (HTTP \(answer.status))\(note)")
                             case .refused(let codes): self.say("\(asked): refused (HTTP \(answer.status)\(codes.isEmpty ? "" : ", \(codes)"))")
@@ -312,13 +323,25 @@ final class BandFirmwareTest: ObservableObject {
 
     private func update() async {
         let controller = SessionController.shared
-        say("Update: build 64 first. If the band will not take its models, build 72 as the Meta app would install it.")
-        guard let first = await ready(Self.firstChoice) else {
-            return say("Update: stopped. Build 64 could not be made ready, and nothing was sent to the band.")
+        guard let band, let step = nextStep else {
+            return say("Update: the band runs \(self.band?.software ?? "an unknown version"), and this app has no newer build to install.")
         }
-        // The second build is made ready before anything is sent, so a refusal can be followed at once.
-        let second = await ready(Self.secondChoice)
-        if second == nil { say("Update: build 72 could not be made ready, so there is nothing to go on to if build 64 is refused.") }
+        say("Update: the band runs \(band.software). Next is \(step.name).")
+        // Only a build Meta offers this band today, asked as the version it runs, is installed.
+        await askMeta(older: false)
+        guard offeredToBand.contains(step.target) else {
+            return say("Update: stopped. Meta does not offer \(step.name) to this band as it is now, and nothing was sent to the band.")
+        }
+        guard let first = await ready(step.target) else {
+            return say("Update: stopped. \(step.name) could not be made ready, and nothing was sent to the band.")
+        }
+        // From older firmware the band may hold another build's models since a trial. That build
+        // is made ready before anything is sent, so a refusal can be followed at once.
+        var second: (package: FirmwarePackage, name: String, key: Data?)?
+        if step.target == Self.ladder[0].target {
+            second = await ready(Self.ladder[1].target)
+            if second == nil { say("Update: \(Self.ladder[1].name) could not be made ready, so there is nothing to go on to if \(step.name) is refused.") }
+        }
         package = first.package; packageName = first.name; wrappedKey = first.key
         var ending = await send(first.package.plan(.install, wrappedKey: first.key))
         if ending == .modelRefused, let second {
@@ -335,7 +358,7 @@ final class BandFirmwareTest: ObservableObject {
         let back = await wait(900) { self.awaiting == nil && controller.snapshot.state == .streaming ? true : nil }
         if back == nil {
             say(controller.snapshot.state == .streaming
-                ? "Update: the band is connected and says it runs \(band?.software ?? "an unknown version"), not the new one."
+                ? "Update: the band is connected and says it runs \(self.band?.software ?? "an unknown version"), not the new one."
                 : "Update: the band has not connected again in 15 minutes. The journal's connection and protocol lines say how far it gets.")
         }
         guard controller.snapshot.state == .streaming else { return }
@@ -429,8 +452,8 @@ struct BandFirmwarePanel: View {
 
     var body: some View {
         PanelGroup("Firmware update", caption: "Asks Meta which firmware it offers this band, on Meta's own sign-in page, and gets a package onto this phone. The key, trial and install rows send to the band and ask first. A trial ends with the band discarding everything. An install cannot be undone.") {
-            ActionRow(test.updating ? "Updating the band…" : "Update the band") { confirmUpdate = true }
-                .disabled(busy || !connected || !test.knowsBand)
+            ActionRow(test.updating ? "Updating the band…" : test.nextName.map { "Update the band to \($0)" } ?? (test.knowsBand ? "The band is up to date" : "Update the band")) { confirmUpdate = true }
+                .disabled(busy || !connected || test.nextName == nil)
             Rule()
             ActionRow(test.checking ? "Asking Meta…" : "Check with Meta") { test.check() }
                 .disabled(busy || !test.knowsBand)
@@ -495,11 +518,11 @@ struct BandFirmwarePanel: View {
                     .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: test.cancelSignIn) } }
             }
         }
-        .confirmationDialog("Update the band? This cannot be undone.", isPresented: $confirmUpdate, titleVisibility: .visible) {
+        .confirmationDialog("Update the band to \(test.nextName ?? "the next build")? This cannot be undone.", isPresented: $confirmUpdate, titleVisibility: .visible) {
             Button("Update, this cannot be undone", role: .destructive) { test.updateBand() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Runes installs build 64. If the band will not take that build's models, it installs build 72 with the models the band already holds, as the Meta app would, and only if the band confirms them. The band restarts into the new firmware and can never go back to the old one. Other apps that talk to the band directly may stop working with it. Its battery must be at \(BandFirmwareTest.batteryFloor)% or more. Keep this screen open. It takes 10 to 20 minutes, then Runes checks the band by itself.")
+            Text(updateDetail)
         }
         .confirmationDialog(question, isPresented: Binding(get: { asking != nil }, set: { if !$0 { asking = nil } }), titleVisibility: .visible, presenting: asking) { mode in
             Button(button(mode), role: mode == .key || mode == .install ? .destructive : nil) { test.start(mode) }
@@ -507,6 +530,15 @@ struct BandFirmwarePanel: View {
         } message: { mode in
             Text(detail(mode))
         }
+    }
+
+    private var updateDetail: String {
+        let floor = BandFirmwareTest.batteryFloor
+        let common = "The band restarts into the new firmware and can never go back. Its battery must be at \(floor)% or more. Keep this screen open. It takes 10 to 20 minutes, then Runes checks the band by itself."
+        if test.nextName == BandFirmwareTest.ladder[0].name {
+            return "Runes installs build 64. If the band will not take that build's models, it installs build 72 with the models the band already holds, as the Meta app would, and only if the band confirms them. Other apps that talk to the band directly may stop working with it. " + common
+        }
+        return "No public project has connected to this build. If it changed how the band talks, Runes cannot use the band until Runes is changed, and neither may other apps. " + common
     }
 
     private var question: String {
