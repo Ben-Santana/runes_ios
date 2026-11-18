@@ -121,16 +121,20 @@ struct BandCapability: Equatable, Sendable {
 /// The band's own tightness check. The band lists a setting named `trigger-band-tightness`
 /// and says of it that it runs the check and returns the tightness it detects. Asked to run,
 /// the band answers at once without a number, so the number has to come some other way.
-/// This tries the ways the band's own list and message definitions point to, one at a time.
-/// Nothing here writes a setting the band keeps.
+/// Later band software lists a second setting, `trigger-multi-tightness`, which gives a wrist
+/// state from 0 to 3 and can also be read. This tries the ways the band's own list and message
+/// definitions point to, one at a time. Nothing here writes a setting the band keeps.
 enum BandTightness {
-    static let trigger = "trigger-band-tightness"
-    /// The band's yes or no setting for whether it is on a wrist.
-    static let worn = "obd"
-    /// The actions as the band's list of settings shows them. Every setting that does something
-    /// lists 2. Only this one and the wrist setting list 3 and 4, which fits starting and
-    /// stopping updates. A read is 0 and a write is 1, and neither is ever sent here.
-    static let run: UInt64 = 2, watch: UInt64 = 3, unwatch: UInt64 = 4
+    /// The two settings the test may ask about, by the band's names for them.
+    enum Subject: String, CaseIterable, Sendable {
+        case tightness = "trigger-band-tightness", state = "trigger-multi-tightness"
+        var word: String { self == .tightness ? "tightness" : "wrist state" }
+    }
+    static let trigger = Subject.tightness.rawValue
+    /// The actions as the band's list of settings shows them. Every setting that can be read
+    /// lists 0, and every setting that does something lists 2. Only these two and the wrist
+    /// setting list 3 and 4, which fits starting and stopping updates. A write is 1 and is never sent here.
+    static let read: UInt64 = 0, run: UInt64 = 2, watch: UInt64 = 3, unwatch: UInt64 = 4
     /// The stream flags for updates about settings and for updates from the band's detectors.
     static let settingUpdates = 22, detectorUpdates = 27
     /// The kind of frame the band uses for a message it sends without being asked.
@@ -141,12 +145,12 @@ enum BandTightness {
 
     /// One thing the test does. Each waits for its answer before the next.
     enum Step: Equatable, Sendable {
-        /// Reads whether the band says it is on a wrist.
-        case worn
-        /// Starts or stops updates about the check.
-        case act(UInt64)
-        /// Runs the check, with a value or without, and names the way being tried.
-        case run(value: Int64?, way: String)
+        /// Reads the wrist state.
+        case read
+        /// Starts or stops updates about one of the settings.
+        case act(Subject, UInt64)
+        /// Runs one of the checks, with a value or without, and names the way being tried.
+        case run(Subject, value: Int64?, way: String)
         /// Asks for the usual streams with one more flag, or with none to put them back.
         case streams(Int?)
         /// Waits this many seconds for the band to send something.
@@ -154,30 +158,41 @@ enum BandTightness {
     }
 
     /// The ways to try, least first: run alone, then with updates started, then with each
-    /// stream of updates turned on. Nil when the band does not list running the check.
-    static func plan(_ capability: BandCapability) -> [Step]? {
-        guard capability.actions.contains(run) else { return nil }
-        var steps: [Step] = [.worn, .run(value: nil, way: "run alone"), .listen(5)]
-        let watched = capability.actions.contains(watch)
-        if watched { steps += [.act(watch), .listen(3), .run(value: nil, way: "after action 3"), .listen(8)] }
-        if capability.kind == .whole, (capability.low ?? 0) <= 0, (capability.high ?? 0) >= 0 {
-            steps += [.run(value: 0, way: watched ? "after action 3, with value 0" : "with value 0"), .listen(8)]
+    /// stream of updates turned on. The wrist state is read before anything and after each
+    /// run. Nil when the band lists running neither check.
+    static func plan(_ capabilities: [Subject: BandCapability]) -> [Step]? {
+        func listing(_ action: UInt64) -> [Subject] { Subject.allCases.filter { capabilities[$0]?.actions.contains(action) == true } }
+        let runs = listing(run), reads = listing(read).contains(.state)
+        guard !runs.isEmpty else { return nil }
+        func round(_ way: String) -> [Step] {
+            runs.flatMap { [Step.run($0, value: nil, way: way), .listen(4)] + (reads ? [.read] : []) }
         }
-        steps += [.streams(settingUpdates), .run(value: nil, way: "with setting updates on"), .listen(8)]
-        steps += [.streams(detectorUpdates), .run(value: nil, way: "with detector updates on"), .listen(8)]
+        var steps: [Step] = (reads ? [.read] : []) + round("run alone")
+        let watched = listing(watch)
+        if !watched.isEmpty { steps += watched.map { .act($0, watch) } + [.listen(3)] + round("after action 3") }
+        steps += [.streams(settingUpdates)] + round("with setting updates on")
+        steps += [.streams(detectorUpdates)] + round("with detector updates on")
         return steps
     }
 
-    /// A request about the check. Nil for any other setting, for a read or a write, for an
-    /// action the band does not list, and for a value outside what the band describes.
-    static func request(id: UInt64, name: String, capability: BandCapability, action: UInt64, value: Int64?) -> Data? {
-        guard name == trigger, [run, watch, unwatch].contains(action), capability.actions.contains(action) else { return nil }
+    /// A request about one of the two settings. Nil for any other setting, for a write, for a
+    /// read of the first setting, for an action the band does not list, and for a value outside
+    /// what the band describes.
+    static func request(_ subject: Subject, id: UInt64, name: String, capability: BandCapability, action: UInt64, value: Int64?) -> Data? {
+        let allowed = subject == .state ? [read, run, watch, unwatch] : [run, watch, unwatch]
+        guard name == subject.rawValue, allowed.contains(action), capability.actions.contains(action) else { return nil }
         var body = PB.field(1, id) + PB.field(2, action)
         if let value {
             guard action == run, capability.kind == .whole, let low = capability.low, let high = capability.high, low <= value, value <= high else { return nil }
             body += PB.field(3, PB.field(1, UInt64(bitPattern: value)))
         }
         return PB.field(3, body)
+    }
+
+    /// Whether the band said no to a request about a setting. Silence is not a no.
+    static func refused(_ payload: Data) -> Bool {
+        guard let fields = try? Fields(payload), let status = try? fields.integer(2) else { return false }
+        return status != 1 || (BandCapability.code(from: payload) ?? 0) != 0
     }
 
     /// The usual stream flags with more turned on.
@@ -244,22 +259,16 @@ enum BandTightness {
         return said.id == id && said.code == 0 ? said.values.first : nil
     }
 
-    /// The tightness in a message the band sent without being asked: an update about the
-    /// check's setting that carries a number, or a detector update that names tightness.
-    static func number(kind: UInt32, payload: Data, id: UInt64) -> Double? {
+    /// A number in a message the band sent without being asked: an update about one of these
+    /// settings that carries a value, or a detector update that names tightness.
+    static func number(kind: UInt32, payload: Data, ids: [UInt64]) -> (value: Double, from: String)? {
         guard kind == update, let fields = try? Fields(payload) else { return nil }
         if let message = try? Fields(Fields(fields.bytes(15)).bytes(1)) {
             let said = answer(message)
-            if said.id == id, said.code == 0, let value = said.values.first { return value }
+            if ids.contains(said.id), said.code == 0, let value = said.values.first { return (value, "an update about setting \(said.id)") }
         }
-        if let detector = try? Fields(fields.bytes(21)), let state = try? detector.integer(3) { return Double(state) }
+        if let detector = try? Fields(fields.bytes(21)), let state = try? detector.integer(3) { return (Double(state), "a detector update") }
         return nil
-    }
-
-    /// One line for the band's answer to a read of whether it is on a wrist.
-    static func worn(_ payload: Data, id: UInt64) -> String {
-        guard let value = NamedSettings.value(of: id, from: payload)?.value else { return "On wrist: not readable." }
-        return "On wrist: \(value == 1 ? "yes" : value == 0 ? "no" : String(value))."
     }
 
     /// One line for a frame that is not part of a stream the app asked for. What is known of it

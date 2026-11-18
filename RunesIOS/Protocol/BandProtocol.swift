@@ -111,7 +111,8 @@ final class BandProtocol {
         if !words.isEmpty { types[channel] = nil; types[channel | 0x8000] = nil }
         opened.insert(channel)
         pending[channel] = Pending(operation: operation, id: nextID, deadline: now + (["wrist_feedback", "band_pattern"].contains(operation) ? 5 : 8), flags: ["start_streams", "stop_streams"].contains(operation) ? payload : nil)
-        let body = pending[channel]?.flags == nil ? payload : BandStreams.request(payload, version: version)
+        // A stream request made by a test is shaped for the band's version like any other.
+        let body = pending[channel]?.flags == nil && operation != "named_streams" ? payload : BandStreams.request(payload, version: version)
         return try encrypt(frame(channel | 0x8000, words, PB.field(1, nextID) + PB.field(field, body)))
     }
     /// A request sent without waiting for its answer, on a channel already in use: for a buzz

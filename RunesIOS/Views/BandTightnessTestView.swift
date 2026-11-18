@@ -5,13 +5,13 @@ import SwiftUI
 final class BandTightnessTest: ObservableObject {
     static let shared = BandTightnessTest()
 
-    /// The setting that starts the check and how the band describes it, once the named settings have been read.
-    @Published private(set) var trigger: (setting: NamedSettings.Setting, capability: BandCapability)?
+    /// The settings the test asks about and how the band describes each, once the named settings have been read.
+    @Published private(set) var subjects: [BandTightness.Subject: (setting: NamedSettings.Setting, capability: BandCapability)] = [:]
     @Published private(set) var lines: [String] = []
     @Published private(set) var listening = false
 
     func described(_ setting: NamedSettings.Setting, _ capability: BandCapability) {
-        if setting.name == BandTightness.trigger { trigger = (setting, capability) }
+        if let subject = BandTightness.Subject(rawValue: setting.name) { subjects[subject] = (setting, capability) }
     }
     func start() { lines = []; listening = true }
     /// A line from the test. An empty line ends it.
@@ -28,26 +28,27 @@ struct BandTightnessPanel: View {
     @ObservedObject private var tests = BandTests.shared
 
     var body: some View {
-        if let trigger = test.trigger {
-            let runs = BandTightness.plan(trigger.capability) != nil
+        let known = BandTightness.Subject.allCases.compactMap { test.subjects[$0] }
+        if known.isEmpty {
+            PanelGroup("Band tightness", caption: "Read the named settings first. The band's tightness check appears here once the band has described it.") {
+                lines("Not read yet.")
+            }
+        } else {
+            let runs = BandTightness.plan(test.subjects.mapValues(\.capability)) != nil
             PanelGroup("Band tightness", caption: runs
                        ? "Wear the band as usual and keep your arm still. One tap tries each way of getting the band's tightness in turn, for up to a minute, and stops at the first that returns a number. The streams are put back after. No setting is written."
                        : "The band does not list running this check. Copy the results so it can be worked out.") {
-                lines("#\(trigger.setting.id) \(trigger.setting.name): \(trigger.capability.summary)")
+                lines(known.map { "#\($0.setting.id) \($0.setting.name): \($0.capability.summary)" }.joined(separator: "\n"))
                 Rule()
                 ActionRow(test.listening ? "Listening to the band…" : "Run the tightness check") {
                     test.start()
-                    SessionController.shared.checkBandTightness(trigger.setting, worn: tests.named[BandTightness.worn]?.id)
+                    SessionController.shared.checkBandTightness(known.map(\.setting))
                 }
                 .disabled(!ready || !runs || test.listening || tests.busy)
                 if !test.lines.isEmpty {
                     Rule()
                     lines(test.lines.joined(separator: "\n"))
                 }
-            }
-        } else {
-            PanelGroup("Band tightness", caption: "Read the named settings first. The band's tightness check appears here once the band has described it.") {
-                lines("Not read yet.")
             }
         }
     }
@@ -60,30 +61,34 @@ struct BandTightnessPanel: View {
 
 #if DEBUG
 extension BandTightnessTest {
-    /// Stands in for a band that has described the check and returns a number once updates are started.
+    /// Stands in for a band that has described both checks and whose wrist state changes after a run.
     func preview() async {
-        let described = PB.field(2, 1) + PB.field(NamedSettings.field, PB.field(2, PB.field(3, Data(BandTightness.trigger.utf8)) + PB.field(4, 3)
-            + PB.field(6, Data([2, 3, 4])) + PB.field(7, PB.field(3, 100)) + PB.field(18, 1)))
-        guard let setting = NamedSettings.setting(from: described), let capability = BandCapability(describing: described) else { return }
-        self.described(setting, capability)
-        func answer(_ action: UInt64) -> String {
-            BandTightness.reply(PB.field(2, 1) + PB.field(NamedSettings.field, PB.field(3, PB.field(1, 3) + PB.field(2, action))))
+        func described(_ name: String, _ id: UInt64, actions: [UInt8], high: UInt64) -> Data {
+            PB.field(2, 1) + PB.field(NamedSettings.field, PB.field(2, PB.field(3, Data(name.utf8)) + PB.field(4, id)
+                + PB.field(6, Data(actions)) + PB.field(7, PB.field(3, high)) + PB.field(18, 2)))
         }
-        let update = PB.field(15, PB.field(1, PB.field(1, 3) + PB.field(2, 2) + PB.field(4, PB.field(1, 37))))
+        for reply in [described(BandTightness.Subject.tightness.rawValue, 4, actions: [2, 3, 4], high: 100),
+                      described(BandTightness.Subject.state.rawValue, 5, actions: [0, 2, 3, 4], high: 3)] {
+            guard let setting = NamedSettings.setting(from: reply), let capability = BandCapability(describing: reply) else { return }
+            self.described(setting, capability)
+        }
+        func answer(_ id: UInt64, _ action: UInt64) -> String {
+            BandTightness.reply(PB.field(2, 1) + PB.field(NamedSettings.field, PB.field(3, PB.field(1, id) + PB.field(2, action))))
+        }
         let steps: [(Double, String)] = [
-            (3, "Started: setting 3, actions 2 3 4."),
-            (0.3, "+0.1s On wrist: yes."),
-            (0.3, "+0.1s Asked action 2: run alone."),
-            (0.3, "+0.2s " + answer(2)),
-            (2, "+5.2s Asked action 3."),
-            (0.3, "+5.3s " + answer(3)),
-            (1.5, "+8.3s Asked action 2: after action 3."),
-            (0.3, "+8.4s " + answer(2)),
-            (1.5, "+9.9s " + BandTightness.describe(kind: BandTightness.update, channel: 1, payload: update)),
-            (0.1, "+9.9s Number: 37."),
-            (0.3, "+9.9s Asked action 4."),
-            (0.3, "+10.0s " + answer(4)),
-            (0.1, "+10.0s Done: tightness 37 arrived, after action 3. 1 other messages.")
+            (3, "Started: tightness is setting 4, actions 2 3 4; wrist state is setting 5, actions 0 2 3 4."),
+            (0.3, "+0.1s Wrist state reads 3."),
+            (0.3, "+0.1s Asked tightness action 2: run alone."),
+            (0.3, "+0.2s " + answer(4, 2)),
+            (2, "+4.3s Wrist state reads 3."),
+            (0.3, "+4.3s Asked wrist state action 2: run alone."),
+            (0.3, "+4.4s " + answer(5, 2)),
+            (2, "+8.5s Wrist state reads 2."),
+            (0.3, "+8.5s Asked tightness action 3."),
+            (0.3, "+8.6s " + answer(4, 3)),
+            (1.5, "+20.1s Asked tightness action 4."),
+            (0.3, "+20.2s " + answer(4, 4)),
+            (0.1, "+20.2s Done: wrist state went from 3 to 2, wrist state run alone. Wrist state read 3 at first and 2 at the end. 0 other messages.")
         ]
         for (index, step) in steps.enumerated() {
             try? await Task.sleep(for: .seconds(step.0))
