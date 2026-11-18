@@ -14,6 +14,8 @@ final class BandFirmwareTest: ObservableObject {
     @Published private(set) var offers: [FirmwareOffer] = []
     /// The package that was fetched and checked against its own list.
     @Published private(set) var package: FirmwarePackage?
+    /// What to call that package on the page: Meta's build number when it gave one.
+    @Published private(set) var packageName = ""
     @Published private(set) var fetching = false
     /// Whether something is being sent to the band, and how far the current item is.
     @Published private(set) var running = false
@@ -145,7 +147,8 @@ final class BandFirmwareTest: ObservableObject {
                 }.value
                 guard String(package.version) == kept.target else { throw BandError.storage("The kept package holds another version") }
                 self.package = package; self.wrappedKey = nil
-                self.say("Package checked from this phone: \(package.summary).")
+                self.packageName = kept.build.map { "build \($0)" } ?? "version \(package.version)"
+                self.say("Package checked from this phone: \(self.packageName), \(package.summary).")
                 self.say("The band's key is not in memory. A trial works if the band already has key \(package.keyNumber).")
             } catch { self.say("Could not use the kept package: \(self.reason(error)).") }
         }
@@ -195,7 +198,8 @@ final class BandFirmwareTest: ObservableObject {
                 let package = try await Task.detached { try FirmwarePackage.read(zip) }.value
                 guard String(package.version) == offer.target else { throw BandError.storage("The package holds version \(package.version), not the \(offer.target) Meta offered") }
                 self.package = package; self.wrappedKey = nil
-                self.say("Package checked: \(package.summary).")
+                self.packageName = offer.build.map { "build \($0)" } ?? "version \(package.version)"
+                self.say("Package checked: \(self.packageName), \(package.summary).")
                 guard let token = self.session?.accessToken else {
                     self.say("Not signed in, so the band's key was not asked for. Check with Meta, then get the package again.")
                     return
@@ -233,7 +237,7 @@ final class BandFirmwareTest: ObservableObject {
         running = true; progress = nil
         // The phone must not lock part way: iOS would stop the app between the band's pulses.
         UIApplication.shared.isIdleTimerDisabled = true
-        say("Band battery \(level)%.")
+        say(mode == .cancel ? "Band battery \(level)%." : "Band battery \(level)%. Using \(packageName).")
         controller.startUpdate(plan)
     }
 
@@ -285,10 +289,10 @@ struct BandFirmwarePanel: View {
             }
             if let package = test.package {
                 Rule()
-                ActionRow("Install key \(package.keyNumber) on the band") { asking = .key }
+                ActionRow("Install key \(package.keyNumber) on the band, for \(test.packageName)") { asking = .key }
                     .disabled(busy || !connected || !test.hasKey)
                 Rule()
-                ActionRow("Trial transfer of version \(package.version)") { asking = .trial }
+                ActionRow("Trial transfer of \(test.packageName)") { asking = .trial }
                     .disabled(busy || !connected)
             }
             Rule()
@@ -335,7 +339,7 @@ struct BandFirmwarePanel: View {
     private var question: String {
         switch asking {
         case .key: return "Install key \(test.package?.keyNumber ?? 0) on the band?"
-        case .trial: return "Send version \(test.package?.version ?? 0) to the band as a trial?"
+        case .trial: return "Send \(test.packageName) to the band as a trial?"
         default: return "Have the band discard an update it holds?"
         }
     }
@@ -344,7 +348,7 @@ struct BandFirmwarePanel: View {
         let floor = BandFirmwareTest.batteryFloor
         switch mode {
         case .key: return "This cannot be undone. The band keeps the key, and nothing else on it changes. Put the band on its charger first. Its battery must be at \(floor)% or more."
-        case .trial: return "The band receives the firmware and checks it, then discards it. Nothing is installed. If the band lacks the key it is installed first, and that cannot be undone. Put the band on its charger and keep this screen open. It can take 20 minutes."
+        case .trial: return "The band receives the firmware and checks it, then discards it. Nothing is installed. If the band lacks the key it is installed first, and that cannot be undone. Put the band on its charger and keep this screen open. It takes about 10 minutes."
         case .cancel: return "This clears a transfer that was cut off. The firmware the band runs is not touched."
         }
     }
