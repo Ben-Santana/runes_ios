@@ -152,6 +152,9 @@ first and those settings after three seconds without rows of a hundred. Not yet 
 
 - Everything marked unknown above, which the probe answers.
 - The detector types for request 21 and what `trigger-multi-tightness` returns.
-- What selects the trial gesture model build 72 lists.
+- What selects the trial gesture model build 72 lists. No public source says. The band's device
+  information names trial models (field 18) and each gesture can be marked as from one (gesture
+  field 13). The guess the tests page tries is the named setting `load-flash-model`, put back
+  after. Not yet tried on the band.
 - The layout of EMG `wrist_encoding` 1.
 - Whether gestures keep arriving while data collection is on.

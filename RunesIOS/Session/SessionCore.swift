@@ -59,8 +59,13 @@ final class SessionCore: @unchecked Sendable {
     private var settingsByName: [String: NamedSettings.Setting] = [:]
     private var settingQueue: [(name: String, value: UInt64)] = []
     private var afterSettings: ((Bool) -> Void)?
-    /// Set while the named settings are being read for handwriting: what it wants once they are known.
-    private var collectionWanted: Bool?
+    /// What to do once a read of the named settings that a test asked for is done.
+    private var afterSettingsRead: (() -> Void)?
+    /// A line about which gesture model the band runs, whether the trial model is asked for,
+    /// and how many gesture messages came from the usual model and from the trial one since.
+    var onModel: ((String?, Bool, Int, Int) -> Void)?
+    private var trialModelWanted = false
+    private var modelGestures = (usual: 0, trial: 0)
     /// What a firmware update wrote, how far its current item is, and once it has ended, how it went.
     var onUpdate: (([String], FirmwareUpdate.Progress?, FirmwareUpdate.Ending?) -> Void)?
     private var update: FirmwareUpdate?
@@ -629,7 +634,8 @@ final class SessionCore: @unchecked Sendable {
         guard read.index < read.count else {
             settingRead = nil
             record("band_settings", "Named settings: done."); onNamedSetting?(nil, "")
-            settleCollection()
+            let next = afterSettingsRead
+            afterSettingsRead = nil; next?()
             return
         }
         read.index += 1; read.setting = nil; settingRead = read
@@ -639,7 +645,7 @@ final class SessionCore: @unchecked Sendable {
     private func askSetting(_ operation: String, _ payload: Data) {
         do { try rpc(operation, NamedSettings.channel, NamedSettings.field, payload) }
         catch {
-            settingRead = nil; settingWrite = nil; collectionWanted = nil
+            settingRead = nil; settingWrite = nil; afterSettingsRead = nil
             record("band_settings", "Named settings: could not ask."); onNamedSetting?(nil, "Could not ask the band."); onNamedSetting?(nil, "")
             if let done = afterSettings { settingQueue = []; afterSettings = nil; done(false) }
         }
@@ -1011,7 +1017,7 @@ final class SessionCore: @unchecked Sendable {
                         transition(.streaming, candidate?.bandPoint == nil ? "Receiving band gestures. Compatibility mode: band identity is unverified." : "Receiving band gestures.")
                         // A read or write of a named setting cut off by a lost link is not carried over.
                         settingRead = nil; settingWrite = nil; lastAnswered = nil
-                        settingQueue = []; afterSettings = nil; collectionWanted = nil
+                        settingQueue = []; afterSettings = nil; afterSettingsRead = nil
                         endTightness()
                         requestHand()
                         resumeUpdate()
@@ -1024,6 +1030,9 @@ final class SessionCore: @unchecked Sendable {
                 // One line for the first answer; a line per gesture would bury the journal.
                 if !acknowledgementNoted { acknowledgementNoted = true; trial("acknowledge: \(answer(payload))") }
             case "try_pattern", "try_stop": trial("\(operation.dropFirst(4)): \(answer(payload))")
+            case "try_info":
+                let line = "The band now reports: \(BandInfo.describe(payload) ?? "nothing readable")."
+                record("band_model", line); onModel?(line, trialModelWanted, modelGestures.usual, modelGestures.trial)
             case "try_writing":
                 record("band_writing", "The band's answer to the \(writingWanted ? "handwriting" : "usual") state: \(answer(payload)) [\(BandSettings.describe(payload) ?? "no settings")].")
                 if !writingWanted, !payload.isEmpty { UserDefaults.standard.removeObject(forKey: "bandStandbyToRestore") }
@@ -1129,6 +1138,11 @@ final class SessionCore: @unchecked Sendable {
             }
             answer(event)
             record("gesture", event: event, receipt: receipt)
+            if proto?.gestureFromTrial == true {
+                modelGestures.trial += 1
+                if modelGestures.trial == 1 { record("band_model", "A gesture arrived marked as from the trial model.") }
+            } else { modelGestures.usual += 1 }
+            onModel?(nil, trialModelWanted, modelGestures.usual, modelGestures.trial)
             if acknowledgesGestures, !synthetic { tryOnBand("acknowledge", field: 11, BandTrial.acknowledge(gesture: sequence)) }
             snapshot.eventCount += 1; snapshot.events.insert(event, at: 0)
             if snapshot.events.count > 200 { snapshot.events.removeLast(snapshot.events.count - 200) }
@@ -1346,7 +1360,7 @@ final class SessionCore: @unchecked Sendable {
         do {
             try rpc("try_writing", 6, 5, BandWriting.state(on: on, standby: kept == 0 ? nil : kept))
             writingWanted = on
-            if on { writing = BandWriting.Decoder(); writingMessages = 0; writingShape = ""; checkWriting() } else { collectWriting(false) }
+            if on { writing = BandWriting.Decoder(); writingMessages = 0; writingShape = ""; checkWriting() } else { lend(Self.writingLoan, false) }
             record("band_writing", on ? "Asked for the handwriting state, standby off." : "Asked for the usual state\(kept == 0 ? "" : ", standby back to \(kept) s").")
             onWriting?(on, writing.text, writing.rows)
         } catch {
@@ -1360,11 +1374,11 @@ final class SessionCore: @unchecked Sendable {
     /// handwriting turned off and never put back is put back.
     private func settleWriting() {
         guard snapshot.state == .streaming, update == nil else { return }
+        returnLoans([writingWanted ? nil : Self.writingLoan, trialModelWanted ? nil : Self.modelLoan].compactMap { $0 })
         if writingWanted, !activeWriting, pendingWriting != true {
             writingWanted = false
             setHandwriting(true)
         } else if !writingWanted {
-            collectWriting(false)
             let kept = UInt64(max(0, UserDefaults.standard.integer(forKey: "bandStandbyToRestore")))
             guard standby == 0, kept != 0 else { return }
             do { try rpc("try_writing", 6, 5, BandWriting.state(on: false, standby: kept)); record("band_writing", "Standby put back to \(kept) s.") } catch {}
@@ -1380,51 +1394,90 @@ final class SessionCore: @unchecked Sendable {
         transport.perform(after: 3) { [weak self] in
             guard let self, self.writingTry == attempt, self.writingWanted, self.snapshot.state == .streaming, self.writing.rows == 0 else { return }
             self.record("band_writing", "No handwriting scores from the handwriting state (\(self.writingShape.isEmpty ? "no scores at all" : self.writingShape)). Trying the data collection settings.")
-            self.collectWriting(true)
+            self.lend(Self.writingLoan, true)
         }
     }
 
-    /// Points the band's data collection at its handwriting model, or puts both settings back
-    /// as they were. The band keeps these settings, so what they were is saved before the
-    /// first write and put back when handwriting stops, or on the next connection if the app
-    /// was closed in between. The settings are found by name, which needs the list read once.
-    private func collectWriting(_ on: Bool, mayRead: Bool = true) {
-        let defaults = UserDefaults.standard, key = "bandCollectionToRestore"
-        let kept = (defaults.array(forKey: key) as? [Int]).flatMap { $0.count == 2 ? $0 : nil }
-        guard on || kept != nil, snapshot.state == .streaming, update == nil, afterSettings == nil else { return }
-        guard let collection = settingsByName[BandWriting.collection], let model = settingsByName[BandWriting.model],
-              let wasOn = collection.value, let wasModel = model.value, collection.writable, model.writable else {
+    /// A change to named settings the band keeps, made for a while: the settings by name, the
+    /// values they are given, where what they held is saved, and the words for the journal.
+    private struct Loan { let key: String, names: [String], values: [UInt64], kind: String, what: String }
+    /// Firmware that does not offer the handwriting state can still run its handwriting model
+    /// through its data collection, as the public Mac app does.
+    private static let writingLoan = Loan(key: "bandCollectionToRestore", names: [BandWriting.collection, BandWriting.model],
+                                          values: [1, BandWriting.collectionModel], kind: "band_writing", what: "data collection with the handwriting model")
+    /// The setting that looks like what selects the trial gesture model the band lists. No public source confirms it.
+    private static let modelLoan = Loan(key: "bandModelToRestore", names: ["load-flash-model"], values: [1], kind: "band_model", what: "load flash model")
+
+    /// Makes the change, or puts back what it replaced. What the settings held is saved before
+    /// the first write and put back, last first, when asked or on the next connection if the
+    /// app was closed in between. The settings are found by name, which needs the list read
+    /// once. `done` hears whether the band now holds what was asked.
+    private func lend(_ loan: Loan, _ on: Bool, mayRead: Bool = true, done: ((Bool) -> Void)? = nil) {
+        let defaults = UserDefaults.standard
+        let kept = (defaults.array(forKey: loan.key) as? [Int]).flatMap { $0.count == loan.names.count ? $0 : nil }
+        guard on || kept != nil else { return }
+        guard snapshot.state == .streaming, update == nil, afterSettings == nil else { done?(false); return }
+        let settings = loan.names.compactMap { settingsByName[$0] }
+        guard settings.count == loan.names.count, settings.allSatisfy(\.writable) else {
             guard mayRead, settingRead == nil, settingWrite == nil, tightnessSince == nil, probe == nil else {
-                if !mayRead { record("band_writing", "This firmware does not list the data collection settings.") }
-                return
+                if !mayRead { record(loan.kind, "This firmware does not list the settings for \(loan.what).") }
+                done?(false); return
             }
-            collectionWanted = on
+            afterSettingsRead = { [weak self] in self?.lend(loan, on, mayRead: false, done: done) }
             return readNamedSettings()
         }
         if on {
-            if let choices = capabilities[model.id]?.choices, !choices.isEmpty, !choices.contains(Int64(BandWriting.collectionModel)) {
-                return record("band_writing", "This firmware's data collection has no handwriting model.")
+            // A value the band does not list among a setting's choices is not written.
+            for (setting, value) in zip(settings, loan.values) {
+                if let choices = capabilities[setting.id]?.choices, !choices.isEmpty, !choices.contains(Int64(value)) {
+                    record(loan.kind, "This firmware does not offer \(value) for \(setting.name)."); done?(false); return
+                }
             }
-            if kept == nil { defaults.set([Int(wasOn), Int(wasModel)], forKey: key) }
-            record("band_writing", "Data collection on with the handwriting model (was \(wasOn), model \(wasModel)).")
-            writeSettings([(BandWriting.collection, 1), (BandWriting.model, BandWriting.collectionModel)]) { [weak self] held in
-                self?.record("band_writing", held ? "The band took the data collection settings." : "The band did not take the data collection settings.")
-                if !held { self?.collectWriting(false) }
+            let was = settings.map { Int($0.value ?? 0) }
+            if kept == nil { defaults.set(was, forKey: loan.key) }
+            record(loan.kind, "Asking for \(loan.what). The settings held \(was.map(String.init).joined(separator: ", ")).")
+            writeSettings(zip(loan.names, loan.values).map { (name: $0, value: $1) }) { [weak self] held in
+                self?.record(loan.kind, held ? "The band took \(loan.what)." : "The band did not take \(loan.what).")
+                if held { done?(true) } else { self?.lend(loan, false) { _ in done?(false) } }
             }
         } else if let kept {
-            record("band_writing", "Putting data collection back to \(kept[0]), model \(kept[1]).")
-            writeSettings([(BandWriting.model, UInt64(kept[1])), (BandWriting.collection, UInt64(kept[0]))]) { [weak self] held in
-                if held { defaults.removeObject(forKey: key) }
-                self?.record("band_writing", held ? "Data collection is back as it was." : "Data collection could not be put back. It is tried again on the next connection.")
+            record(loan.kind, "Putting back what \(loan.what) replaced: \(kept.map(String.init).joined(separator: ", ")).")
+            writeSettings(zip(loan.names, kept).map { (name: $0, value: UInt64(max(0, $1))) }.reversed()) { [weak self] held in
+                if held { defaults.removeObject(forKey: loan.key) }
+                self?.record(loan.kind, held ? "The settings are back as they were." : "The settings could not be put back. It is tried again on the next connection.")
+                done?(held)
             }
         }
     }
 
-    /// After a read of the named settings that handwriting asked for.
-    private func settleCollection() {
-        guard let on = collectionWanted else { return }
-        collectionWanted = nil
-        collectWriting(on, mayRead: false)
+    /// Puts back each change that was left on the band, one after the other.
+    private func returnLoans(_ loans: [Loan]) {
+        guard let loan = loans.first else { return }
+        let rest = Array(loans.dropFirst())
+        guard UserDefaults.standard.array(forKey: loan.key) != nil else { return returnLoans(rest) }
+        lend(loan, false) { [weak self] _ in self?.returnLoans(rest) }
+    }
+
+    /// Turns the band's "load flash model" setting on, to see whether that is what selects
+    /// the trial gesture model it lists, or puts the setting back. The band keeps the setting,
+    /// so the tests page asks the person first. Two seconds after, the band is asked what it
+    /// runs, and gestures are counted by whether the band marks them as from the trial model.
+    func setTrialModel(_ on: Bool) {
+        func say(_ line: String) { record("band_model", line); onModel?(line, trialModelWanted, modelGestures.usual, modelGestures.trial) }
+        guard snapshot.state == .streaming, update == nil, tightnessSince == nil, probe == nil, !writingWanted, afterSettings == nil else {
+            return say("Not changed: the band is busy or not connected.")
+        }
+        guard on || UserDefaults.standard.array(forKey: Self.modelLoan.key) != nil else { trialModelWanted = false; return say("The setting is already as it was.") }
+        say(on ? "Turning on load flash model." : "Putting load flash model back.")
+        lend(Self.modelLoan, on) { [weak self] held in
+            guard let self else { return }
+            if held { self.trialModelWanted = on; self.modelGestures = (0, 0) }
+            say(held ? (on ? "The band took the setting. Do some gestures." : "The setting is back as it was.") : "The band did not take the change.")
+            self.transport.perform(after: 2) { [weak self] in
+                guard let self, self.snapshot.state == .streaming else { return }
+                do { try self.rpc("try_info", 3, 3) } catch {}
+            }
+        }
     }
 
     /// Starts a key install, a trial transfer, a discard or an install on the band. Vibration,

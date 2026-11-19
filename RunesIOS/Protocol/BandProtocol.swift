@@ -64,6 +64,8 @@ final class BandProtocol {
     private(set) var feedbackNote = ""
     /// Set while a test listens for whatever else the band sends.
     var watchesOther = false
+    /// Whether the band marked the last gesture as coming from its trial model.
+    private(set) var gestureFromTrial = false
     init(identity: BandIdentity?, ceremony: OwnershipCeremony? = nil, way: Int = 0) throws {
         guard (identity == nil) != (ceremony == nil) else { throw BandError.authentication("Provide identity or explicit enrollment.") }
         self.identity = identity; self.ceremony = ceremony; self.way = max(0, way)
@@ -312,6 +314,7 @@ final class BandProtocol {
         if stage == "ready", gesturesEnabled, BandStreams.isGesture(kind, version: version) {
             let f = try Fields(packet.payload), synthetic = try f.integer(12, default: 0)
             guard synthetic <= 1 else { throw BandError.wire("Invalid gesture synthetic flag.") }
+            gestureFromTrial = (try? f.integer(13, default: 0)) == 1
             return (Data(), [.gesture(finger: try f.integer(3, default: 0), action: try f.integer(4, default: 0), derived: try f.integer(5, default: 0), synthetic: synthetic == 1, sequence: try f.integer(1), timestamp: try f.integer(2))])
         }
         if stage == "ready", gyroEnabled, kind == 0x0200020f {

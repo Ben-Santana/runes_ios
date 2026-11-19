@@ -38,3 +38,48 @@ struct BandWritingPanel: View {
         }
     }
 }
+
+/// Which gesture model the band runs, as far as the band says, kept while the app runs.
+@MainActor
+final class BandModelTest: ObservableObject {
+    static let shared = BandModelTest()
+
+    @Published private(set) var trial = false
+    @Published private(set) var lines: [String] = []
+    /// Gesture messages since the last change, by whether the band marked them as from its trial model.
+    @Published private(set) var usual = 0
+    @Published private(set) var marked = 0
+
+    func heard(_ line: String?, _ trial: Bool, _ usual: Int, _ marked: Int) {
+        if let line { lines.append(line) }
+        self.trial = trial; self.usual = usual; self.marked = marked
+    }
+    func set(_ on: Bool) { SessionController.shared.setTrialModel(on) }
+}
+
+/// The band's two gesture models on the band tests page: a switch for the setting that
+/// looks like what selects the trial one, and a count of gestures by the model they came from.
+struct BandModelPanel: View {
+    @ObservedObject private var test = BandModelTest.shared
+    @ObservedObject private var controller = SessionController.shared
+    @State private var asking = false
+
+    var body: some View {
+        PanelGroup("Gesture model", caption: "Build 72 lists a second, newer gesture model beside the one it uses. Nothing public says what selects it. The best guess is the band's load flash model setting, which the band keeps. This turns it on, asks the band what it then runs, and counts the gestures the band marks as from the trial model. Going back puts the setting as it was, and so does the next connection.") {
+            ActionRow(test.trial ? "Go back to the usual model" : "Try the trial model") {
+                if test.trial { test.set(false) } else { asking = true }
+            }
+            .disabled(controller.snapshot.state != .streaming)
+            Rule()
+            Text((["\(test.usual) gesture messages from the usual model, \(test.marked) marked as from the trial model."] + test.lines.suffix(8)).joined(separator: "\n"))
+                .font(.code).foregroundStyle(Color.muted).textSelection(.enabled)
+                .padding(.horizontal, Metric.inset).padding(.vertical, 12).frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .confirmationDialog("Turn on a setting the band keeps?", isPresented: $asking, titleVisibility: .visible) {
+            Button("Turn on load flash model") { test.set(true) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This is a guess at what selects the trial model, and nobody has written down what the setting does. If gestures stop or feel wrong, tap Go back to the usual model. Runes also puts it back the next time it connects.")
+        }
+    }
+}

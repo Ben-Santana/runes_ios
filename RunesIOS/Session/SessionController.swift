@@ -125,6 +125,7 @@ final class SessionController: ObservableObject {
         core.onUpdate = { lines, progress, ended in Task { @MainActor in BandFirmwareTest.shared.updateHeard(lines, progress, ended) } }
         core.onWriting = { on, text, rows in Task { @MainActor in BandWritingTest.shared.heard(on, text, rows) } }
         core.onProbe = { lines, running in Task { @MainActor in BandProbeTest.shared.heard(lines, running) } }
+        core.onModel = { line, trial, usual, marked in Task { @MainActor in BandModelTest.shared.heard(line, trial, usual, marked) } }
         core.onCapability = { setting, capability in Task { @MainActor in BandTightnessTest.shared.described(setting, capability) } }
         core.onTightness = { line in Task { @MainActor in BandTightnessTest.shared.heard(line) } }
         WorkoutStore.shared.onSound = { voice, volume in ScoreAudio.shared.cue(voice, volume: volume) }
@@ -309,6 +310,8 @@ final class SessionController: ObservableObject {
     /// Runs the band probe. What it finds arrives through `SessionCore.onProbe`.
     func startProbe(_ trials: [BandProbe.Trial]) { core.transport.perform { [core] in core.startProbe(trials) } }
     func stopProbe() { core.transport.perform { [core] in core.stopProbe() } }
+    /// Turns the band's load flash model setting on or puts it back. The tests page asks the person first.
+    func setTrialModel(_ on: Bool) { core.transport.perform { [core] in core.setTrialModel(on) } }
     /// Runs a key install, a trial transfer or a discard on the band. The firmware tests page asks the person first.
     func startUpdate(_ plan: FirmwareUpdate.Plan) { core.transport.perform { [core] in core.startUpdate(plan) } }
     func stopUpdate() { core.transport.perform { [core] in core.stopUpdate() } }

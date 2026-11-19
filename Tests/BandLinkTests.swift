@@ -284,7 +284,7 @@ struct BandLinkTests {
 
         // The same script on both generations must report the same things to the app.
         let early = try session(late: false), late = try session(late: true)
-        precondition(early == late && early.count == 25, "A session on late firmware reports what one on early firmware does")
+        precondition(early == late && early.count == 27, "A session on late firmware reports what one on early firmware does")
         let slow = try session(late: true, bytewise: true), cut = try session(late: true, pieces: 3), shredded = try session(late: true, pieces: 7, bytewise: true)
         precondition(slow == early && cut == early && shredded == early)
         try expect(try session(late: false, bytewise: true) == early)
@@ -460,7 +460,12 @@ struct BandLinkTests {
         func gesture(_ sequence: UInt64, finger: UInt64, action: UInt64, derived: UInt64) -> Data {
             PB.field(1, sequence) + PB.field(2, 1000 + sequence) + PB.field(3, finger) + PB.field(4, action) + PB.field(5, derived)
         }
-        try pair.deliver(Frame(channel: 0x8005, words: [0x0200020d], payload: gesture(1, finger: 2, action: 1, derived: 0)))
+        // A gesture the band marks as from its trial model is told from the rest, one gesture at a time.
+        try pair.deliver(Frame(channel: 0x8005, words: [0x0200020d], payload: gesture(1, finger: 2, action: 1, derived: 0) + PB.field(13, 1)))
+        precondition(pair.host.gestureFromTrial)
+        try pair.deliver(Frame(channel: 0x8005, words: [], payload: gesture(1, finger: 2, action: 1, derived: 0)))
+        precondition(!pair.host.gestureFromTrial)
+        try pair.deliver(Frame(channel: 0x8005, words: [], payload: gesture(1, finger: 2, action: 1, derived: 0)))
         try pair.deliver(Frame(channel: 0x8005, words: [], payload: gesture(2, finger: 2, action: 0, derived: 9)),
                          Frame(channel: 0x8005, words: [], payload: gesture(3, finger: 2, action: 2, derived: 0)))
         let turn = Data([0x10, 0x00, 0xf0, 0xff, 0x05, 0x00])
