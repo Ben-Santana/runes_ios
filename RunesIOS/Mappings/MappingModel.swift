@@ -229,6 +229,8 @@ enum ProfileDirection: String, Codable, Sendable { case up, down }
 /// What a Spotify action does to the person's current playback.
 enum SpotifyCommand: String, Codable, CaseIterable, Sendable {
     case playPause, play, pause, next, previous, volumeUp, volumeDown, seekForward, seekBack, toggleShuffle, cycleRepeat, saveTrack
+    /// Moves playback to the next of the person's Spotify devices, going round.
+    case nextDevice
 
     var title: String {
         switch self {
@@ -244,6 +246,7 @@ enum SpotifyCommand: String, Codable, CaseIterable, Sendable {
         case .toggleShuffle: "Shuffle on / off"
         case .cycleRepeat: "Repeat off / all / one"
         case .saveTrack: "Like current track"
+        case .nextDevice: "Switch to next device"
         }
     }
 }
